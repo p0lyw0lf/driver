@@ -9,9 +9,12 @@ use sha2::Digest;
 use sha2::Sha256;
 
 /// A Derivation is something that can be
-pub trait Derivation: Encode {
+pub trait Derivation {
     /// The output directory for the derivation, calculated based on its hash
-    fn output_path(&self) -> PathBuf {
+    fn output_path(&self) -> PathBuf
+    where
+        Self: Encode,
+    {
         let bytes =
             bincode::encode_to_vec(self, bincode::config::standard()).expect("encoding error");
         let digest = Sha256::digest(&bytes);
@@ -102,5 +105,25 @@ impl Derivation for BuildDerivation {
         }
 
         Ok(())
+    }
+}
+
+pub enum AnyDerivation {
+    File(FileDerivation),
+    Build(BuildDerivation),
+}
+
+impl Derivation for AnyDerivation {
+    fn output_path(&self) -> PathBuf {
+        match self {
+            AnyDerivation::File(f) => f.output_path(),
+            AnyDerivation::Build(b) => b.output_path(),
+        }
+    }
+    fn run(&self) -> std::io::Result<()> {
+        match self {
+            AnyDerivation::File(f) => f.run(),
+            AnyDerivation::Build(b) => b.run(),
+        }
     }
 }
