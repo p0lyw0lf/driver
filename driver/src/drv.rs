@@ -1,9 +1,10 @@
+use std::collections::BTreeMap;
 use std::fs::create_dir_all;
-use std::path::Path;
 use std::path::PathBuf;
 
 use bincode::Decode;
 use bincode::Encode;
+use globset::Glob;
 use nix_base32::to_nix_base32;
 use sha2::Digest;
 use sha2::Sha256;
@@ -32,39 +33,97 @@ pub trait Derivation {
 /// A FileDerivation is used to reproducibly copy files to the store.
 #[derive(Encode, Decode)]
 pub struct FileDerivation {
-    /// The path of the file to copy
+    /// The base path of the file/directory to copy
     pub input_path: String,
-    /// The expected hash of the file
+    /// If input_path is a directory, the glob for the files to copy to the store. Defaults to "*"
+    pub glob: Option<String>,
+    /// The expected hash of the file/directory.
     pub digest: Vec<u8>,
+}
+
+pub(crate) struct DigestOutput {
+    pub digest: sha2::digest::Output<Sha256>,
+    files: BTreeMap<PathBuf, Vec<u8>>,
+}
+
+impl FileDerivation {
+    pub(crate) fn expected_digest(
+        input_path: &String,
+        glob: &Option<String>,
+    ) -> std::io::Result<DigestOutput> {
+        let glob = match glob {
+            Some(glob) => Some(
+                Glob::new(glob)
+                    .map_err(|err| std::io::Error::other(format!("Making glob: {}", err)))?
+                    .compile_matcher(),
+            ),
+            None => None,
+        };
+        let mut hasher = Sha256::new();
+        let mut files = BTreeMap::new();
+
+        for result in ignore::Walk::new(input_path) {
+            let entry =
+                result.map_err(|err| std::io::Error::other(format!("malking tree: {}", err)))?;
+
+            if entry
+                .file_type()
+                .is_some_and(|ty| ty.is_file() || ty.is_symlink())
+                && glob.as_ref().is_none_or(|g| g.is_match(entry.path()))
+            {
+                let bytes = std::fs::read(entry.path())?;
+                hasher.update(&bytes);
+
+                let filename = match glob {
+                    Some(_) => entry
+                        .path()
+                        .strip_prefix(input_path)
+                        .expect("entry did not begin with input_path")
+                        .to_owned(),
+                    None => entry
+                        .path()
+                        .file_name()
+                        .expect("entry does not have filename")
+                        .into(),
+                };
+
+                files.insert(filename, bytes);
+            }
+        }
+
+        Ok(DigestOutput {
+            digest: hasher.finalize(),
+            files,
+        })
+    }
 }
 
 impl Derivation for FileDerivation {
     fn run(&self) -> std::io::Result<()> {
-        let bytes = std::fs::read(&self.input_path)?;
-        let digest = Sha256::digest(&bytes);
-
-        if digest.as_slice() != self.digest {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!(
-                    r#"
+        let DigestOutput {
+            digest: expected_digest,
+            files,
+        } = Self::expected_digest(&self.input_path, &self.glob)?;
+        if expected_digest.as_slice() != self.digest {
+            return Err(std::io::Error::other(format!(
+                r#"
 expected {} to have hash
     {}, got hash
     {}
 "#,
-                    self.input_path,
-                    to_nix_base32(&self.digest),
-                    to_nix_base32(&digest)
-                ),
-            ));
+                self.input_path,
+                to_nix_base32(&self.digest),
+                to_nix_base32(&expected_digest)
+            )));
         }
 
-        let mut output_path = self.output_path();
-        create_dir_all(&output_path)?;
-        let input_path = Path::new(&self.input_path).file_name().unwrap();
-        output_path.push(input_path);
-
-        std::fs::write(&output_path, bytes)?;
+        let output_path = self.output_path();
+        for (filename, bytes) in files {
+            println!("{}", filename.display());
+            let output_filename = output_path.join(filename);
+            create_dir_all(output_filename.parent().unwrap())?;
+            std::fs::write(output_filename, bytes)?;
+        }
 
         Ok(())
     }
@@ -94,14 +153,11 @@ impl Derivation for BuildDerivation {
         let output = std::process::Command::new(cmd).args(&args).output()?;
 
         if !output.status.success() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!(
-                    "process failed with exit code {}:\n{}",
-                    output.status,
-                    String::from_utf8_lossy(&output.stderr),
-                ),
-            ));
+            return Err(std::io::Error::other(format!(
+                "process failed with exit code {}:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr),
+            )));
         }
 
         Ok(())
