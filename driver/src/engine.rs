@@ -11,6 +11,7 @@ use crate::drv::AnyDerivation;
 use crate::drv::BuildDerivation;
 use crate::drv::Derivation;
 use crate::drv::FileDerivation;
+use crate::drv::FileInput;
 
 pub fn run_script(script: impl AsRef<Path>) -> Result<Vec<AnyDerivation>, mlua::Error> {
     let lua = Lua::new_with(StdLib::STRING, LuaOptions::new()).expect("TODO");
@@ -20,24 +21,21 @@ pub fn run_script(script: impl AsRef<Path>) -> Result<Vec<AnyDerivation>, mlua::
     lua.scope(|scope| {
         // TODO: make sure the borrow_mut() calls are safe; I _think_ there is no concurrent
         // stuff going on, so they probably should be.
-        let file_drv =
-            scope.create_function_mut(|_, (input_path, glob): (String, Option<String>)| {
-                let digest = FileDerivation::expected_digest(&input_path, &glob)
-                    .map_err(|err| {
-                        mlua::Error::RuntimeError(format!("calculating digest: {}", err))
-                    })?
-                    .digest;
+        let file_drv = scope.create_function_mut(|_, (path, glob): (String, Option<String>)| {
+            let input = FileInput { path, glob };
+            let digest = input
+                .digest()
+                .map_err(|err| mlua::Error::RuntimeError(format!("calculating digest: {}", err)))?;
 
-                let drv = FileDerivation {
-                    input_path,
-                    glob,
-                    digest: digest.to_vec(),
-                };
-                let output_path = drv.output_path().to_str().unwrap().to_string();
-                derivations.borrow_mut().push(AnyDerivation::File(drv));
+            let drv = FileDerivation {
+                input,
+                digest: digest.to_vec(),
+            };
+            let output_path = drv.output_path().to_str().unwrap().to_string();
+            derivations.borrow_mut().push(AnyDerivation::File(drv));
 
-                Ok(output_path)
-            })?;
+            Ok(output_path)
+        })?;
         lua.globals().set("file_drv", file_drv)?;
 
         let build_drv = scope.create_function_mut(|_, (builder,): (Vec<String>,)| {
@@ -48,6 +46,22 @@ pub fn run_script(script: impl AsRef<Path>) -> Result<Vec<AnyDerivation>, mlua::
             Ok(output_path)
         })?;
         lua.globals().set("build_drv", build_drv)?;
+
+        let glob = scope.create_function(|_, (path, glob): (String, String)| {
+            let input = FileInput {
+                path,
+                glob: Some(glob),
+            };
+            let files = input
+                .files()
+                .map_err(|err| mlua::Error::RuntimeError(format!("collecting files: {}", err)))?
+                .into_iter()
+                .map(|f| f.to_str().unwrap().to_string())
+                .collect::<Vec<_>>();
+
+            Ok(files)
+        })?;
+        lua.globals().set("glob", glob)?;
 
         lua.load(script.as_ref()).exec()
     })?;

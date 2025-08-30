@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt::Display;
 use std::fs::create_dir_all;
 use std::path::PathBuf;
 
@@ -33,25 +34,39 @@ pub trait Derivation {
 /// A FileDerivation is used to reproducibly copy files to the store.
 #[derive(Encode, Decode)]
 pub struct FileDerivation {
-    /// The base path of the file/directory to copy
-    pub input_path: String,
-    /// If input_path is a directory, the glob for the files to copy to the store. Defaults to "*"
-    pub glob: Option<String>,
+    /// The file/directory to copy.
+    pub input: FileInput,
     /// The expected hash of the file/directory.
     pub digest: Vec<u8>,
 }
 
-pub(crate) struct DigestOutput {
-    pub digest: sha2::digest::Output<Sha256>,
+#[derive(Encode, Decode, Debug)]
+pub struct FileInput {
+    /// The base path of the file/directory to walk
+    pub path: String,
+    /// If path is a directory, the glob for all the files to walk. Defaults to "*"
+    pub glob: Option<String>,
+}
+
+impl Display for FileInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.path)?;
+        if let Some(glob) = &self.glob {
+            write!(f, ", {glob}")?;
+        }
+
+        Ok(())
+    }
+}
+
+struct WalkOutput {
+    digest: sha2::digest::Output<Sha256>,
     files: BTreeMap<PathBuf, Vec<u8>>,
 }
 
-impl FileDerivation {
-    pub(crate) fn expected_digest(
-        input_path: &String,
-        glob: &Option<String>,
-    ) -> std::io::Result<DigestOutput> {
-        let glob = match glob {
+impl FileInput {
+    fn walk(&self) -> std::io::Result<WalkOutput> {
+        let glob = match &self.glob {
             Some(glob) => Some(
                 Glob::new(glob)
                     .map_err(|err| std::io::Error::other(format!("Making glob: {}", err)))?
@@ -62,7 +77,7 @@ impl FileDerivation {
         let mut hasher = Sha256::new();
         let mut files = BTreeMap::new();
 
-        for result in ignore::Walk::new(input_path) {
+        for result in ignore::Walk::new(&self.path) {
             let entry =
                 result.map_err(|err| std::io::Error::other(format!("malking tree: {}", err)))?;
 
@@ -77,7 +92,7 @@ impl FileDerivation {
                 let filename = match glob {
                     Some(_) => entry
                         .path()
-                        .strip_prefix(input_path)
+                        .strip_prefix(&self.path)
                         .expect("entry did not begin with input_path")
                         .to_owned(),
                     None => entry
@@ -91,19 +106,27 @@ impl FileDerivation {
             }
         }
 
-        Ok(DigestOutput {
+        Ok(WalkOutput {
             digest: hasher.finalize(),
             files,
         })
+    }
+
+    pub(crate) fn digest(&self) -> std::io::Result<sha2::digest::Output<Sha256>> {
+        Ok(self.walk()?.digest)
+    }
+
+    pub(crate) fn files(&self) -> std::io::Result<Vec<PathBuf>> {
+        Ok(self.walk()?.files.into_keys().collect::<Vec<_>>())
     }
 }
 
 impl Derivation for FileDerivation {
     fn run(&self) -> std::io::Result<()> {
-        let DigestOutput {
+        let WalkOutput {
             digest: expected_digest,
             files,
-        } = Self::expected_digest(&self.input_path, &self.glob)?;
+        } = self.input.walk()?;
         if expected_digest.as_slice() != self.digest {
             return Err(std::io::Error::other(format!(
                 r#"
@@ -111,7 +134,7 @@ expected {} to have hash
     {}, got hash
     {}
 "#,
-                self.input_path,
+                self.input,
                 to_nix_base32(&self.digest),
                 to_nix_base32(&expected_digest)
             )));
