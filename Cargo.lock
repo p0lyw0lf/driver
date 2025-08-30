@@ -80,6 +80,7 @@ name = "driver_bin"
 version = "0.1.0"
 dependencies = [
  "driver",
+ "nix-base32",
 ]
 
 [[package]]
