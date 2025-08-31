@@ -17,7 +17,10 @@
       flake-utils,
       rust-overlay,
     }:
-    flake-utils.lib.eachDefaultSystem (
+    {
+      overlays.default = (final: prev: { inherit (self.packages.${final.system}) driver-bin; });
+    }
+    // flake-utils.lib.eachDefaultSystem (
       system:
       let
         overlays = [ (import rust-overlay) ];
@@ -32,11 +35,15 @@
           rustc = rust-toolchain;
         };
 
-      in
-      {
-        defaultPackage = naersk'.buildPackage {
+        driver-bin = naersk'.buildPackage {
           src = ./.;
           cargoBuildOptions = opts: opts ++ [ "--package driver_bin" ];
+        };
+      in
+      {
+        packages = {
+          inherit driver-bin;
+          default = driver-bin;
         };
 
         devShells.default = pkgs.mkShell {
