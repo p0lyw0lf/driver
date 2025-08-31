@@ -2,6 +2,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
     flake-utils.url = "github:numtide/flake-utils";
+    naersk.url = "github:nix-community/naersk";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -12,6 +13,7 @@
     {
       self,
       nixpkgs,
+      naersk,
       flake-utils,
       rust-overlay,
     }:
@@ -23,21 +25,28 @@
           inherit system overlays;
         };
 
-        rust-bin = pkgs.pkgsBuildHost.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+        rust-toolchain = pkgs.pkgsBuildHost.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
 
-        buildInputs = [
-          rust-bin
-        ];
-        nativeBuildInputs = with pkgs; [
-          # For running derivations
-          python3
-          # For debugging
-          vscode-extensions.vadimcn.vscode-lldb.adapter
-        ];
+        naersk' = pkgs.callPackage naersk {
+          cargo = rust-toolchain;
+          rustc = rust-toolchain;
+        };
+
       in
       {
+        defaultPackage = naersk'.buildPackage {
+          src = ./.;
+          cargoBuildOptions = opts: opts ++ [ "--package driver_bin" ];
+        };
+
         devShells.default = pkgs.mkShell {
-          inherit buildInputs nativeBuildInputs;
+          buildInputs = [ rust-toolchain ];
+          nativeBuildInputs = with pkgs; [
+            # For running derivations
+            python3
+            # For debugging
+            vscode-extensions.vadimcn.vscode-lldb.adapter
+          ];
         };
       }
     );
