@@ -79,7 +79,7 @@ impl FileInput {
 
         for result in ignore::Walk::new(&self.path) {
             let entry =
-                result.map_err(|err| std::io::Error::other(format!("malking tree: {}", err)))?;
+                result.map_err(|err| std::io::Error::other(format!("walking tree: {}", err)))?;
 
             if entry
                 .file_type()
@@ -142,7 +142,6 @@ expected {} to have hash
 
         let output_path = self.output_path();
         for (filename, bytes) in files {
-            println!("{}", filename.display());
             let output_filename = output_path.join(filename);
             create_dir_all(output_filename.parent().unwrap())?;
             std::fs::write(output_filename, bytes)?;
