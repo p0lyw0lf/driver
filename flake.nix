@@ -46,15 +46,7 @@
           default = driver-bin;
         };
 
-        devShells.default = pkgs.mkShell {
-          buildInputs = [ rust-toolchain ];
-          nativeBuildInputs = with pkgs; [
-            # For running derivations
-            python3
-            # For debugging
-            vscode-extensions.vadimcn.vscode-lldb.adapter
-          ];
-        };
+        devShells.default = pkgs.callPackage ./devshell.nix { inherit rust-toolchain; };
       }
     );
 }

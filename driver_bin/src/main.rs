@@ -1,10 +1,9 @@
 use clap::arg;
 use clap::command;
-use driver::engine;
 
 fn main() -> std::io::Result<()> {
     let matches = command!()
-        .arg(arg!(script: "The build plan script to run"))
+        .arg(arg!(script: "The directory to hash"))
         .get_matches();
 
     let filename = match matches.get_one::<String>("script") {
@@ -17,9 +16,8 @@ fn main() -> std::io::Result<()> {
         }
     };
 
-    let derivations = engine::run_script(filename)
-        .map_err(|err| std::io::Error::other(format!("error running script: {}", err)))?;
-    engine::run_derivations(derivations)?;
+    let digest = dirhash::walk(filename.into());
+    println!("{digest:?}");
 
     Ok(())
 }

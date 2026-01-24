@@ -1,5 +1,6 @@
 [workspace]
 resolver = "1"
 members = [
-  "driver"
-, "driver_bin"]
+  "dirhash",
+  "driver_bin"
+]
