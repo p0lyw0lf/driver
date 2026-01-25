@@ -16,7 +16,7 @@ fn main() -> std::io::Result<()> {
         }
     };
 
-    let digest = dirhash::walk(filename.into());
+    let digest = query::walk(filename.into());
     println!("{digest:?}");
 
     Ok(())

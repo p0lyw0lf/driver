@@ -1,9 +1,11 @@
 [package]
-name = "dirhash"
+name = "query"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 anyhow = "1.0"
+dashmap = "6.1"
 ignore = "0.4"
+petgraph = "0.8"
 sha2 = "0.10"
