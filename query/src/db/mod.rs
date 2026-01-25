@@ -61,7 +61,7 @@ impl DepGraph {
         self.indices.get(key).map(|key| {
             let graph = self.graph.read().unwrap();
             graph
-                .neighbors_directed(*key, petgraph::Direction::Incoming)
+                .neighbors_directed(*key, petgraph::Direction::Outgoing)
                 .map(|i| graph[i].clone())
                 .collect::<Vec<_>>()
         })

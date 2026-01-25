@@ -1,10 +1,10 @@
 use dashmap::DashMap;
 
+use crate::HashDirectory;
+use crate::HashFile;
 use crate::files::ListDirectory;
 use crate::files::ReadFile;
 use crate::to_hash::ToHash;
-use crate::HashDirectory;
-use crate::HashFile;
 
 macro_rules! query_key {
     ($key:ident ($cache:ident) { $(
@@ -40,14 +40,15 @@ macro_rules! query_key {
 
         impl $cache {
             /// REQUIRES: value was produced by key.
-            /// RETURNS: whether value was already present in the cache.
+            /// RETURNS: whether cache was busted, that is, whether the cache changed based on the
+            /// new value.
             pub fn insert(&self, key: QueryKey, value: $crate::AnyOutput) -> bool {
                 match key { $(
                     $key::$type(key) => {
                         let value: <$type as $crate::Producer>::Output = *value.downcast().expect("must be produced by key");
                         let hash = value.to_hash();
                         let old = self.$name.insert(key, value);
-                        old.is_some_and(|old| old.to_hash() == hash)
+                        old.is_none_or(|old| old.to_hash() == hash)
                     }
                 )* }
             }
@@ -69,3 +70,13 @@ query_key!(QueryKey (QueryCache) {
     hash_file: HashFile,
     hash_directory: HashDirectory,
 });
+
+impl QueryKey {
+    // whether a new revision should cause this key to be immediately re-computed or not
+    pub fn is_input(&self) -> bool {
+        match self {
+            QueryKey::ReadFile(_) | QueryKey::ListDirectory(_) => true,
+            QueryKey::HashFile(_) | QueryKey::HashDirectory(_) => false,
+        }
+    }
+}

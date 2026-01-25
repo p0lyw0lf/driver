@@ -20,11 +20,15 @@ fn main() -> std::io::Result<()> {
     let digest = query::walk(filename.into(), &ctx);
     println!("{digest:?}");
 
-    std::io::stdin().read_line(&mut String::new())?;
+    loop {
+        let mut s = String::new();
+        std::io::stdin().read_line(&mut s)?;
+        if s.as_bytes().first() == Some(&b'q') {
+            return Ok(());
+        }
 
-    ctx.new_revision();
-    let digest = query::walk(filename.into(), &ctx);
-    println!("{digest:?}");
-
-    Ok(())
+        ctx.new_revision();
+        let digest = query::walk(filename.into(), &ctx);
+        println!("{digest:?}");
+    }
 }
