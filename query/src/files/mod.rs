@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::QueryContext;
 
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub struct ReadFile(pub PathBuf);
 
 impl crate::Producer for ReadFile {
@@ -12,7 +12,7 @@ impl crate::Producer for ReadFile {
     }
 }
 
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub struct ListDirectory(pub PathBuf);
 
 impl crate::Producer for ListDirectory {
