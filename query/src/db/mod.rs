@@ -1,4 +1,3 @@
-use std::any::Any;
 use std::sync::RwLock;
 use std::sync::atomic::AtomicUsize;
 
@@ -6,9 +5,8 @@ use dashmap::DashMap;
 use petgraph::graph::DiGraph;
 use petgraph::graph::NodeIndex;
 
-use crate::AnyOutput;
 use crate::QueryKey;
-use crate::to_hash::Hash;
+use crate::query_key::QueryCache;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Color {
@@ -75,30 +73,5 @@ pub struct Database {
     pub colors: ColorMap,
     pub revision: AtomicUsize,
 
-    /// ENSURES: intern.get(hash).to_hash() == hash
-    /// This does also require that hashes are unique _per-type_, which is only possible since we
-    /// control the hash function strategy.
-    pub interned: DashMap<Hash, AnyOutput>,
-    /// ENSURES: intern.get(cache.get(key)).type_id() == <QueryKey as Producer>::Output.type_id()
-    pub cached: DashMap<QueryKey, Hash>,
-}
-
-impl Database {
-    pub fn intern(&self, value: AnyOutput) -> Hash {
-        let hash = value.0.to_hash();
-        let ty = value.type_id();
-        if self
-            .interned
-            .insert(hash, value)
-            .is_some_and(|old| old.type_id() != ty)
-        {
-            panic!("found hash collision at {hash:?}");
-        }
-
-        hash
-    }
-
-    pub fn get_interned(&self, hash: &Hash) -> dashmap::mapref::one::Ref<'_, Hash, AnyOutput> {
-        self.interned.get(hash).expect("hash should always exist")
-    }
+    pub cache: QueryCache,
 }

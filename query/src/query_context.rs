@@ -1,13 +1,12 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use crate::AnyOutput;
 use crate::Producer;
 use crate::db::Color;
 use crate::db::Database;
 use crate::db::DepGraph;
 use crate::query_key::QueryKey;
-use crate::to_hash::Hash;
-use crate::to_hash::ToHash;
 
 #[derive(Default, Debug)]
 pub struct QueryContext {
@@ -17,7 +16,7 @@ pub struct QueryContext {
 }
 
 impl QueryContext {
-    pub fn query(&self, key: QueryKey) -> anyhow::Result<Hash> {
+    pub fn query(&self, key: QueryKey) -> anyhow::Result<AnyOutput> {
         let revision = self.db.revision.load(Ordering::SeqCst);
         let update_value = |key: QueryKey| -> anyhow::Result<_> {
             if let Some(parent) = &self.parent {
@@ -29,16 +28,14 @@ impl QueryContext {
                 db: self.db.clone(),
                 dep_graph: self.dep_graph.clone(),
             })?;
-            let hash = value.to_hash();
 
-            let old_hash = self.db.cached.insert(key.clone(), hash);
-            if old_hash.is_some_and(|old| old == hash) {
+            if self.db.cache.insert(key.clone(), value.clone()) {
                 self.db.colors.mark_green(&key, revision);
             } else {
                 self.db.colors.mark_red(&key, revision);
             }
 
-            Ok(self.db.intern(value))
+            Ok(value)
         };
 
         let Some((_, rev)) = self.db.colors.get(&key) else {
@@ -49,14 +46,11 @@ impl QueryContext {
         }
 
         match self.try_mark_green(key.clone())? {
-            Color::Green => {
-                let hash = self
-                    .db
-                    .cached
-                    .get(&key)
-                    .unwrap_or_else(|| panic!("Green query {:?} missing value in cache", key));
-                Ok(*hash)
-            }
+            Color::Green => Ok(self
+                .db
+                .cache
+                .get(&key)
+                .unwrap_or_else(|| panic!("Green query {:?} missing value in cache", key))),
             Color::Red => update_value(key),
         }
     }

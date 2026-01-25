@@ -9,6 +9,7 @@ mod query_context;
 mod query_key;
 mod to_hash;
 
+use dyn_clone::DynClone;
 use query_context::QueryContext;
 use query_key::QueryKey;
 use sha2::Digest;
@@ -17,10 +18,11 @@ use crate::to_hash::Hash;
 use crate::to_hash::ToHash;
 
 /// NOTE: a newtype is needed to get around some associated type jank.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct AnyOutput(pub Box<dyn Output>);
-trait Output: ToHash + Any + Debug {}
-impl<T> Output for T where T: ToHash + Any + Debug {}
+trait Output: ToHash + DynClone + Any + Debug {}
+dyn_clone::clone_trait_object!(Output);
+impl<T> Output for T where T: ToHash + DynClone + Any + Debug {}
 impl ToHash for AnyOutput {
     fn run_hash(&self, hasher: &mut sha2::Sha256) {
         // no prefix because we _do_ want this to be treated as the underlying value.
@@ -34,37 +36,40 @@ impl AnyOutput {
         }
         Self(Box::new(t))
     }
-    fn downcast_ref<T: Output>(v: &impl std::ops::Deref<Target = Self>) -> Option<&T> {
-        v.0.downcast_ref()
-    }
-}
-impl dyn Output {
-    fn downcast_ref<T: Output>(&self) -> Option<&T> {
-        let a = self as &dyn Any;
-        a.downcast_ref()
+    fn downcast<T: Output>(self) -> Option<Box<T>> {
+        (self.0 as Box<dyn Any>).downcast().ok()
     }
 }
 
 trait Producer {
-    type Output: ToHash + Debug + Sized + 'static;
+    // NOTE: in order to make the lifetimes work out, we really really want it such that the output
+    // is easily clone-able. This will eventually require string interning somewhere, not quite
+    // sure where yet.
+    type Output: Output + Sized + 'static;
     fn produce(&self, ctx: &QueryContext) -> anyhow::Result<Self::Output>;
-    fn downcast_ref(v: &impl std::ops::Deref<Target = AnyOutput>) -> &Self::Output {
-        AnyOutput::downcast_ref(v).expect("used unsafely whoops")
+    fn query(self, ctx: &QueryContext) -> anyhow::Result<Self::Output>
+    where
+        Self: Sized,
+        QueryKey: From<Self>,
+    {
+        let value = ctx.query(self.into())?;
+        Ok(*value
+            .downcast()
+            .expect("query produced wrong value somehow"))
     }
 }
 
 fn walk_impl(ctx: &QueryContext, dir: PathBuf) -> anyhow::Result<Hash> {
     let mut hasher = sha2::Sha256::new();
-    let hash = ctx.query(files::ListDirectory(dir).into())?;
-    let value = ctx.db.get_interned(&hash);
-    let entries = files::ListDirectory::downcast_ref(&value);
+    let entries = files::ListDirectory(dir).query(ctx)?;
     for entry in entries {
-        let digest = if entry.is_dir() {
-            walk_impl(ctx, entry.clone())?
+        if entry.is_dir() {
+            let digest = walk_impl(ctx, entry.clone())?;
+            hasher.update(digest);
         } else {
-            ctx.query(files::ReadFile(entry.clone()).into())?
+            let contents = files::ReadFile(entry.clone()).query(ctx)?;
+            hasher.update(contents.as_bytes());
         };
-        hasher.update(digest);
     }
     Ok(hasher.finalize())
 }
