@@ -9,7 +9,7 @@ use crate::query_key::QueryKey;
 use crate::to_hash::Hash;
 use crate::to_hash::ToHash;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct QueryContext {
     parent: Option<QueryKey>,
     pub db: Arc<Database>,

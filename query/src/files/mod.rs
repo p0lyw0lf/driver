@@ -8,6 +8,7 @@ pub struct ReadFile(pub PathBuf);
 impl crate::Producer for ReadFile {
     type Output = String;
     fn produce(&self, _ctx: &QueryContext) -> anyhow::Result<Self::Output> {
+        println!("reading: {}", self.0.display());
         Ok(String::from_utf8(std::fs::read(&self.0)?)?)
     }
 }
@@ -18,6 +19,7 @@ pub struct ListDirectory(pub PathBuf);
 impl crate::Producer for ListDirectory {
     type Output = Vec<PathBuf>;
     fn produce(&self, _ctx: &QueryContext) -> anyhow::Result<Self::Output> {
+        println!("walking: {}", self.0.display());
         let walk = ignore::WalkBuilder::new(&self.0)
             .max_depth(Some(1))
             .sort_by_file_name(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))

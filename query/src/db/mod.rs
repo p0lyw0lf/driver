@@ -7,17 +7,16 @@ use petgraph::graph::DiGraph;
 use petgraph::graph::NodeIndex;
 
 use crate::AnyOutput;
-use crate::Output;
 use crate::QueryKey;
 use crate::to_hash::Hash;
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Color {
     Green,
     Red,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct ColorMap(DashMap<QueryKey, (Color, usize)>);
 
 impl ColorMap {
@@ -37,7 +36,7 @@ impl ColorMap {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct DepGraph {
     graph: RwLock<DiGraph<QueryKey, ()>>,
     indices: DashMap<QueryKey, NodeIndex>,
@@ -71,7 +70,7 @@ impl DepGraph {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Database {
     pub colors: ColorMap,
     pub revision: AtomicUsize,
@@ -85,12 +84,12 @@ pub struct Database {
 }
 
 impl Database {
-    pub fn intern<T: Output>(&self, value: T) -> Hash {
-        let hash = value.to_hash();
+    pub fn intern(&self, value: AnyOutput) -> Hash {
+        let hash = value.0.to_hash();
         let ty = value.type_id();
         if self
             .interned
-            .insert(hash, AnyOutput::new(value))
+            .insert(hash, value)
             .is_some_and(|old| old.type_id() != ty)
         {
             panic!("found hash collision at {hash:?}");
