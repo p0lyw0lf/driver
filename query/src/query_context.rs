@@ -11,12 +11,16 @@ use crate::query_key::QueryKey;
 #[derive(Default, Debug)]
 pub struct QueryContext {
     parent: Option<QueryKey>,
-    pub db: Arc<Database>,
+    pub(crate) db: Arc<Database>,
     dep_graph: Arc<DepGraph>,
 }
 
 impl QueryContext {
-    pub fn query(&self, key: QueryKey) -> anyhow::Result<AnyOutput> {
+    pub fn new_revision(&self) {
+        self.db.revision.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn query(&self, key: QueryKey) -> anyhow::Result<AnyOutput> {
         let revision = self.db.revision.load(Ordering::SeqCst);
         let update_value = |key: QueryKey| -> anyhow::Result<_> {
             if let Some(parent) = &self.parent {
@@ -41,6 +45,8 @@ impl QueryContext {
         let Some((_, rev)) = self.db.colors.get(&key) else {
             return update_value(key);
         };
+        // TODO: a global revision counter doesn't work, I'll need to find some way to be smarter
+        // about what I mark red automatically (somehow)
         if rev < revision {
             return update_value(key);
         }

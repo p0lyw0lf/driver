@@ -3,6 +3,8 @@ use dashmap::DashMap;
 use crate::files::ListDirectory;
 use crate::files::ReadFile;
 use crate::to_hash::ToHash;
+use crate::HashDirectory;
+use crate::HashFile;
 
 macro_rules! query_key {
     ($key:ident ($cache:ident) { $(
@@ -60,6 +62,10 @@ macro_rules! query_key {
 }
 
 query_key!(QueryKey (QueryCache) {
+    // long-term things
     read_file: ReadFile,
     list_directory: ListDirectory,
+    // short-term things to help with testing
+    hash_file: HashFile,
+    hash_directory: HashDirectory,
 });

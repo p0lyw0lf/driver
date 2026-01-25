@@ -10,7 +10,7 @@ mod query_key;
 mod to_hash;
 
 use dyn_clone::DynClone;
-use query_context::QueryContext;
+pub use query_context::QueryContext;
 use query_key::QueryKey;
 use sha2::Digest;
 
@@ -59,21 +59,41 @@ trait Producer {
     }
 }
 
-fn walk_impl(ctx: &QueryContext, dir: PathBuf) -> anyhow::Result<Hash> {
-    let mut hasher = sha2::Sha256::new();
-    let entries = files::ListDirectory(dir).query(ctx)?;
-    for entry in entries {
-        if entry.is_dir() {
-            let digest = walk_impl(ctx, entry.clone())?;
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
+struct HashDirectory(PathBuf);
+
+impl Producer for HashDirectory {
+    type Output = Hash;
+    fn produce(&self, ctx: &QueryContext) -> anyhow::Result<Self::Output> {
+        println!("hashing {}", self.0.display());
+        let mut hasher = sha2::Sha256::new();
+        let entries = files::ListDirectory(self.0.clone()).query(ctx)?;
+        for entry in entries {
+            let digest = if entry.is_dir() {
+                HashDirectory(entry.clone()).query(ctx)?
+            } else {
+                HashFile(entry.clone()).query(ctx)?
+            };
             hasher.update(digest);
-        } else {
-            let contents = files::ReadFile(entry.clone()).query(ctx)?;
-            hasher.update(contents.as_bytes());
-        };
+        }
+        Ok(hasher.finalize())
     }
-    Ok(hasher.finalize())
 }
 
-pub fn walk(dir: PathBuf) -> anyhow::Result<Hash> {
-    walk_impl(&QueryContext::default(), dir)
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
+struct HashFile(PathBuf);
+
+impl Producer for HashFile {
+    type Output = Hash;
+    fn produce(&self, ctx: &QueryContext) -> anyhow::Result<Self::Output> {
+        println!("hashing {}", self.0.display());
+        let mut hasher = sha2::Sha256::new();
+        let contents = files::ReadFile(self.0.clone()).query(ctx)?;
+        hasher.update(contents.as_bytes());
+        Ok(hasher.finalize())
+    }
+}
+
+pub fn walk(dir: PathBuf, ctx: &QueryContext) -> anyhow::Result<Hash> {
+    HashDirectory(dir).query(ctx)
 }

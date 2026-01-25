@@ -20,6 +20,13 @@ pub trait ToHash {
     }
 }
 
+impl ToHash for Hash {
+    fn run_hash(&self, hasher: &mut sha2::Sha256) {
+        hasher.update(b"Hash");
+        hasher.update(self);
+    }
+}
+
 macro_rules! wrapper {
     ($wrapper:ident) => {
         impl<A> ToHash for $wrapper<A>

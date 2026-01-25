@@ -16,7 +16,14 @@ fn main() -> std::io::Result<()> {
         }
     };
 
-    let digest = query::walk(filename.into());
+    let ctx = query::QueryContext::default();
+    let digest = query::walk(filename.into(), &ctx);
+    println!("{digest:?}");
+
+    std::io::stdin().read_line(&mut String::new())?;
+
+    ctx.new_revision();
+    let digest = query::walk(filename.into(), &ctx);
     println!("{digest:?}");
 
     Ok(())
