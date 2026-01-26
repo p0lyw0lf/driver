@@ -13,7 +13,7 @@ fn format_kvalue(value: &KValue) -> anyhow::Result<String> {
 
 fn main() -> anyhow::Result<()> {
     let mut koto = Koto::default();
-    let source = "let x = 42; || 1 + 1234";
+    let source = "let x = 42; let y = 56; || 1 + 1234";
     let chunk = koto.compile(source)?;
     let value = koto.run(chunk)?;
     println!(
@@ -44,6 +44,10 @@ fn main() -> anyhow::Result<()> {
             println!("chunk.constants: {:?}", f.chunk.constants);
             println!("chunk.path: {:?}", f.chunk.path);
             println!("chunk.debug_info: {:?}", f.chunk.path);
+            println!(
+                "chunk.bytes\n{}",
+                koto::bytecode::Chunk::bytes_as_string(&f.chunk)
+            );
             (f.ip, f.chunk.bytes.clone(), f.chunk.constants.clone())
         }
         _ => anyhow::bail!("not a function"),
@@ -68,13 +72,8 @@ fn main() -> anyhow::Result<()> {
         /* context: */ None,
     );
 
-    let mut value2 = koto.call_function(koto::runtime::KValue::Function(function2), &[])?;
-    println!("copied function: {value2:?}");
-
-    while let koto::runtime::KValue::Function(f3) = value2 {
-        value2 = koto.call_function(koto::runtime::KValue::Function(f3), &[])?;
-        println!("copied function (again): {value2:?}");
-    }
+    let value2 = koto.call_function(koto::runtime::KValue::Function(function2), &[])?;
+    println!("copied function: {}", format_kvalue(&value2)?);
 
     Ok(())
 }
