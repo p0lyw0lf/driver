@@ -2,6 +2,5 @@
 resolver = "1"
 members = [
   "driver_bin",
-  "engine",
   "query",
 ]

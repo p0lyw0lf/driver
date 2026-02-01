@@ -5,6 +5,8 @@ use std::sync::Arc;
 
 use sha2::Digest;
 
+pub mod koto;
+
 /// A sha256 digest is used as a key for _everything_ because it provides exact tracking of "thing
 /// has changed" with effectively zero false negatives.
 pub type Hash = sha2::digest::Output<sha2::Sha256>;
@@ -68,5 +70,11 @@ impl ToHash for PathBuf {
     fn run_hash(&self, hasher: &mut sha2::Sha256) {
         hasher.update(b"PathBuf");
         hasher.update(self.as_os_str().as_encoded_bytes());
+    }
+}
+
+impl ToHash for () {
+    fn run_hash(&self, hasher: &mut sha2::Sha256) {
+        hasher.update(b"()");
     }
 }

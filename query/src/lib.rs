@@ -10,12 +10,14 @@ mod query_key;
 mod to_hash;
 
 use dyn_clone::DynClone;
+use koto::Koto;
 pub use query_context::QueryContext;
 use query_key::QueryKey;
 use sha2::Digest;
 
 use crate::to_hash::Hash;
 use crate::to_hash::ToHash;
+use crate::to_hash::koto::HashedKFunction;
 
 /// NOTE: a newtype is needed to get around some associated type jank.
 #[derive(Clone, Debug)]
@@ -96,4 +98,51 @@ impl Producer for HashFile {
 
 pub fn walk(dir: PathBuf, ctx: &QueryContext) -> anyhow::Result<Hash> {
     HashDirectory(dir).query(ctx)
+}
+
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
+struct MemoizeKotoFunction(String);
+
+impl Producer for MemoizeKotoFunction {
+    type Output = ();
+    fn produce(&self, ctx: &QueryContext) -> anyhow::Result<Self::Output> {
+        let mut koto = Koto::default();
+        let value = koto.compile_and_run(&self.0)?;
+        let f = match value {
+            koto::runtime::KValue::Function(f) => f,
+            _ => anyhow::bail!("not a function"),
+        };
+
+        let h = HashedKFunction::Function(f);
+        RunKotoFunction(h).query(ctx)?;
+
+        Ok(())
+    }
+}
+
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
+struct RunKotoFunction(HashedKFunction);
+
+impl Producer for RunKotoFunction {
+    type Output = ();
+    fn produce(&self, _ctx: &QueryContext) -> anyhow::Result<Self::Output> {
+        match &self.0 {
+            HashedKFunction::Function(kfunction) => {
+                let mut koto = Koto::default();
+                let value =
+                    koto.call_function(koto::runtime::KValue::Function(kfunction.clone()), &[])?;
+                println!("value {value:?}");
+                Ok(())
+            }
+            HashedKFunction::Hash(_) => {
+                anyhow::bail!("cannot run hashed function")
+            }
+        }
+    }
+}
+
+pub fn koto(source: &str, ctx: &QueryContext) {
+    MemoizeKotoFunction(source.to_string())
+        .query(ctx)
+        .expect("failed to do the thing")
 }

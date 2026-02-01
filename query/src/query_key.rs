@@ -2,6 +2,8 @@ use dashmap::DashMap;
 
 use crate::HashDirectory;
 use crate::HashFile;
+use crate::MemoizeKotoFunction;
+use crate::RunKotoFunction;
 use crate::files::ListDirectory;
 use crate::files::ReadFile;
 use crate::to_hash::ToHash;
@@ -66,6 +68,8 @@ query_key!(QueryKey (QueryCache) {
     // long-term things
     read_file: ReadFile,
     list_directory: ListDirectory,
+    memoize_koto_function: MemoizeKotoFunction,
+    run_koto_function: RunKotoFunction,
     // short-term things to help with testing
     hash_file: HashFile,
     hash_directory: HashDirectory,
@@ -76,7 +80,10 @@ impl QueryKey {
     pub fn is_input(&self) -> bool {
         match self {
             QueryKey::ReadFile(_) | QueryKey::ListDirectory(_) => true,
-            QueryKey::HashFile(_) | QueryKey::HashDirectory(_) => false,
+            QueryKey::HashFile(_)
+            | QueryKey::HashDirectory(_)
+            | QueryKey::MemoizeKotoFunction(_)
+            | QueryKey::RunKotoFunction(_) => false,
         }
     }
 }
