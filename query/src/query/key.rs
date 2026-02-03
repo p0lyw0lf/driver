@@ -2,8 +2,6 @@ use dashmap::DashMap;
 
 use crate::HashDirectory;
 use crate::HashFile;
-use crate::MemoizeKotoFunction;
-use crate::RunKotoFunction;
 use crate::files::ListDirectory;
 use crate::files::ReadFile;
 use crate::to_hash::ToHash;
@@ -27,10 +25,10 @@ macro_rules! query_key {
 
 
         impl $crate::Producer for $key {
-            type Output = $crate::AnyOutput;
-            fn produce(&self, ctx: &$crate::QueryContext) -> anyhow::Result<Self::Output> {
+            type Output = $crate::query::context::AnyOutput;
+            fn produce(&self, ctx: &$crate::query::context::QueryContext) -> anyhow::Result<Self::Output> {
                 Ok(match self { $(
-                    Self::$type(v) => $crate::AnyOutput::new(v.produce(ctx)?),
+                    Self::$type(v) => $crate::query::context::AnyOutput::new(v.produce(ctx)?),
                 )* })
             }
         }
@@ -44,10 +42,10 @@ macro_rules! query_key {
             /// REQUIRES: value was produced by key.
             /// RETURNS: whether cache was busted, that is, whether the cache changed based on the
             /// new value.
-            pub fn insert(&self, key: QueryKey, value: $crate::AnyOutput) -> bool {
+            pub fn insert(&self, key: QueryKey, value: $crate::query::context::AnyOutput) -> bool {
                 match key { $(
                     $key::$type(key) => {
-                        let value: <$type as $crate::Producer>::Output = *value.downcast().expect("must be produced by key");
+                        let value: <$type as $crate::query::context::Producer>::Output = *value.downcast().expect("must be produced by key");
                         let hash = value.to_hash();
                         let old = self.$name.insert(key, value);
                         old.is_none_or(|old| old.to_hash() == hash)
@@ -55,9 +53,9 @@ macro_rules! query_key {
                 )* }
             }
 
-            pub fn get(&self, key: &QueryKey) -> Option<$crate::AnyOutput> {
+            pub fn get(&self, key: &QueryKey) -> Option<$crate::query::context::AnyOutput> {
                 match key { $(
-                    $key::$type(key) => self.$name.get(key).map(|v| $crate::AnyOutput::new(v.clone())),
+                    $key::$type(key) => self.$name.get(key).map(|v| $crate::query::context::AnyOutput::new(v.clone())),
                 )* }
             }
         }
@@ -68,8 +66,6 @@ query_key!(QueryKey (QueryCache) {
     // long-term things
     read_file: ReadFile,
     list_directory: ListDirectory,
-    memoize_koto_function: MemoizeKotoFunction,
-    run_koto_function: RunKotoFunction,
     // short-term things to help with testing
     hash_file: HashFile,
     hash_directory: HashDirectory,
@@ -80,10 +76,7 @@ impl QueryKey {
     pub fn is_input(&self) -> bool {
         match self {
             QueryKey::ReadFile(_) | QueryKey::ListDirectory(_) => true,
-            QueryKey::HashFile(_)
-            | QueryKey::HashDirectory(_)
-            | QueryKey::MemoizeKotoFunction(_)
-            | QueryKey::RunKotoFunction(_) => false,
+            QueryKey::HashFile(_) | QueryKey::HashDirectory(_) => false,
         }
     }
 }

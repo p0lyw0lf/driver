@@ -17,13 +17,6 @@ fn main() -> std::io::Result<()> {
     };
 
     let ctx = query::QueryContext::default();
-
-    if filename == "koto" {
-        query::koto("let x = 1; let y = 1; || 1 + 2", &ctx);
-        query::koto("|| 1 + 2", &ctx);
-        return Ok(());
-    }
-
     let digest = query::walk(filename.into(), &ctx);
     println!("{digest:?}");
 

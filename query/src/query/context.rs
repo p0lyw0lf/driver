@@ -1,12 +1,58 @@
+use std::any::Any;
+use std::any::TypeId;
+use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use crate::AnyOutput;
-use crate::Producer;
+use dyn_clone::DynClone;
+
 use crate::db::Color;
 use crate::db::Database;
 use crate::db::DepGraph;
-use crate::query_key::QueryKey;
+use crate::query::key::QueryKey;
+use crate::to_hash::ToHash;
+
+/// NOTE: a newtype is needed to get around some associated type jank.
+#[derive(Clone, Debug)]
+pub struct AnyOutput(pub Box<dyn Output>);
+pub trait Output: ToHash + DynClone + Any + Debug {}
+dyn_clone::clone_trait_object!(Output);
+impl<T> Output for T where T: ToHash + DynClone + Any + Debug {}
+impl ToHash for AnyOutput {
+    fn run_hash(&self, hasher: &mut sha2::Sha256) {
+        // no prefix because we _do_ want this to be treated as the underlying value.
+        self.0.run_hash(hasher);
+    }
+}
+impl AnyOutput {
+    pub fn new(t: impl Output) -> Self {
+        if t.type_id() == TypeId::of::<AnyOutput>() {
+            panic!("tried to put box inside of box");
+        }
+        Self(Box::new(t))
+    }
+    pub fn downcast<T: Output>(self) -> Option<Box<T>> {
+        (self.0 as Box<dyn Any>).downcast().ok()
+    }
+}
+
+pub trait Producer {
+    // NOTE: in order to make the lifetimes work out, we really really want it such that the output
+    // is easily clone-able. This will eventually require string interning somewhere, not quite
+    // sure where yet.
+    type Output: Output + Sized + 'static;
+    fn produce(&self, ctx: &QueryContext) -> anyhow::Result<Self::Output>;
+    fn query(self, ctx: &QueryContext) -> anyhow::Result<Self::Output>
+    where
+        Self: Sized,
+        QueryKey: From<Self>,
+    {
+        let value = ctx.query(self.into())?;
+        Ok(*value
+            .downcast()
+            .expect("query produced wrong value somehow"))
+    }
+}
 
 #[derive(Default, Debug)]
 pub struct QueryContext {

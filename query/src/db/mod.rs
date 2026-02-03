@@ -6,7 +6,7 @@ use petgraph::graph::DiGraph;
 use petgraph::graph::NodeIndex;
 
 use crate::QueryKey;
-use crate::query_key::QueryCache;
+use crate::query::key::QueryCache;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Color {

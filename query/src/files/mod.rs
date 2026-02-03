@@ -1,11 +1,12 @@
 use std::path::PathBuf;
 
-use crate::QueryContext;
+use crate::query::context::Producer;
+use crate::query::context::QueryContext;
 
 #[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub struct ReadFile(pub PathBuf);
 
-impl crate::Producer for ReadFile {
+impl Producer for ReadFile {
     type Output = String;
     fn produce(&self, _ctx: &QueryContext) -> anyhow::Result<Self::Output> {
         // println!("reading: {}", self.0.display());
@@ -16,7 +17,7 @@ impl crate::Producer for ReadFile {
 #[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub struct ListDirectory(pub PathBuf);
 
-impl crate::Producer for ListDirectory {
+impl Producer for ListDirectory {
     type Output = Vec<PathBuf>;
     fn produce(&self, _ctx: &QueryContext) -> anyhow::Result<Self::Output> {
         // println!("walking: {}", self.0.display());
