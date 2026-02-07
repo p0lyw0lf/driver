@@ -1,24 +1,28 @@
 use std::fmt::Debug;
 use std::path::PathBuf;
 
+use sha2::Digest;
+
 mod db;
+mod error;
 mod files;
 mod query;
 mod to_hash;
 
+pub use error::Error;
+use query::context::Producer;
 pub use query::context::QueryContext;
 use query::key::QueryKey;
-use sha2::Digest;
+use to_hash::Hash;
 
-use crate::query::context::Producer;
-use crate::to_hash::Hash;
+pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Hash, PartialEq, Eq, Clone, Debug)]
 struct HashDirectory(PathBuf);
 
 impl Producer for HashDirectory {
-    type Output = Hash;
-    fn produce(&self, ctx: &QueryContext) -> anyhow::Result<Self::Output> {
+    type Output = Result<Hash>;
+    fn produce(&self, ctx: &QueryContext) -> Self::Output {
         println!("hashing {}", self.0.display());
         let mut hasher = sha2::Sha256::new();
         let entries = files::ListDirectory(self.0.clone()).query(ctx)?;
@@ -38,8 +42,8 @@ impl Producer for HashDirectory {
 struct HashFile(PathBuf);
 
 impl Producer for HashFile {
-    type Output = Hash;
-    fn produce(&self, ctx: &QueryContext) -> anyhow::Result<Self::Output> {
+    type Output = Result<Hash>;
+    fn produce(&self, ctx: &QueryContext) -> Self::Output {
         println!("hashing {}", self.0.display());
         let mut hasher = sha2::Sha256::new();
         let contents = files::ReadFile(self.0.clone()).query(ctx)?;
@@ -48,6 +52,6 @@ impl Producer for HashFile {
     }
 }
 
-pub fn walk(dir: PathBuf, ctx: &QueryContext) -> anyhow::Result<Hash> {
+pub fn walk(dir: PathBuf, ctx: &QueryContext) -> crate::Result<Hash> {
     HashDirectory(dir).query(ctx)
 }

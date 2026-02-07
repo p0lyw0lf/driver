@@ -26,10 +26,10 @@ macro_rules! query_key {
 
         impl $crate::Producer for $key {
             type Output = $crate::query::context::AnyOutput;
-            fn produce(&self, ctx: &$crate::query::context::QueryContext) -> anyhow::Result<Self::Output> {
-                Ok(match self { $(
-                    Self::$type(v) => $crate::query::context::AnyOutput::new(v.produce(ctx)?),
-                )* })
+            fn produce(&self, ctx: &$crate::query::context::QueryContext) -> Self::Output {
+                match self { $(
+                    Self::$type(v) => $crate::query::context::AnyOutput::new(v.produce(ctx)),
+                )* }
             }
         }
 

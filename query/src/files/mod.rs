@@ -7,8 +7,8 @@ use crate::query::context::QueryContext;
 pub struct ReadFile(pub PathBuf);
 
 impl Producer for ReadFile {
-    type Output = String;
-    fn produce(&self, _ctx: &QueryContext) -> anyhow::Result<Self::Output> {
+    type Output = crate::Result<String>;
+    fn produce(&self, _ctx: &QueryContext) -> Self::Output {
         // println!("reading: {}", self.0.display());
         Ok(String::from_utf8(std::fs::read(&self.0)?)?)
     }
@@ -18,8 +18,8 @@ impl Producer for ReadFile {
 pub struct ListDirectory(pub PathBuf);
 
 impl Producer for ListDirectory {
-    type Output = Vec<PathBuf>;
-    fn produce(&self, _ctx: &QueryContext) -> anyhow::Result<Self::Output> {
+    type Output = crate::Result<Vec<PathBuf>>;
+    fn produce(&self, _ctx: &QueryContext) -> Self::Output {
         // println!("walking: {}", self.0.display());
         let walk = ignore::WalkBuilder::new(&self.0)
             .max_depth(Some(1))

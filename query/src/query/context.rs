@@ -41,16 +41,16 @@ pub trait Producer {
     // is easily clone-able. This will eventually require string interning somewhere, not quite
     // sure where yet.
     type Output: Output + Sized + 'static;
-    fn produce(&self, ctx: &QueryContext) -> anyhow::Result<Self::Output>;
-    fn query(self, ctx: &QueryContext) -> anyhow::Result<Self::Output>
+    fn produce(&self, ctx: &QueryContext) -> Self::Output;
+    fn query(self, ctx: &QueryContext) -> Self::Output
     where
         Self: Sized,
         QueryKey: From<Self>,
     {
-        let value = ctx.query(self.into())?;
-        Ok(*value
+        let value = ctx.query(self.into());
+        *value
             .downcast()
-            .expect("query produced wrong value somehow"))
+            .expect("query produced wrong value somehow")
     }
 }
 
@@ -66,9 +66,9 @@ impl QueryContext {
         self.db.revision.fetch_add(1, Ordering::SeqCst);
     }
 
-    pub(crate) fn query(&self, key: QueryKey) -> anyhow::Result<AnyOutput> {
+    pub(crate) fn query(&self, key: QueryKey) -> AnyOutput {
         let revision = self.db.revision.load(Ordering::SeqCst);
-        let update_value = |key: QueryKey| -> anyhow::Result<_> {
+        let update_value = |key: QueryKey| {
             if let Some(parent) = &self.parent {
                 self.dep_graph.add_dependency(parent.clone(), key.clone());
             }
@@ -77,7 +77,7 @@ impl QueryContext {
                 parent: Some(key.clone()),
                 db: self.db.clone(),
                 dep_graph: self.dep_graph.clone(),
-            })?;
+            });
 
             if self.db.cache.insert(key.clone(), value.clone()) {
                 // println!("marked green {key:?}");
@@ -87,7 +87,7 @@ impl QueryContext {
                 self.db.colors.mark_red(&key, revision);
             }
 
-            Ok(value)
+            value
         };
 
         let Some((_, rev)) = self.db.colors.get(&key) else {
@@ -99,14 +99,13 @@ impl QueryContext {
             return update_value(key);
         }
 
-        match self.try_mark_green(key.clone())? {
+        match self.try_mark_green(key.clone()) {
             Color::Green => {
                 // println!("marked green after trying {key:?}");
-                Ok(self
-                    .db
+                self.db
                     .cache
                     .get(&key)
-                    .unwrap_or_else(|| panic!("Green query {:?} missing value in cache", key)))
+                    .unwrap_or_else(|| panic!("Green query {:?} missing value in cache", key))
             }
             Color::Red => {
                 // println!("marked red after trying {key:?}");
@@ -115,12 +114,12 @@ impl QueryContext {
         }
     }
 
-    fn try_mark_green(&self, key: QueryKey) -> anyhow::Result<Color> {
+    fn try_mark_green(&self, key: QueryKey) -> Color {
         let revision = self.db.revision.load(Ordering::SeqCst);
         // If we have no dependencies in the graph, assume we need to run the query.
         let Some(deps) = self.dep_graph.dependencies(&key) else {
             // println!("no dependencies found {key:?}");
-            return Ok(Color::Red);
+            return Color::Red;
         };
         // println!("dependencies {deps:?} for key {key:?}");
         for dep in deps {
@@ -133,11 +132,11 @@ impl QueryContext {
                 // Out-of-date dependency, we must also be out-of-date
                 Some((Color::Red, _)) => {
                     // println!("dependency {dep:?} was outdated for {key:?}");
-                    return Ok(Color::Red);
+                    return Color::Red;
                 }
                 _ => {
-                    if dep.is_input() || self.try_mark_green(dep.clone())? != Color::Green {
-                        let _ = self.query(dep.clone())?;
+                    if dep.is_input() || self.try_mark_green(dep.clone()) != Color::Green {
+                        let _ = self.query(dep.clone());
                         // Because we just ran the query, we can be sure the revision is
                         // up-to-date.
                         match self.db.colors.get(&dep) {
@@ -147,7 +146,7 @@ impl QueryContext {
                             }
                             Some((Color::Red, _)) => {
                                 // println!("dependency {dep:?} was still outdated for {key:?}");
-                                return Ok(Color::Red);
+                                return Color::Red;
                             }
                             None => unreachable!("we just ran the query"),
                         }
@@ -160,6 +159,6 @@ impl QueryContext {
 
         // If we marked all dependencies as green, mark this node green too.
         self.db.colors.mark_green(&key, revision);
-        Ok(Color::Green)
+        Color::Green
     }
 }

@@ -22,8 +22,9 @@ pub trait ToHash {
 
 impl ToHash for Hash {
     fn run_hash(&self, hasher: &mut sha2::Sha256) {
-        hasher.update(b"Hash");
+        hasher.update(b"Hash(");
         hasher.update(self);
+        hasher.update(b")");
     }
 }
 
@@ -50,24 +51,48 @@ where
     A: ToHash,
 {
     fn run_hash(&self, hasher: &mut sha2::Sha256) {
-        hasher.update(b"Vec");
+        hasher.update(b"Vec[");
         for a in self.iter() {
             a.run_hash(hasher);
+        }
+        hasher.update(b"]");
+    }
+}
+
+impl<T, E> ToHash for Result<T, E>
+where
+    T: ToHash,
+    E: ToHash,
+{
+    fn run_hash(&self, hasher: &mut sha2::Sha256) {
+        match self {
+            Ok(t) => {
+                hasher.update(b"Result::Ok(");
+                t.run_hash(hasher);
+                hasher.update(b")");
+            }
+            Err(e) => {
+                hasher.update(b"Result::Err(");
+                e.run_hash(hasher);
+                hasher.update(b")");
+            }
         }
     }
 }
 
 impl ToHash for String {
     fn run_hash(&self, hasher: &mut sha2::Sha256) {
-        hasher.update(b"String");
+        hasher.update(b"String(");
         hasher.update(self.as_bytes());
+        hasher.update(b")");
     }
 }
 
 impl ToHash for PathBuf {
     fn run_hash(&self, hasher: &mut sha2::Sha256) {
-        hasher.update(b"PathBuf");
+        hasher.update(b"PathBuf(");
         hasher.update(self.as_os_str().as_encoded_bytes());
+        hasher.update(b")");
     }
 }
 
