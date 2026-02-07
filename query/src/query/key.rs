@@ -4,6 +4,7 @@ use crate::HashDirectory;
 use crate::HashFile;
 use crate::files::ListDirectory;
 use crate::files::ReadFile;
+use crate::js::RunFile;
 use crate::to_hash::ToHash;
 
 macro_rules! query_key {
@@ -66,6 +67,7 @@ query_key!(QueryKey (QueryCache) {
     // long-term things
     read_file: ReadFile,
     list_directory: ListDirectory,
+    run_file: RunFile,
     // short-term things to help with testing
     hash_file: HashFile,
     hash_directory: HashDirectory,
@@ -76,7 +78,7 @@ impl QueryKey {
     pub fn is_input(&self) -> bool {
         match self {
             QueryKey::ReadFile(_) | QueryKey::ListDirectory(_) => true,
-            QueryKey::HashFile(_) | QueryKey::HashDirectory(_) => false,
+            QueryKey::RunFile(_) | QueryKey::HashFile(_) | QueryKey::HashDirectory(_) => false,
         }
     }
 }

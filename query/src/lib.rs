@@ -6,6 +6,7 @@ use sha2::Digest;
 mod db;
 mod error;
 mod files;
+mod js;
 mod query;
 mod to_hash;
 
@@ -47,11 +48,15 @@ impl Producer for HashFile {
         println!("hashing {}", self.0.display());
         let mut hasher = sha2::Sha256::new();
         let contents = files::ReadFile(self.0.clone()).query(ctx)?;
-        hasher.update(contents.as_bytes());
+        hasher.update(&contents[..]);
         Ok(hasher.finalize())
     }
 }
 
 pub fn walk(dir: PathBuf, ctx: &QueryContext) -> crate::Result<Hash> {
     HashDirectory(dir).query(ctx)
+}
+
+pub fn run(file: PathBuf, ctx: &QueryContext) -> crate::Result<()> {
+    js::RunFile(file).query(ctx)
 }

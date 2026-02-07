@@ -101,3 +101,9 @@ impl ToHash for () {
         hasher.update(b"()");
     }
 }
+
+impl ToHash for u8 {
+    fn run_hash(&self, hasher: &mut sha2::Sha256) {
+        hasher.update([*self]);
+    }
+}

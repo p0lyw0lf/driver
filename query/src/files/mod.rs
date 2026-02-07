@@ -7,10 +7,10 @@ use crate::query::context::QueryContext;
 pub struct ReadFile(pub PathBuf);
 
 impl Producer for ReadFile {
-    type Output = crate::Result<String>;
+    type Output = crate::Result<Vec<u8>>;
     fn produce(&self, _ctx: &QueryContext) -> Self::Output {
         // println!("reading: {}", self.0.display());
-        Ok(String::from_utf8(std::fs::read(&self.0)?)?)
+        Ok(std::fs::read(&self.0)?)
     }
 }
 
