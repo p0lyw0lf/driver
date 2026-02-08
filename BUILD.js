@@ -1,7 +1,8 @@
 import { read_file, list_directory, queue_task } from "memoized";
 import { file_type } from "io";
 
-const [dir] = ARGS ?? ["."]; 
+/** @type {Array.<string>} */
+const [dir] = ARGS ?? ["."];
 
 for (const entry of list_directory(dir)) {
   if (file_type(entry) === "dir") {

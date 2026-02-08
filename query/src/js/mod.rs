@@ -69,6 +69,7 @@ unsafe fn push_task(task: RunFile) {
 
 #[rquickjs::module]
 mod memoized {
+    use rquickjs::Ctx;
     use std::path::PathBuf;
 
     use super::get_context;
@@ -80,14 +81,17 @@ mod memoized {
     };
 
     #[rquickjs::function]
-    pub fn read_file(filename: String) -> rquickjs::Result<Vec<u8>> {
+    pub fn read_file(
+        js_ctx: Ctx<'_>,
+        filename: String,
+    ) -> rquickjs::Result<rquickjs::TypedArray<'_, u8>> {
         // SAFETY: the only way these javascript functions get called is from inside a
         // `with_query_context()`
         let ctx = unsafe { &*get_context()? };
         let contents = ReadFile(PathBuf::from(filename))
             .query(ctx)
             .map_err(|_| rquickjs::Error::Exception)?;
-        Ok(contents)
+        rquickjs::TypedArray::new(js_ctx, contents)
     }
 
     #[rquickjs::function]
@@ -138,6 +142,14 @@ mod io {
             "unknown"
         }
         .to_string())
+    }
+
+    #[rquickjs::function]
+    pub fn write_output(
+        name: String,
+        content: rquickjs::TypedArray<'_, u8>,
+    ) -> rquickjs::Result<()> {
+        todo!()
     }
 }
 
