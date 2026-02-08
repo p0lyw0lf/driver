@@ -1,4 +1,7 @@
 use rquickjs::{FromJs, IntoJs, Value as JsValue};
+use sha2::Digest;
+
+use crate::to_hash::ToHash;
 
 /// All the simple javascript values that can be serialized/deserialized losslessly
 #[derive(Hash, PartialEq, Eq, Debug, Clone)]
@@ -85,6 +88,37 @@ impl<'js> IntoJs<'js> for RustValue {
             RustValue::Int(i) => i.into_js(ctx),
             RustValue::String(s) => s.into_js(ctx),
             RustValue::Array(values) => values.into_js(ctx),
+        }
+    }
+}
+
+impl ToHash for RustValue {
+    fn run_hash(&self, hasher: &mut sha2::Sha256) {
+        match self {
+            RustValue::Undefined => hasher.update(b"RustValue::Undefined"),
+            RustValue::Null => hasher.update(b"RustValue::Null"),
+            RustValue::Bool(b) => {
+                hasher.update(b"RustValue::Bool(");
+                hasher.update([if *b { 255 } else { 0 }]);
+                hasher.update(b")");
+            }
+            RustValue::Int(i) => {
+                hasher.update(b"RustValue::Int(");
+                hasher.update(i.to_le_bytes());
+                hasher.update(b")");
+            }
+            RustValue::String(s) => {
+                hasher.update(b"RustValue::String(");
+                hasher.update(s.as_bytes());
+                hasher.update(b")");
+            }
+            RustValue::Array(vs) => {
+                hasher.update(b"RustValue::Array(");
+                for v in vs.iter() {
+                    v.run_hash(hasher);
+                }
+                hasher.update(b")");
+            }
         }
     }
 }

@@ -16,6 +16,7 @@ mod value;
 struct ContextFrame {
     curr: *const QueryContext,
     prev: Option<Box<ContextFrame>>,
+    task_queue: Vec<RunFile>,
 }
 
 thread_local! {
@@ -27,10 +28,17 @@ thread_local! {
 /// Runs a closure with a QueryContext pushed onto the stack. All calls to `get_context()` that run
 /// as a result of that closure will access this ctx object. Therefore, all pointer accesses from
 /// `get_context()` have safety ensured as a result of running in this function.
-fn with_query_context<T>(ctx: &QueryContext, f: impl FnOnce() -> T) -> T {
+fn with_query_context<T>(
+    ctx: &QueryContext,
+    f: impl FnOnce() -> crate::Result<T>,
+) -> crate::Result<(T, Vec<RunFile>)> {
     let prev = QUERY_CONTEXT.take().map(Box::new);
     let curr = ctx as *const _;
-    let new_frame = ContextFrame { curr, prev };
+    let new_frame = ContextFrame {
+        curr,
+        prev,
+        task_queue: vec![],
+    };
     QUERY_CONTEXT.set(Some(new_frame));
 
     let out = f();
@@ -39,7 +47,7 @@ fn with_query_context<T>(ctx: &QueryContext, f: impl FnOnce() -> T) -> T {
     assert!(std::ptr::eq(curr, popped.curr));
     QUERY_CONTEXT.set(popped.prev.map(|x| *x));
 
-    out
+    out.map(|t| (t, popped.task_queue))
 }
 
 /// Only safe to dereference the returned pointer if running inside a call to `with_context()`.
@@ -50,6 +58,15 @@ fn get_context() -> rquickjs::Result<*const QueryContext> {
     })
 }
 
+/// SAFETY: only safe to call when running inside `with_query_context()`
+unsafe fn push_task(task: RunFile) {
+    QUERY_CONTEXT.with_borrow_mut(|ctx| {
+        ctx.as_mut().map(|ctx| {
+            ctx.task_queue.push(task);
+        })
+    });
+}
+
 #[rquickjs::module]
 mod memoized {
     use std::path::PathBuf;
@@ -58,12 +75,14 @@ mod memoized {
     use super::value::RustValue;
     use crate::{
         files::{ListDirectory, ReadFile},
-        js::RunFile,
+        js::{RunFile, push_task},
         query::context::Producer,
     };
 
     #[rquickjs::function]
     pub fn read_file(filename: String) -> rquickjs::Result<Vec<u8>> {
+        // SAFETY: the only way these javascript functions get called is from inside a
+        // `with_query_context()`
         let ctx = unsafe { &*get_context()? };
         let contents = ReadFile(PathBuf::from(filename))
             .query(ctx)
@@ -73,6 +92,8 @@ mod memoized {
 
     #[rquickjs::function]
     pub fn list_directory(dirname: String) -> rquickjs::Result<Vec<String>> {
+        // SAFETY: the only way these javascript functions get called is from inside a
+        // `with_query_context()`
         let ctx = unsafe { &*get_context()? };
         let contents = ListDirectory(PathBuf::from(dirname))
             .query(ctx)
@@ -84,18 +105,15 @@ mod memoized {
     }
 
     #[rquickjs::function]
-    pub fn run(filename: String, arg: String) -> rquickjs::Result<()> {
-        let ctx = unsafe { &*get_context()? };
-        // TODO: it looks like we can't be re-entrant here. rquickjs only wants a single "Ctx<'_>"
-        // around at once, because it doesn't like us holding the lock for longer than we have to.
-        // Unfortunately I do want to be re-entrant with it, so I'll have to look into other
-        // solutions. Like holding the lock by force.
-        RunFile {
-            file: PathBuf::from(filename),
-            args: Some(RustValue::Array(vec![RustValue::String(arg)])),
+    pub fn queue_task(filename: String, args: Option<RustValue>) -> rquickjs::Result<()> {
+        // SAFETY: the only way these javascript functions get called is from inside a
+        // `with_query_context()`
+        unsafe {
+            push_task(RunFile {
+                file: PathBuf::from(filename),
+                args,
+            });
         }
-        .query(ctx)
-        .map_err(|_| rquickjs::Error::Exception)?;
 
         Ok(())
     }
@@ -150,26 +168,24 @@ pub struct RunFile {
 }
 
 impl Producer for RunFile {
-    type Output = crate::Result<()>;
+    type Output = crate::Result<RustValue>;
     fn produce(&self, ctx: &QueryContext) -> Self::Output {
         let name = self.file.display().to_string();
         println!("running {name}");
         let contents = ReadFile(self.file.clone()).query(ctx)?;
         let contents = String::from_utf8(contents)?;
 
-        with_query_context(ctx, || -> crate::Result<_> {
-            CONTEXT.with_borrow(|js_ctx| -> crate::Result<_> {
-                js_ctx.with(|js_ctx| -> crate::Result<_> {
-                    let globals = js_ctx.globals();
+        let (value, tasks) = with_query_context(ctx, || -> crate::Result<_> {
+            CONTEXT.with_borrow(|ctx| {
+                ctx.with(|ctx| -> crate::Result<_> {
+                    let globals = ctx.globals();
                     globals
                         .set(
                             "print",
-                            rquickjs::Function::new(js_ctx.clone(), |msg: String| {
-                                println!("{msg}")
-                            })
-                            .unwrap()
-                            .with_name("print")
-                            .unwrap(),
+                            rquickjs::Function::new(ctx.clone(), |msg: String| println!("{msg}"))
+                                .unwrap()
+                                .with_name("print")
+                                .unwrap(),
                         )
                         .unwrap();
 
@@ -177,18 +193,26 @@ impl Producer for RunFile {
                         .set(
                             "ARGS",
                             match &self.args {
-                                Some(args) => args.clone().into_js(&js_ctx).unwrap(),
-                                None => Value::new_undefined(js_ctx.clone()),
+                                Some(args) => args.clone().into_js(&ctx).unwrap(),
+                                None => Value::new_undefined(ctx.clone()),
                             },
                         )
                         .unwrap();
-                    Module::evaluate(js_ctx.clone(), "example", contents)?.finish::<()>()?;
-                    Ok(())
+
+                    let module = Module::declare(ctx.clone(), name, contents)?;
+                    let (module, promise) = module.eval()?;
+                    promise.finish::<()>()?;
+
+                    let value: RustValue = module.get(rquickjs::atom::PredefinedAtom::Default)?;
+                    Ok(value)
                 })
             })
         })?;
 
-        println!("done running");
-        Ok(())
+        for task in tasks {
+            task.query(ctx)?;
+        }
+
+        Ok(value)
     }
 }

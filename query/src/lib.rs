@@ -58,5 +58,7 @@ pub fn walk(dir: PathBuf, ctx: &QueryContext) -> crate::Result<Hash> {
 }
 
 pub fn run(file: PathBuf, ctx: &QueryContext) -> crate::Result<()> {
-    js::RunFile { file, args: None }.query(ctx)
+    let v = js::RunFile { file, args: None }.query(ctx);
+    println!("{v:?}");
+    Ok(())
 }
