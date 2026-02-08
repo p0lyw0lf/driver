@@ -10,5 +10,8 @@ pkgs.mkShell {
     python3
     # For debugging
     vscode-extensions.vadimcn.vscode-lldb.adapter
+    # For developing
+    typescript-language-server
+    prettier
   ];
 }
