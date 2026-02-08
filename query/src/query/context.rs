@@ -69,6 +69,8 @@ impl QueryContext {
     pub(crate) fn query(&self, key: QueryKey) -> AnyOutput {
         let revision = self.db.revision.load(Ordering::SeqCst);
         let update_value = |key: QueryKey| {
+            // We're about to run the key again, so remove any dependencies it once had
+            self.dep_graph.remove_all_dependencies(key.clone());
             if let Some(parent) = &self.parent {
                 self.dep_graph.add_dependency(parent.clone(), key.clone());
             }

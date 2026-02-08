@@ -57,6 +57,17 @@ impl DepGraph {
         self.graph.write().unwrap().update_edge(from, to, ());
     }
 
+    pub fn remove_all_dependencies(&self, from: QueryKey) {
+        let from = self.node_for(from);
+        self.graph
+            .write()
+            .unwrap()
+            .retain_edges(|this, edge_index| {
+                let (edge_from, _) = &this.edge_endpoints(edge_index).unwrap();
+                *edge_from != from
+            });
+    }
+
     pub fn dependencies(&self, key: &QueryKey) -> Option<Vec<QueryKey>> {
         self.indices.get(key).map(|key| {
             let graph = self.graph.read().unwrap();
