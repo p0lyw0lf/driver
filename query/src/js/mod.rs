@@ -1,15 +1,17 @@
 use std::{cell::RefCell, path::PathBuf};
 
 use rquickjs::{
-    Context, Module, Runtime,
-    context::intrinsic,
+    Context, IntoJs, Module, Runtime, Value,
     loader::{BuiltinResolver, ModuleLoader},
 };
 
 use crate::{
     files::ReadFile,
+    js::value::RustValue,
     query::context::{Producer, QueryContext},
 };
+
+mod value;
 
 struct ContextFrame {
     curr: *const QueryContext,
@@ -49,13 +51,14 @@ fn get_context() -> rquickjs::Result<*const QueryContext> {
 }
 
 #[rquickjs::module]
-#[allow(non_upper_case_globals)]
-mod builtins {
+mod memoized {
     use std::path::PathBuf;
 
     use super::get_context;
+    use super::value::RustValue;
     use crate::{
         files::{ListDirectory, ReadFile},
+        js::RunFile,
         query::context::Producer,
     };
 
@@ -79,12 +82,51 @@ mod builtins {
             .collect();
         Ok(contents)
     }
+
+    #[rquickjs::function]
+    pub fn run(filename: String, arg: String) -> rquickjs::Result<()> {
+        let ctx = unsafe { &*get_context()? };
+        // TODO: it looks like we can't be re-entrant here. rquickjs only wants a single "Ctx<'_>"
+        // around at once, because it doesn't like us holding the lock for longer than we have to.
+        // Unfortunately I do want to be re-entrant with it, so I'll have to look into other
+        // solutions. Like holding the lock by force.
+        RunFile {
+            file: PathBuf::from(filename),
+            args: Some(RustValue::Array(vec![RustValue::String(arg)])),
+        }
+        .query(ctx)
+        .map_err(|_| rquickjs::Error::Exception)?;
+
+        Ok(())
+    }
+}
+
+#[rquickjs::module]
+mod io {
+    use std::path::PathBuf;
+
+    #[rquickjs::function]
+    pub fn file_type(entry_name: String) -> rquickjs::Result<String> {
+        let metadata =
+            std::fs::metadata(PathBuf::from(entry_name)).map_err(|_| rquickjs::Error::Exception)?;
+
+        Ok(if metadata.is_file() {
+            "file"
+        } else if metadata.is_dir() {
+            "dir"
+        } else if metadata.is_symlink() {
+            "symlink"
+        } else {
+            "unknown"
+        }
+        .to_string())
+    }
 }
 
 thread_local! {
     static RUNTIME: RefCell<Runtime> = RefCell::new({
-        let resolver = (BuiltinResolver::default().with_module("bundle/driver"),);
-        let loader = (ModuleLoader::default().with_module("bundle/driver", js_builtins),);
+        let resolver = (BuiltinResolver::default().with_module("io").with_module("memoized"),);
+        let loader = (ModuleLoader::default().with_module("io", js_io).with_module("memoized", js_memoized),);
 
         let runtime = Runtime::new().expect("not enough memory?");
         runtime.set_loader(resolver, loader);
@@ -93,38 +135,60 @@ thread_local! {
 
     static CONTEXT: RefCell<Context> = RefCell::new({
         RUNTIME.with_borrow(|runtime| {
-            Context::builder()
-                .with::<intrinsic::BigInt>()
-                .with::<intrinsic::Date>()
-                .with::<intrinsic::Json>()
-                .with::<intrinsic::MapSet>()
-                .with::<intrinsic::RegExp>()
-                .build(runtime)
+            // TODO: it seems rquickjs isn't happy if it doesn't have the full set of features. Not
+            // that there's any IO features in here besides those we allow it, but ah well
+            Context::full(runtime)
                 .expect("context failed to build")
         })
     });
 }
 
 #[derive(Hash, PartialEq, Eq, Clone, Debug)]
-pub struct RunFile(pub PathBuf);
+pub struct RunFile {
+    pub file: PathBuf,
+    pub args: Option<RustValue>,
+}
 
 impl Producer for RunFile {
     type Output = crate::Result<()>;
     fn produce(&self, ctx: &QueryContext) -> Self::Output {
-        let name = self.0.display().to_string();
+        let name = self.file.display().to_string();
         println!("running {name}");
-        let contents = ReadFile(self.0.clone()).query(ctx)?;
+        let contents = ReadFile(self.file.clone()).query(ctx)?;
         let contents = String::from_utf8(contents)?;
 
         with_query_context(ctx, || -> crate::Result<_> {
             CONTEXT.with_borrow(|js_ctx| -> crate::Result<_> {
                 js_ctx.with(|js_ctx| -> crate::Result<_> {
-                    Module::evaluate(js_ctx, name, contents)?.finish::<()>()?;
+                    let globals = js_ctx.globals();
+                    globals
+                        .set(
+                            "print",
+                            rquickjs::Function::new(js_ctx.clone(), |msg: String| {
+                                println!("{msg}")
+                            })
+                            .unwrap()
+                            .with_name("print")
+                            .unwrap(),
+                        )
+                        .unwrap();
+
+                    globals
+                        .set(
+                            "ARGS",
+                            match &self.args {
+                                Some(args) => args.clone().into_js(&js_ctx).unwrap(),
+                                None => Value::new_undefined(js_ctx.clone()),
+                            },
+                        )
+                        .unwrap();
+                    Module::evaluate(js_ctx.clone(), "example", contents)?.finish::<()>()?;
                     Ok(())
                 })
             })
         })?;
 
+        println!("done running");
         Ok(())
     }
 }

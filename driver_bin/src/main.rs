@@ -37,6 +37,7 @@ fn main() -> std::io::Result<()> {
         }
 
         ctx.new_revision();
+        println!("running again");
         run();
     }
 }
