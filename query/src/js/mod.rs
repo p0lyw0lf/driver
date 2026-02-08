@@ -6,9 +6,9 @@ use rquickjs::{
 };
 
 use crate::{
-    files::ReadFile,
     js::value::RustValue,
     query::context::{Producer, QueryContext},
+    query::files::ReadFile,
 };
 
 mod value;
@@ -67,17 +67,22 @@ unsafe fn push_task(task: RunFile) {
     });
 }
 
+fn error_message(message: &str) -> rquickjs::Error {
+    rquickjs::Error::Io(std::io::Error::other(message))
+}
+
 #[rquickjs::module]
 mod memoized {
     use rquickjs::Ctx;
     use std::path::PathBuf;
 
+    use super::error_message;
     use super::get_context;
     use super::value::RustValue;
     use crate::{
-        files::{ListDirectory, ReadFile},
         js::{RunFile, push_task},
         query::context::Producer,
+        query::files::{ListDirectory, ReadFile},
     };
 
     #[rquickjs::function]
@@ -90,7 +95,7 @@ mod memoized {
         let ctx = unsafe { &*get_context()? };
         let contents = ReadFile(PathBuf::from(filename))
             .query(ctx)
-            .map_err(|_| rquickjs::Error::Exception)?;
+            .map_err(|e| error_message(&format!("{e}")))?;
         rquickjs::TypedArray::new(js_ctx, contents)
     }
 
@@ -101,7 +106,7 @@ mod memoized {
         let ctx = unsafe { &*get_context()? };
         let contents = ListDirectory(PathBuf::from(dirname))
             .query(ctx)
-            .map_err(|_| rquickjs::Error::Exception)?
+            .map_err(|e| error_message(&format!("{e}")))?
             .into_iter()
             .map(|entry| entry.display().to_string())
             .collect();
@@ -125,12 +130,16 @@ mod memoized {
 
 #[rquickjs::module]
 mod io {
-    use std::path::PathBuf;
+    use std::path::{Component, PathBuf};
+
+    use either::Either;
+
+    use super::error_message;
+    use crate::options::OPTIONS;
 
     #[rquickjs::function]
     pub fn file_type(entry_name: String) -> rquickjs::Result<String> {
-        let metadata =
-            std::fs::metadata(PathBuf::from(entry_name)).map_err(|_| rquickjs::Error::Exception)?;
+        let metadata = std::fs::metadata(PathBuf::from(entry_name))?;
 
         Ok(if metadata.is_file() {
             "file"
@@ -147,9 +156,27 @@ mod io {
     #[rquickjs::function]
     pub fn write_output(
         name: String,
-        content: rquickjs::TypedArray<'_, u8>,
+        contents: Either<String, rquickjs::TypedArray<'_, u8>>,
     ) -> rquickjs::Result<()> {
-        todo!()
+        let name = PathBuf::from(name);
+        if !name
+            .components()
+            .all(|component| matches!(component, Component::CurDir | Component::Normal(_)))
+        {
+            // Don't allow any path traversal outside the output directory
+            return Err(error_message("directory traversal"));
+        }
+        let full_name = OPTIONS.read().unwrap().output_dir.join(name);
+        let dir = full_name
+            .parent()
+            .ok_or(error_message("no parent directory"))?;
+        std::fs::create_dir_all(dir)?;
+        let contents = match &contents {
+            Either::Left(s) => s.as_bytes(),
+            Either::Right(buf) => buf.as_bytes().ok_or(error_message("detached buffer"))?,
+        };
+        std::fs::write(full_name, contents)?;
+        Ok(())
     }
 }
 

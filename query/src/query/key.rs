@@ -2,9 +2,9 @@ use dashmap::DashMap;
 
 use crate::HashDirectory;
 use crate::HashFile;
-use crate::files::ListDirectory;
-use crate::files::ReadFile;
 use crate::js::RunFile;
+use crate::query::files::ListDirectory;
+use crate::query::files::ReadFile;
 use crate::to_hash::ToHash;
 
 macro_rules! query_key {

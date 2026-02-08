@@ -5,8 +5,8 @@ use sha2::Digest;
 
 mod db;
 mod error;
-mod files;
 mod js;
+mod options;
 mod query;
 mod to_hash;
 
@@ -26,7 +26,7 @@ impl Producer for HashDirectory {
     fn produce(&self, ctx: &QueryContext) -> Self::Output {
         println!("hashing {}", self.0.display());
         let mut hasher = sha2::Sha256::new();
-        let entries = files::ListDirectory(self.0.clone()).query(ctx)?;
+        let entries = query::files::ListDirectory(self.0.clone()).query(ctx)?;
         for entry in entries {
             let digest = if entry.is_dir() {
                 HashDirectory(entry.clone()).query(ctx)?
@@ -47,7 +47,7 @@ impl Producer for HashFile {
     fn produce(&self, ctx: &QueryContext) -> Self::Output {
         println!("hashing {}", self.0.display());
         let mut hasher = sha2::Sha256::new();
-        let contents = files::ReadFile(self.0.clone()).query(ctx)?;
+        let contents = query::files::ReadFile(self.0.clone()).query(ctx)?;
         hasher.update(&contents[..]);
         Ok(hasher.finalize())
     }
