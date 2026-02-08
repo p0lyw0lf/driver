@@ -4,11 +4,15 @@ use rquickjs::{
     Context, IntoJs, Module, Runtime, Value,
     loader::{BuiltinResolver, ModuleLoader},
 };
+use sha2::Digest;
 
 use crate::{
     js::value::RustValue,
-    query::context::{Producer, QueryContext},
-    query::files::ReadFile,
+    query::{
+        context::{Producer, QueryContext},
+        files::ReadFile,
+    },
+    to_hash::ToHash,
 };
 
 mod value;
@@ -17,6 +21,7 @@ struct ContextFrame {
     curr: *const QueryContext,
     prev: Option<Box<ContextFrame>>,
     task_queue: Vec<RunFile>,
+    output_queue: Vec<WriteOutput>,
 }
 
 thread_local! {
@@ -31,13 +36,14 @@ thread_local! {
 fn with_query_context<T>(
     ctx: &QueryContext,
     f: impl FnOnce() -> crate::Result<T>,
-) -> crate::Result<(T, Vec<RunFile>)> {
+) -> crate::Result<(T, Vec<RunFile>, Vec<WriteOutput>)> {
     let prev = QUERY_CONTEXT.take().map(Box::new);
     let curr = ctx as *const _;
     let new_frame = ContextFrame {
         curr,
         prev,
         task_queue: vec![],
+        output_queue: vec![],
     };
     QUERY_CONTEXT.set(Some(new_frame));
 
@@ -47,7 +53,7 @@ fn with_query_context<T>(
     assert!(std::ptr::eq(curr, popped.curr));
     QUERY_CONTEXT.set(popped.prev.map(|x| *x));
 
-    out.map(|t| (t, popped.task_queue))
+    out.map(|t| (t, popped.task_queue, popped.output_queue))
 }
 
 /// Only safe to dereference the returned pointer if running inside a call to `with_context()`.
@@ -63,6 +69,15 @@ unsafe fn push_task(task: RunFile) {
     QUERY_CONTEXT.with_borrow_mut(|ctx| {
         ctx.as_mut().map(|ctx| {
             ctx.task_queue.push(task);
+        })
+    });
+}
+
+/// SAFETY: only safe to call when running inside `with_query_context()`
+unsafe fn push_output(output: WriteOutput) {
+    QUERY_CONTEXT.with_borrow_mut(|ctx| {
+        ctx.as_mut().map(|ctx| {
+            ctx.output_queue.push(output);
         })
     });
 }
@@ -135,7 +150,7 @@ mod io {
     use either::Either;
 
     use super::error_message;
-    use crate::options::OPTIONS;
+    use crate::js::push_output;
 
     #[rquickjs::function]
     pub fn file_type(entry_name: String) -> rquickjs::Result<String> {
@@ -158,25 +173,42 @@ mod io {
         name: String,
         contents: Either<String, rquickjs::TypedArray<'_, u8>>,
     ) -> rquickjs::Result<()> {
-        let name = PathBuf::from(name);
-        if !name
+        let path = PathBuf::from(name);
+        if !path
             .components()
             .all(|component| matches!(component, Component::CurDir | Component::Normal(_)))
         {
             // Don't allow any path traversal outside the output directory
             return Err(error_message("directory traversal"));
         }
-        let full_name = OPTIONS.read().unwrap().output_dir.join(name);
-        let dir = full_name
-            .parent()
-            .ok_or(error_message("no parent directory"))?;
-        std::fs::create_dir_all(dir)?;
-        let contents = match &contents {
+        let content = match &contents {
             Either::Left(s) => s.as_bytes(),
             Either::Right(buf) => buf.as_bytes().ok_or(error_message("detached buffer"))?,
-        };
-        std::fs::write(full_name, contents)?;
+        }
+        .iter()
+        .map(Clone::clone)
+        .collect();
+        unsafe { push_output(super::WriteOutput { path, content }) };
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WriteOutput {
+    pub path: PathBuf,
+    // TODO: I really didn't want to do this because storing the entire content in the cache can
+    // get expensive from all the clones I do. I will need to find a way to not require DynClone
+    // in the future for this.
+    pub content: Vec<u8>,
+}
+
+impl ToHash for WriteOutput {
+    fn run_hash(&self, hasher: &mut sha2::Sha256) {
+        hasher.update(b"WriteOutput(");
+        self.path.run_hash(hasher);
+        hasher.update("b)(");
+        hasher.update(&self.content[..]);
+        hasher.update(b")");
     }
 }
 
@@ -207,14 +239,14 @@ pub struct RunFile {
 }
 
 impl Producer for RunFile {
-    type Output = crate::Result<RustValue>;
+    type Output = crate::Result<Vec<WriteOutput>>;
     fn produce(&self, ctx: &QueryContext) -> Self::Output {
         let name = self.file.display().to_string();
         println!("running {name}");
         let contents = ReadFile(self.file.clone()).query(ctx)?;
         let contents = String::from_utf8(contents)?;
 
-        let (value, tasks) = with_query_context(ctx, || -> crate::Result<_> {
+        let ((), tasks, mut outputs) = with_query_context(ctx, || -> crate::Result<_> {
             CONTEXT.with_borrow(|ctx| {
                 ctx.with(|ctx| -> crate::Result<_> {
                     let globals = ctx.globals();
@@ -239,19 +271,19 @@ impl Producer for RunFile {
                         .unwrap();
 
                     let module = Module::declare(ctx.clone(), name, contents)?;
-                    let (module, promise) = module.eval()?;
+                    let (_module, promise) = module.eval()?;
                     promise.finish::<()>()?;
 
-                    let value: RustValue = module.get(rquickjs::atom::PredefinedAtom::Default)?;
-                    Ok(value)
+                    // let value: RustValue = module.get(rquickjs::atom::PredefinedAtom::Default)?;
+                    Ok(())
                 })
             })
         })?;
 
         for task in tasks {
-            task.query(ctx)?;
+            outputs.extend(task.query(ctx)?);
         }
 
-        Ok(value)
+        Ok(outputs)
     }
 }

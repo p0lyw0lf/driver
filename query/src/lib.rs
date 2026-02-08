@@ -16,6 +16,8 @@ pub use query::context::QueryContext;
 use query::key::QueryKey;
 use to_hash::Hash;
 
+use crate::options::OPTIONS;
+
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Hash, PartialEq, Eq, Clone, Debug)]
@@ -58,7 +60,15 @@ pub fn walk(dir: PathBuf, ctx: &QueryContext) -> crate::Result<Hash> {
 }
 
 pub fn run(file: PathBuf, ctx: &QueryContext) -> crate::Result<()> {
-    let v = js::RunFile { file, args: None }.query(ctx);
-    println!("{v:?}");
+    let outputs = js::RunFile { file, args: None }.query(ctx)?;
+    // TODO: eventually I'd like to have some sort of diffing algorithm to make this more
+    // efficient. But for now a "wipe and re-write" is probably good enough.
+    let root = &OPTIONS.read().unwrap().output_dir;
+    std::fs::remove_dir_all(root)?;
+    for output in outputs {
+        let full_path = root.join(output.path);
+        std::fs::create_dir_all(full_path.parent().unwrap())?;
+        std::fs::write(full_path, output.content)?;
+    }
     Ok(())
 }
