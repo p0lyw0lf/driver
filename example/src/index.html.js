@@ -1,20 +1,25 @@
-import { write_output } from "io";
+import { markdown_to_html, minify_html, write_output } from "io";
 
-print("imported");
 const [name] = ARGS;
-print(`name ${name}`);
 
-write_output(
-  name,
-  `
+const input = `
+# Hello, World!
+
+This is a cool test page I am writing in markdown.
+I should probably have written it in a separate file but that's OK!
+
+## My Page
+
+my page
+`;
+const html = `
 <!DOCTYPE html>
 <html>
 <head><title>Test Page</title></head>
 
-<body>
-  <h1>Hello, World!2</h1>
-</body>
+<body>${markdown_to_html(input)}</body>
 </html>
-`,
-);
-print("wrote output");
+`;
+const out = minify_html(html);
+
+write_output(name, out);

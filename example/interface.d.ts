@@ -14,7 +14,9 @@ declare module "memoized" {
 
 declare module "io" {
   function file_type(name: string): "file" | "dir" | "symlink" | "unknown";
-  function write_output(name: string, content: Uint8Array): void;
+  function markdown_to_html(md: string | Uint8Array): string;
+  function minify_html(html: string | Uint8Array): Uint8Array;
+  function write_output(name: string, content: string | Uint8Array): void;
 }
 
 declare global {

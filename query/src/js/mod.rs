@@ -148,6 +148,7 @@ mod io {
     use std::path::{Component, PathBuf};
 
     use either::Either;
+    use rquickjs::{Ctx, TypedArray};
 
     use super::error_message;
     use crate::js::push_output;
@@ -166,6 +167,80 @@ mod io {
             "unknown"
         }
         .to_string())
+    }
+
+    #[rquickjs::function]
+    pub fn markdown_to_html(
+        contents: Either<String, rquickjs::TypedArray<'_, u8>>,
+    ) -> rquickjs::Result<String> {
+        let contents = match contents {
+            Either::Left(s) => s,
+            Either::Right(buf) => {
+                let bytes = buf.as_bytes().ok_or(error_message("detached buffer"))?;
+                String::from_utf8(Vec::from(bytes))?
+            }
+        };
+
+        Ok(comrak::markdown_to_html_with_plugins(
+            &contents,
+            &comrak::Options {
+                extension: comrak::options::Extension::builder()
+                    .strikethrough(true)
+                    .table(true)
+                    .autolink(false)
+                    .tasklist(true)
+                    .superscript(false)
+                    .subscript(false)
+                    .footnotes(true)
+                    .math_dollars(true)
+                    .shortcodes(false)
+                    .underline(false)
+                    .spoiler(true)
+                    .subtext(true)
+                    .highlight(true)
+                    .build(),
+                parse: comrak::options::Parse::builder()
+                    .smart(false)
+                    .tasklist_in_table(true)
+                    .ignore_setext(true)
+                    .build(),
+                render: comrak::options::Render::builder()
+                    .hardbreaks(false)
+                    .r#unsafe(true)
+                    .escape(false)
+                    .tasklist_classes(true)
+                    .build(),
+            },
+            &comrak::options::Plugins::builder()
+                .render(comrak::options::RenderPlugins {
+                    codefence_syntax_highlighter: Some(
+                        &comrak::plugins::syntect::SyntectAdapterBuilder::new().build(),
+                    ),
+                    heading_adapter: None,
+                })
+                .build(),
+        ))
+    }
+
+    #[rquickjs::function]
+    pub fn minify_html<'js>(
+        ctx: Ctx<'js>,
+        contents: Either<String, rquickjs::TypedArray<'js, u8>>,
+    ) -> rquickjs::Result<TypedArray<'js, u8>> {
+        let contents = match &contents {
+            Either::Left(s) => s.as_bytes(),
+            Either::Right(buf) => buf.as_bytes().ok_or(error_message("detached buffer"))?,
+        };
+        let cfg = minify_html::Cfg {
+            keep_closing_tags: true,
+            keep_comments: true,
+            keep_html_and_head_opening_tags: true,
+            minify_css: true,
+            minify_js: true,
+            ..Default::default()
+        };
+        let output = minify_html::minify(contents, &cfg);
+        rquickjs::TypedArray::new(ctx, output)
     }
 
     #[rquickjs::function]
