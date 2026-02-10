@@ -7,6 +7,7 @@ use rquickjs::{
 use sha2::Digest;
 
 use crate::{
+    db::object::Object,
     js::value::RustValue,
     query::{
         context::{Producer, QueryContext},
@@ -108,10 +109,11 @@ mod memoized {
         // SAFETY: the only way these javascript functions get called is from inside a
         // `with_query_context()`
         let ctx = unsafe { &*get_context()? };
-        let contents = ReadFile(PathBuf::from(filename))
+        let object = ReadFile(PathBuf::from(filename))
             .query(ctx)
             .map_err(|e| error_message(&format!("{e}")))?;
-        rquickjs::TypedArray::new(js_ctx, contents)
+        let contents = ctx.db.objects.get(&object).expect("missing object");
+        rquickjs::TypedArray::new(js_ctx, contents.as_ref())
     }
 
     #[rquickjs::function]
@@ -151,6 +153,7 @@ mod io {
     use rquickjs::{Ctx, TypedArray};
 
     use super::error_message;
+    use super::get_context;
     use crate::js::push_output;
 
     #[rquickjs::function]
@@ -248,6 +251,7 @@ mod io {
         name: String,
         contents: Either<String, rquickjs::TypedArray<'_, u8>>,
     ) -> rquickjs::Result<()> {
+        let ctx = unsafe { &*get_context()? };
         let path = PathBuf::from(name);
         if !path
             .components()
@@ -256,14 +260,15 @@ mod io {
             // Don't allow any path traversal outside the output directory
             return Err(error_message("directory traversal"));
         }
-        let content = match &contents {
-            Either::Left(s) => s.as_bytes(),
-            Either::Right(buf) => buf.as_bytes().ok_or(error_message("detached buffer"))?,
-        }
-        .iter()
-        .map(Clone::clone)
-        .collect();
-        unsafe { push_output(super::WriteOutput { path, content }) };
+        let content = match contents {
+            Either::Left(s) => s.into_bytes(),
+            Either::Right(buf) => buf
+                .as_bytes()
+                .ok_or(error_message("detached buffer"))?
+                .to_vec(),
+        };
+        let object = ctx.db.objects.store(content);
+        unsafe { push_output(super::WriteOutput { path, object }) };
         Ok(())
     }
 }
@@ -271,19 +276,15 @@ mod io {
 #[derive(Debug, Clone)]
 pub struct WriteOutput {
     pub path: PathBuf,
-    // TODO: I really didn't want to do this because storing the entire content in the cache can
-    // get expensive from all the clones I do. I will need to find a way to not require DynClone
-    // in the future for this.
-    pub content: Vec<u8>,
+    pub object: Object,
 }
 
 impl ToHash for WriteOutput {
     fn run_hash(&self, hasher: &mut sha2::Sha256) {
         hasher.update(b"WriteOutput(");
         self.path.run_hash(hasher);
-        hasher.update("b)(");
-        hasher.update(&self.content[..]);
-        hasher.update(b")");
+        hasher.update("b)");
+        self.object.run_hash(hasher);
     }
 }
 
@@ -318,8 +319,13 @@ impl Producer for RunFile {
     fn produce(&self, ctx: &QueryContext) -> Self::Output {
         let name = self.file.display().to_string();
         println!("running {name}");
-        let contents = ReadFile(self.file.clone()).query(ctx)?;
-        let contents = String::from_utf8(contents)?;
+        let object = ReadFile(self.file.clone()).query(ctx)?;
+        let contents = {
+            // Need to shorten the lifetime of our read from the database so that we don't deadlock
+            // trying to read from the map multiple times
+            let contents = ctx.db.objects.get(&object).expect("missing object");
+            String::from_utf8(contents.as_ref().to_vec())?
+        };
 
         let ((), tasks, mut outputs) = with_query_context(ctx, || -> crate::Result<_> {
             CONTEXT.with_borrow(|ctx| {

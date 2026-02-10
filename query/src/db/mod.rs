@@ -8,6 +8,8 @@ use petgraph::graph::NodeIndex;
 use crate::QueryKey;
 use crate::query::key::QueryCache;
 
+pub mod object;
+
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Color {
     Green,
@@ -85,4 +87,5 @@ pub struct Database {
     pub revision: AtomicUsize,
 
     pub cache: QueryCache,
+    pub objects: object::Objects,
 }

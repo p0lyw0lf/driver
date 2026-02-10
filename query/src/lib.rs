@@ -17,6 +17,7 @@ use query::key::QueryKey;
 use to_hash::Hash;
 
 use crate::options::OPTIONS;
+use crate::to_hash::ToHash;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -48,10 +49,8 @@ impl Producer for HashFile {
     type Output = Result<Hash>;
     fn produce(&self, ctx: &QueryContext) -> Self::Output {
         println!("hashing {}", self.0.display());
-        let mut hasher = sha2::Sha256::new();
-        let contents = query::files::ReadFile(self.0.clone()).query(ctx)?;
-        hasher.update(&contents[..]);
-        Ok(hasher.finalize())
+        let object = query::files::ReadFile(self.0.clone()).query(ctx)?;
+        Ok(object.to_hash())
     }
 }
 
@@ -68,7 +67,8 @@ pub fn run(file: PathBuf, ctx: &QueryContext) -> crate::Result<()> {
     for output in outputs {
         let full_path = root.join(output.path);
         std::fs::create_dir_all(full_path.parent().unwrap())?;
-        std::fs::write(full_path, output.content)?;
+        let content = ctx.db.objects.get(&output.object).expect("missing object");
+        std::fs::write(full_path, content.as_ref())?;
     }
     Ok(())
 }

@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::db::object::Object;
 use crate::query::context::Producer;
 use crate::query::context::QueryContext;
 
@@ -7,10 +8,12 @@ use crate::query::context::QueryContext;
 pub struct ReadFile(pub PathBuf);
 
 impl Producer for ReadFile {
-    type Output = crate::Result<Vec<u8>>;
-    fn produce(&self, _ctx: &QueryContext) -> Self::Output {
+    type Output = crate::Result<Object>;
+    fn produce(&self, ctx: &QueryContext) -> Self::Output {
         // println!("reading: {}", self.0.display());
-        Ok(std::fs::read(&self.0)?)
+        let content = std::fs::read(&self.0)?;
+        let object = ctx.db.objects.store(content);
+        Ok(object)
     }
 }
 
