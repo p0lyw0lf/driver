@@ -1,10 +1,11 @@
 use rquickjs::{FromJs, IntoJs, Value as JsValue};
+use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
 use crate::to_hash::ToHash;
 
 /// All the simple javascript values that can be serialized/deserialized losslessly
-#[derive(Hash, PartialEq, Eq, Debug, Clone)]
+#[derive(Hash, PartialEq, Eq, Debug, Clone, Serialize, Deserialize)]
 pub enum RustValue {
     Undefined,
     Null,

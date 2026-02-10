@@ -1,4 +1,5 @@
 use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
 use crate::to_hash::{Hash, ToHash};
@@ -9,7 +10,7 @@ use crate::to_hash::{Hash, ToHash};
 pub struct Objects(DashMap<Object, Vec<u8>>);
 
 /// Newtype for a hash that represents it's an object in the store.
-#[derive(Clone, Hash, PartialEq, Eq, Debug)]
+#[derive(Clone, Hash, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct Object(Hash);
 
 impl ToHash for Object {

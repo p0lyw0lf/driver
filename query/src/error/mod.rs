@@ -1,10 +1,11 @@
 use std::fmt::Display;
 
+use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
 /// A very simple arbitrary error wrapper that just serializes everything to a String. Used in
 /// place of anyhow so that we can clone it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Error(String);
 
 impl Display for Error {

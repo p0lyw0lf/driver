@@ -4,6 +4,8 @@ use rquickjs::{
     Context, IntoJs, Module, Runtime, Value,
     loader::{BuiltinResolver, ModuleLoader},
 };
+use serde::Deserialize;
+use serde::Serialize;
 use sha2::Digest;
 
 use crate::{
@@ -13,6 +15,7 @@ use crate::{
         context::{Producer, QueryContext},
         files::ReadFile,
     },
+    query_key,
     to_hash::ToHash,
 };
 
@@ -273,7 +276,7 @@ mod io {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WriteOutput {
     pub path: PathBuf,
     pub object: Object,
@@ -308,11 +311,10 @@ thread_local! {
     });
 }
 
-#[derive(Hash, PartialEq, Eq, Clone, Debug)]
-pub struct RunFile {
+query_key!(RunFile {
     pub file: PathBuf,
     pub args: Option<RustValue>,
-}
+});
 
 impl Producer for RunFile {
     type Output = crate::Result<Vec<WriteOutput>>;

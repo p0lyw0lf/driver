@@ -1,22 +1,25 @@
+use std::path::Path;
 use std::sync::RwLock;
 use std::sync::atomic::AtomicUsize;
 
 use dashmap::DashMap;
 use petgraph::graph::DiGraph;
 use petgraph::graph::NodeIndex;
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::QueryKey;
 use crate::query::key::QueryCache;
 
 pub mod object;
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Color {
     Green,
     Red,
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Serialize, Deserialize)]
 pub struct ColorMap(DashMap<QueryKey, (Color, usize)>);
 
 impl ColorMap {
@@ -36,7 +39,7 @@ impl ColorMap {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Serialize, Deserialize)]
 pub struct DepGraph {
     graph: RwLock<DiGraph<QueryKey, ()>>,
     indices: DashMap<QueryKey, NodeIndex>,
@@ -87,5 +90,14 @@ pub struct Database {
     pub revision: AtomicUsize,
 
     pub cache: QueryCache,
+
     pub objects: object::Objects,
+}
+
+pub fn save_to_directory(dir: &Path, db: &Database, deps: &DepGraph) -> std::io::Result<()> {
+    todo!()
+}
+
+pub fn restore_from_directory(dir: &Path) -> std::io::Result<(Database, DepGraph)> {
+    todo!()
 }

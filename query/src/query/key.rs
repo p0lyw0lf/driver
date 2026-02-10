@@ -1,4 +1,6 @@
 use dashmap::DashMap;
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::HashDirectory;
 use crate::HashFile;
@@ -7,11 +9,23 @@ use crate::query::files::ListDirectory;
 use crate::query::files::ReadFile;
 use crate::to_hash::ToHash;
 
+#[macro_export]
 macro_rules! query_key {
+    ($name:ident $tt:tt) => {
+        #[derive(Hash, PartialEq, Eq, Clone, Debug, Serialize, Deserialize)]
+        pub struct $name $tt
+    };
+    ($name:ident $tt:tt ;) => {
+        #[derive(Hash, PartialEq, Eq, Clone, Debug, Serialize, Deserialize)]
+        pub struct $name $tt ;
+    };
+}
+
+macro_rules! query_keys {
     ($key:ident ($cache:ident) { $(
         $name:ident : $type:ident ,
     )* }) => {
-        #[derive(Hash, PartialEq, Eq, Clone, Debug)]
+        #[derive(Hash, PartialEq, Eq, Clone, Debug, Serialize, Deserialize)]
         pub enum $key {
             $($type($type),)*
         }
@@ -34,7 +48,7 @@ macro_rules! query_key {
             }
         }
 
-        #[derive(Clone, Debug, Default)]
+        #[derive(Clone, Debug, Default, Serialize, Deserialize)]
         pub struct $cache { $(
             pub $name: DashMap<$type, <$type as $crate::Producer>::Output>,
         )* }
@@ -63,7 +77,7 @@ macro_rules! query_key {
     }
 }
 
-query_key!(QueryKey (QueryCache) {
+query_keys!(QueryKey (QueryCache) {
     // long-term things
     read_file: ReadFile,
     list_directory: ListDirectory,

@@ -1,11 +1,14 @@
 use std::path::PathBuf;
 
+use serde::Deserialize;
+use serde::Serialize;
+
 use crate::db::object::Object;
 use crate::query::context::Producer;
 use crate::query::context::QueryContext;
+use crate::query_key;
 
-#[derive(Hash, PartialEq, Eq, Clone, Debug)]
-pub struct ReadFile(pub PathBuf);
+query_key!(ReadFile(pub PathBuf););
 
 impl Producer for ReadFile {
     type Output = crate::Result<Object>;
@@ -17,8 +20,7 @@ impl Producer for ReadFile {
     }
 }
 
-#[derive(Hash, PartialEq, Eq, Clone, Debug)]
-pub struct ListDirectory(pub PathBuf);
+query_key!(ListDirectory(pub PathBuf););
 
 impl Producer for ListDirectory {
     type Output = crate::Result<Vec<PathBuf>>;

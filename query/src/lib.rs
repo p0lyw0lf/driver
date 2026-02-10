@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
 mod db;
@@ -21,8 +22,7 @@ use crate::to_hash::ToHash;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Hash, PartialEq, Eq, Clone, Debug)]
-struct HashDirectory(PathBuf);
+query_key!(HashDirectory(PathBuf););
 
 impl Producer for HashDirectory {
     type Output = Result<Hash>;
@@ -42,8 +42,7 @@ impl Producer for HashDirectory {
     }
 }
 
-#[derive(Hash, PartialEq, Eq, Clone, Debug)]
-struct HashFile(PathBuf);
+query_key!(HashFile(PathBuf););
 
 impl Producer for HashFile {
     type Output = Result<Hash>;

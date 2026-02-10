@@ -5,12 +5,15 @@ edition = "2024"
 
 [dependencies]
 comrak = { version = "0.50", features = ["syntect"] }
-dashmap = "6.1"
+dashmap = { version = "6.1", features = ["serde"] }
 dyn-clone = "1.0"
 either = "1.15"
+generic-array = { version = "0.14", features = ["serde"] } # TODO: serialize hashes w/ a newtype
 ignore = "0.4"
 minify-html = "0.18"
-petgraph = "0.8"
+petgraph = { version = "0.8", features = ["serde-1"] }
+serde = { version = "1.0", features = ["derive"] }
+postcard = "1.1"
 sha2 = "0.10"
 
 [dependencies.rquickjs]
