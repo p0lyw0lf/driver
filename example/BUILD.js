@@ -1,7 +1,7 @@
 import { list_directory, queue_task } from "memoized";
 import { file_type } from "io";
 
-const root = "./src/";
+const root = "./src/pages/";
 /** @type {Array.<string>} */
 const [to_build] = ARGS ?? [root];
 
