@@ -17,28 +17,9 @@ fn main() -> query::Result<()> {
         eprintln!("error restoring context: {e}");
         query::QueryContext::default()
     });
-    let run = || {
-        if filename.ends_with("js") {
-            if let Err(e) = query::run(filename.into(), &ctx) {
-                eprintln!("{e}");
-            }
-        } else {
-            let digest = query::walk(filename.into(), &ctx);
-            println!("{digest:?}");
-        }
-    };
-    run();
 
-    loop {
-        let mut s = String::new();
-        std::io::stdin().read_line(&mut s)?;
-        if s.as_bytes().first() == Some(&b'q') {
-            break;
-        }
-
-        ctx.new_revision();
-        println!("running again");
-        run();
+    if let Err(e) = query::run(filename.into(), &ctx) {
+        eprintln!("{e}");
     }
 
     ctx.save()?;

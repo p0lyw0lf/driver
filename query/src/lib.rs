@@ -1,8 +1,4 @@
-use std::fmt::Debug;
 use std::path::PathBuf;
-
-use serde::{Deserialize, Serialize};
-use sha2::Digest;
 
 mod db;
 mod error;
@@ -11,51 +7,14 @@ mod options;
 mod query;
 mod to_hash;
 
-pub use error::Error;
+use options::OPTIONS;
 use query::context::Producer;
-pub use query::context::QueryContext;
 use query::key::QueryKey;
-use to_hash::Hash;
 
-use crate::options::OPTIONS;
-use crate::to_hash::ToHash;
+pub use error::Error;
+pub use query::context::QueryContext;
 
 pub type Result<T> = std::result::Result<T, Error>;
-
-query_key!(HashDirectory(PathBuf););
-
-impl Producer for HashDirectory {
-    type Output = Result<Hash>;
-    fn produce(&self, ctx: &QueryContext) -> Self::Output {
-        println!("hashing {}", self.0.display());
-        let mut hasher = sha2::Sha256::new();
-        let entries = query::files::ListDirectory(self.0.clone()).query(ctx)?;
-        for entry in entries {
-            let digest = if entry.is_dir() {
-                HashDirectory(entry.clone()).query(ctx)?
-            } else {
-                HashFile(entry.clone()).query(ctx)?
-            };
-            hasher.update(digest);
-        }
-        Ok(hasher.finalize())
-    }
-}
-
-query_key!(HashFile(PathBuf););
-
-impl Producer for HashFile {
-    type Output = Result<Hash>;
-    fn produce(&self, ctx: &QueryContext) -> Self::Output {
-        println!("hashing {}", self.0.display());
-        let object = query::files::ReadFile(self.0.clone()).query(ctx)?;
-        Ok(object.to_hash())
-    }
-}
-
-pub fn walk(dir: PathBuf, ctx: &QueryContext) -> crate::Result<Hash> {
-    HashDirectory(dir).query(ctx)
-}
 
 pub fn run(file: PathBuf, ctx: &QueryContext) -> crate::Result<()> {
     let outputs = js::RunFile { file, args: None }.query(ctx)?;
