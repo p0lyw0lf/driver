@@ -48,6 +48,8 @@ macro_rules! query_keys {
             }
         }
 
+        // We put the cache in here too so that it can be Serialize/Deserialize without doing
+        // anything crazier with AnyOutput
         #[derive(Clone, Debug, Default, Serialize, Deserialize)]
         pub struct $cache { $(
             pub $name: DashMap<$type, <$type as $crate::Producer>::Output>,
@@ -72,6 +74,16 @@ macro_rules! query_keys {
                 match key { $(
                     $key::$type(key) => self.$name.get(key).map(|v| $crate::query::context::AnyOutput::new(v.clone())),
                 )* }
+            }
+
+            pub fn iter_keys(&self) -> impl std::iter::Iterator<Item = QueryKey> {
+                std::iter::empty()
+                $(.chain(
+                    self.$name.iter()
+                    .map(|entry| {
+                        QueryKey::$type(entry.key().clone())
+                    })
+                ))*
             }
         }
     }

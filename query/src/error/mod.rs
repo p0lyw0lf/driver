@@ -8,6 +8,12 @@ use sha2::Digest;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Error(String);
 
+impl Error {
+    pub fn new(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
 impl Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)

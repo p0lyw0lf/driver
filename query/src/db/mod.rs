@@ -1,4 +1,7 @@
+use std::io::Read;
+use std::io::Write;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::RwLock;
 use std::sync::atomic::AtomicUsize;
 
@@ -9,7 +12,9 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::QueryKey;
+use crate::db::object::Object;
 use crate::query::key::QueryCache;
+use crate::to_hash::Hash;
 
 pub mod object;
 
@@ -94,10 +99,125 @@ pub struct Database {
     pub objects: object::Objects,
 }
 
-pub fn save_to_directory(dir: &Path, db: &Database, deps: &DepGraph) -> std::io::Result<()> {
-    todo!()
+struct Filenames {
+    cache_filename: PathBuf,
+    depgraph_filename: PathBuf,
+    objects_dirname: PathBuf,
 }
 
-pub fn restore_from_directory(dir: &Path) -> std::io::Result<(Database, DepGraph)> {
-    todo!()
+fn get_filenames(dir: &Path) -> Filenames {
+    Filenames {
+        cache_filename: dir.join("cache.v1.pc"),
+        depgraph_filename: dir.join("depgraph.v1.pc"),
+        objects_dirname: dir.join("objects"),
+    }
+}
+
+pub fn save_to_directory(dir: &Path, db: &Database, deps: &DepGraph) -> crate::Result<()> {
+    let Filenames {
+        cache_filename,
+        depgraph_filename,
+        objects_dirname,
+    } = get_filenames(dir);
+
+    std::fs::create_dir_all(dir)?;
+
+    {
+        let cache_file = std::fs::File::create(cache_filename)?;
+        postcard::to_io(&db.cache, cache_file)?;
+    }
+    {
+        let depgraph_file = std::fs::File::create(depgraph_filename)?;
+        postcard::to_io(deps, depgraph_file)?;
+    }
+
+    db.objects.for_each(|hash, contents| -> crate::Result<_> {
+        let hash = hash.to_string();
+        let (prefix, rest) = hash.split_at(2);
+        let object_directory = objects_dirname.join(prefix);
+        let object_filename = object_directory.join(rest);
+
+        if std::fs::exists(&object_filename)? {
+            // By the uniqueness of the hash, we're already done
+            return Ok(());
+        }
+
+        // Otherwise, we have to write the object
+        std::fs::create_dir_all(object_directory)?;
+        // Compress with zstd so we don't have to read/write as much data to disk
+        let object_file = std::fs::File::create(&object_filename)?;
+        let mut encoder = zstd::stream::Encoder::new(object_file, 0)?.auto_finish();
+        encoder.write_all(contents)?;
+        encoder.flush()?;
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+pub fn restore_from_directory(dir: &Path) -> crate::Result<(Database, DepGraph)> {
+    let Filenames {
+        cache_filename,
+        depgraph_filename,
+        objects_dirname,
+    } = get_filenames(dir);
+
+    let cache_bytes = std::fs::read(cache_filename)?;
+    let cache: QueryCache = postcard::from_bytes(&cache_bytes[..])?;
+
+    let depgraph_bytes = std::fs::read(depgraph_filename)?;
+    let depgraph: DepGraph = postcard::from_bytes(&depgraph_bytes[..])?;
+
+    // Everything loaded from the disk is green to start with; this will be busted by input queries
+    // changing for the next revision.
+    let colors = ColorMap::default();
+    for key in cache.iter_keys() {
+        colors.mark_green(&key, 0);
+    }
+
+    let objects = object::Objects::default();
+    for prefix_entry in std::fs::read_dir(objects_dirname)? {
+        let prefix_entry = prefix_entry?;
+        let prefix = prefix_entry
+            .file_name()
+            .into_string()
+            .map_err(|_| crate::Error::new("couldn't convert object prefix to string"))?;
+        for object_entry in std::fs::read_dir(prefix_entry.path())? {
+            let object_entry = object_entry?;
+            let rest = object_entry
+                .file_name()
+                .into_string()
+                .map_err(|_| crate::Error::new("couldn't convert object suffix to string"))?;
+
+            let hash = format!("{}{}", prefix, rest);
+            let hash_bytes = hex::decode(&hash)?;
+            let hash = Hash::from_exact_iter(hash_bytes)
+                .ok_or_else(|| crate::Error::new("couldn't convert object filename to hash"))?;
+            // SAFETY: we are restoring from disk here
+            let object = unsafe { Object::from_hash(hash) };
+
+            let file = std::fs::File::open(object_entry.path())?;
+            let mut decoder = zstd::stream::Decoder::new(file)?;
+            let contents = {
+                let mut contents = Vec::<u8>::new();
+                decoder.read_to_end(&mut contents)?;
+                contents
+            };
+
+            // SAFETY: the data on disk should be trustworthy, no need to re-do hash
+            unsafe {
+                objects.store_raw(object, contents);
+            }
+        }
+    }
+
+    let db = Database {
+        colors,
+        // Bust cache immediately
+        revision: AtomicUsize::new(1),
+        cache,
+        objects,
+    };
+
+    Ok((db, depgraph))
 }

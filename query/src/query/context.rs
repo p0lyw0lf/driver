@@ -9,6 +9,7 @@ use dyn_clone::DynClone;
 use crate::db::Color;
 use crate::db::Database;
 use crate::db::DepGraph;
+use crate::options::OPTIONS;
 use crate::query::key::QueryKey;
 use crate::to_hash::ToHash;
 
@@ -163,5 +164,20 @@ impl QueryContext {
         // If we marked all dependencies as green, mark this node green too.
         self.db.colors.mark_green(&key, revision);
         Color::Green
+    }
+
+    pub fn save(&self) -> crate::Result<()> {
+        let cache_dir = &OPTIONS.read().unwrap().cache_dir;
+        crate::db::save_to_directory(cache_dir, &self.db, &self.dep_graph)
+    }
+
+    pub fn restore() -> crate::Result<Self> {
+        let cache_dir = &OPTIONS.read().unwrap().cache_dir;
+        let (db, dep_graph) = crate::db::restore_from_directory(cache_dir)?;
+        Ok(Self {
+            parent: None,
+            db: Arc::new(db),
+            dep_graph: Arc::new(dep_graph),
+        })
     }
 }
