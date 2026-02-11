@@ -2,7 +2,7 @@ use std::{cell::RefCell, path::PathBuf};
 
 use rquickjs::{
     Context, IntoJs, Module, Runtime, Value,
-    loader::{BuiltinResolver, ModuleLoader},
+    loader::{BuiltinResolver, FileResolver, ModuleLoader},
 };
 use serde::Deserialize;
 use serde::Serialize;
@@ -291,10 +291,62 @@ impl ToHash for WriteOutput {
     }
 }
 
+/// Custom loader that will track dependencies via ReadFile
+struct MemoizedScriptLoader {
+    extensions: Vec<String>,
+}
+
+impl Default for MemoizedScriptLoader {
+    fn default() -> Self {
+        Self {
+            extensions: vec!["js".into()],
+        }
+    }
+}
+
+impl rquickjs::loader::Loader for MemoizedScriptLoader {
+    fn load<'js>(
+        &mut self,
+        js_ctx: &rquickjs::Ctx<'js>,
+        name: &str,
+    ) -> rquickjs::Result<Module<'js>> {
+        let path = PathBuf::from(name);
+        if !path
+            .extension()
+            .map(|extension| {
+                self.extensions
+                    .iter()
+                    .any(|known_extension| Some(known_extension.as_str()) == extension.to_str())
+            })
+            .unwrap_or(false)
+        {
+            return Err(rquickjs::Error::new_loading(name));
+        }
+
+        let ctx = unsafe { &*get_context()? };
+        let object = ReadFile(path)
+            .query(ctx)
+            .map_err(|err| rquickjs::Error::new_loading_message(name, format!("{err}")))?;
+        let source = ctx.db.objects.get(&object).expect("missing object");
+
+        rquickjs::Module::declare(js_ctx.clone(), name, source.as_ref())
+    }
+}
+
 thread_local! {
     static RUNTIME: RefCell<Runtime> = RefCell::new({
-        let resolver = (BuiltinResolver::default().with_module("io").with_module("memoized"),);
-        let loader = (ModuleLoader::default().with_module("io", js_io).with_module("memoized", js_memoized),);
+        let resolver = (
+            BuiltinResolver::default()
+                .with_module("io")
+                .with_module("memoized"),
+            FileResolver::default(),
+        );
+        let loader = (
+            ModuleLoader::default()
+                .with_module("io", js_io)
+                .with_module("memoized", js_memoized),
+            MemoizedScriptLoader::default(),
+        );
 
         let runtime = Runtime::new().expect("not enough memory?");
         runtime.set_loader(resolver, loader);
