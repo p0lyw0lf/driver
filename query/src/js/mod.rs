@@ -75,23 +75,20 @@ unsafe fn push_task(task: RunFile) -> rquickjs::Result<RustValue> {
         rquickjs::Error::new_loading_message(task.file.display().to_string(), e.to_string())
     })?;
 
-    QUERY_CONTEXT.with_borrow_mut(|ctx| {
-        ctx.as_mut()
-            .map(move |ctx| -> rquickjs::Result<_> {
-                ctx.output_queue.extend(outputs);
-                Ok(value)
-            })
-            .unwrap_or(Err(rquickjs::Error::Unknown))
+    QUERY_CONTEXT.with_borrow_mut(|ctx| -> rquickjs::Result<_> {
+        let ctx = ctx.as_mut().ok_or(rquickjs::Error::Unknown)?;
+        ctx.output_queue.extend(outputs);
+        Ok(value)
     })
 }
 
 /// SAFETY: only safe to call when running inside `with_query_context()`
-unsafe fn push_output(output: WriteOutput) {
-    QUERY_CONTEXT.with_borrow_mut(|ctx| {
-        ctx.as_mut().map(|ctx| {
-            ctx.output_queue.push(output);
-        })
-    });
+unsafe fn push_output(output: WriteOutput) -> rquickjs::Result<()> {
+    QUERY_CONTEXT.with_borrow_mut(|ctx| -> rquickjs::Result<_> {
+        let ctx = ctx.as_mut().ok_or(rquickjs::Error::Unknown)?;
+        ctx.output_queue.push(output);
+        Ok(())
+    })
 }
 
 fn error_message(message: &str) -> rquickjs::Error {
@@ -161,9 +158,10 @@ mod io {
     use either::Either;
     use rquickjs::{Ctx, TypedArray};
 
+    use super::WriteOutput;
     use super::error_message;
     use super::get_context;
-    use crate::js::push_output;
+    use super::push_output;
 
     #[rquickjs::function]
     pub fn file_type(entry_name: String) -> rquickjs::Result<String> {
@@ -277,7 +275,7 @@ mod io {
                 .to_vec(),
         };
         let object = ctx.db.objects.store(content);
-        unsafe { push_output(super::WriteOutput { path, object }) };
+        unsafe { push_output(WriteOutput { path, object })? };
         Ok(())
     }
 }
