@@ -27,7 +27,7 @@ export const Base =
   (slot, extraSlots = {}) => {
     const { extraHead, header, footer } = extraSlots;
     const pathname = ARGS[0];
-    const canonicalUrl = new URL(pathname, SITE_URL).toString();
+    const canonicalUrl = `${SITE_URL}/${pathname}`;
 
     const fullTitle = overrideTitle ?? `wolfgirl.dev - ${title}`;
 
@@ -51,7 +51,7 @@ export const Base =
           <!-- TODO: automatic "og:image" property. Right now it just always uses the favicon which is not ideal. !-->
           <meta
             property="og:image"
-            content="${new URL("/apple-touch-icon.png", SITE_URL).toString()}"
+            content="${`${SITE_URL}/apple-touch-icon.png`}"
           />
 
           <link rel="canonical" href="${canonicalUrl}" />

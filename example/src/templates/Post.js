@@ -1,5 +1,7 @@
 import { html } from "../render.js";
 import { RandomHeaderPfp } from "../components/RandomHeaderPfp.js";
+import { SITE_URL } from "../data/urls.js";
+import { Base } from "./Base.js";
 
 /**
  * @typedef {import("./Base.js").Props} BaseProps
@@ -32,10 +34,7 @@ export const Post =
           rel="alternate"
           type="application/rss+xml"
           title="${sectionTitle}"
-          href="${new URL(
-            rssLink ?? `${homeLink}rss.xml`,
-            SITE_URL,
-          ).toString()}"
+          href="${`${SITE_URL}/${rssLink ?? `${homeLink}rss.xml`}`}"
         />
         ${extraHead}
       `,

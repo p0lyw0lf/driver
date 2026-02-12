@@ -9,7 +9,7 @@ declare module "memoized" {
    * Queue a file to be run next. The file will have the global variable `ARGS` populated with
    * whatever you pass in, if anything.
    */
-  function queue_task(filename: string, arg?: Arg): void;
+  function run_task(filename: string, arg?: Arg): Arg;
 }
 
 declare module "io" {

@@ -15,7 +15,7 @@ import { html } from "../render.js";
 export const HeaderPfp = ({ src, alt }) => {
   return html`<a href="/art/">
     <img
-      src="${new URL(`/pfps/${src}`, STATIC_URL)}"
+      src="${`${STATIC_URL}/pfps/${src}`}"
       width="128"
       height="128"
       loading="eager"

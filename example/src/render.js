@@ -13,10 +13,10 @@ export const html = (strings, ...exprs) => {
   const output = [];
   for (let i = 0; i / 2 < strings.length; i += 1) {
     if (i % 2 === 0) {
-      output.append(strings[i / 2]);
+      output.push(strings[i / 2]);
     } else {
       const expr = exprs[(i - 1) / 2];
-      output.append(asPrintable(expr));
+      output.push(asPrintable(expr));
     }
   }
   return output.join("");
