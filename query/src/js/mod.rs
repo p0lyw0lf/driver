@@ -1,7 +1,7 @@
 use std::{cell::RefCell, path::PathBuf};
 
 use rquickjs::{
-    Context, IntoJs, Runtime, Value,
+    Context, FromJs, IntoJs, Runtime, Value,
     loader::{BuiltinResolver, FileResolver, ModuleLoader},
 };
 use serde::Deserialize;
@@ -416,7 +416,14 @@ impl Producer for RunFile {
     type Output = crate::Result<FileOutput>;
     fn produce(&self, ctx: &QueryContext) -> Self::Output {
         let name = self.file.display().to_string();
-        println!("running {}({:?})", name, self.args);
+        println!(
+            "running {}({})",
+            name,
+            self.args
+                .as_ref()
+                .map(|args| args.to_string())
+                .unwrap_or_default()
+        );
         let object = ReadFile(self.file.clone()).query(ctx)?;
         let contents = {
             // Need to shorten the lifetime of our read from the database so that we don't deadlock
@@ -448,9 +455,30 @@ impl Producer for RunFile {
                     )
                     .unwrap();
 
-                let module = rquickjs::Module::declare(ctx.clone(), name.clone(), contents)?;
-                let (module, promise) = module.eval()?;
-                promise.finish::<()>()?;
+                let catch = |err: rquickjs::Error| -> crate::Error {
+                    match err {
+                        rquickjs::Error::Exception => {
+                            let value = ctx.catch();
+                            if let Some(err) = value.as_exception() {
+                                let message = err.message().unwrap_or_default();
+                                let stack = err.stack().unwrap_or_default();
+                                eprintln!("js exception: {message}");
+                                eprintln!("{stack}");
+                            } else if let Ok(value) = RustValue::from_js(ctx, value.clone()) {
+                                eprintln!("js thrown value: {}", value);
+                            } else {
+                                eprintln!("js error: {:?}", value);
+                            }
+                            crate::Error::from(rquickjs::Error::Exception)
+                        }
+                        otherwise => crate::Error::from(otherwise),
+                    }
+                };
+
+                let module = rquickjs::Module::declare(ctx.clone(), name.clone(), contents)
+                    .map_err(catch)?;
+                let (module, promise) = module.eval().map_err(catch)?;
+                promise.finish::<()>().map_err(catch)?;
 
                 let value: RustValue = module.get(rquickjs::atom::PredefinedAtom::Default)?;
                 Ok(value)
@@ -458,8 +486,13 @@ impl Producer for RunFile {
         })
         .map_err(|e| {
             crate::Error::new(&format!(
-                "error running {}({:?}):\n\t{}",
-                name, self.args, e
+                "error running {}({}):\n\t{}",
+                name,
+                self.args
+                    .as_ref()
+                    .map(|args| args.to_string())
+                    .unwrap_or_default(),
+                e
             ))
         })?;
 

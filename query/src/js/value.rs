@@ -123,3 +123,26 @@ impl ToHash for RustValue {
         }
     }
 }
+
+impl std::fmt::Display for RustValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RustValue::Undefined => write!(f, "undefined"),
+            RustValue::Null => write!(f, "null"),
+            RustValue::Bool(b) => write!(f, "{}", if *b { "true" } else { "false" }),
+            RustValue::Int(i) => write!(f, "{}", i),
+            RustValue::String(s) => write!(f, "\"{}\"", s),
+            RustValue::Array(vs) => {
+                write!(f, "[")?;
+                for (i, v) in vs.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ",")?;
+                    }
+                    write!(f, "{}", v)?;
+                }
+                write!(f, "]")?;
+                Ok(())
+            }
+        }
+    }
+}
