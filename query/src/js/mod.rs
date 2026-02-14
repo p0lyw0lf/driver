@@ -10,6 +10,7 @@ use sha2::Digest;
 
 use crate::{
     db::object::Object,
+    js::store_object::StoreObject,
     js::value::RustValue,
     query::{
         context::{Producer, QueryContext},
@@ -19,6 +20,7 @@ use crate::{
     to_hash::ToHash,
 };
 
+mod store_object;
 mod value;
 
 struct ContextFrame {
@@ -97,12 +99,12 @@ fn error_message(message: &str) -> rquickjs::Error {
 
 #[rquickjs::module]
 mod memoized {
-    use rquickjs::Ctx;
     use std::path::PathBuf;
 
     use super::error_message;
     use super::get_context;
     use super::value::RustValue;
+    use crate::js::store_object::StoreObject;
     use crate::{
         js::{RunFile, push_task},
         query::context::Producer,
@@ -110,18 +112,14 @@ mod memoized {
     };
 
     #[rquickjs::function]
-    pub fn read_file(
-        js_ctx: Ctx<'_>,
-        filename: String,
-    ) -> rquickjs::Result<rquickjs::TypedArray<'_, u8>> {
+    pub fn read_file(filename: String) -> rquickjs::Result<StoreObject> {
         // SAFETY: the only way these javascript functions get called is from inside a
         // `with_query_context()`
         let ctx = unsafe { &*get_context()? };
         let object = ReadFile(PathBuf::from(filename))
             .query(ctx)
             .map_err(|e| error_message(&format!("{e}")))?;
-        let contents = ctx.db.objects.get(&object).expect("missing object");
-        rquickjs::TypedArray::new(js_ctx, contents.as_ref())
+        Ok(StoreObject { object })
     }
 
     #[rquickjs::function]
@@ -151,12 +149,14 @@ mod memoized {
     }
 }
 
+// TODO: most of these should actually be memoized as well I think.
 #[rquickjs::module]
 mod io {
     use std::path::{Component, PathBuf};
 
     use either::Either;
-    use rquickjs::{Ctx, TypedArray};
+
+    use crate::js::store_object::StoreObject;
 
     use super::WriteOutput;
     use super::error_message;
@@ -180,16 +180,23 @@ mod io {
     }
 
     #[rquickjs::function]
-    pub fn markdown_to_html(
-        contents: Either<String, rquickjs::TypedArray<'_, u8>>,
-    ) -> rquickjs::Result<String> {
-        let contents = match contents {
-            Either::Left(s) => s,
-            Either::Right(buf) => {
-                let bytes = buf.as_bytes().ok_or(error_message("detached buffer"))?;
-                String::from_utf8(Vec::from(bytes))?
-            }
+    pub fn store<'js>(
+        value: Either<String, rquickjs::TypedArray<'js, u8>>,
+    ) -> rquickjs::Result<StoreObject> {
+        // SAFETY: we are in a javascript context
+        let ctx = unsafe { &*get_context()? };
+        let contents = match value {
+            Either::Left(s) => s.into_bytes(),
+            Either::Right(arr) => Vec::from(AsRef::<[u8]>::as_ref(&arr)),
         };
+        let object = ctx.db.objects.store(contents);
+        Ok(StoreObject { object })
+    }
+
+    #[rquickjs::function]
+    pub fn markdown_to_html(contents: StoreObject) -> rquickjs::Result<String> {
+        // SAFETY: we are in a javascript context
+        let contents = unsafe { contents.contents_as_string()? };
 
         Ok(comrak::markdown_to_html_with_plugins(
             &contents,
@@ -233,14 +240,10 @@ mod io {
     }
 
     #[rquickjs::function]
-    pub fn minify_html<'js>(
-        ctx: Ctx<'js>,
-        contents: Either<String, rquickjs::TypedArray<'js, u8>>,
-    ) -> rquickjs::Result<TypedArray<'js, u8>> {
-        let contents = match &contents {
-            Either::Left(s) => s.as_bytes(),
-            Either::Right(buf) => buf.as_bytes().ok_or(error_message("detached buffer"))?,
-        };
+    pub fn minify_html(contents: StoreObject) -> rquickjs::Result<StoreObject> {
+        // SAFETY: we are in a javascript context
+        let ctx = unsafe { &*get_context()? };
+        let contents = unsafe { contents.contents_as_string()? };
         let cfg = minify_html::Cfg {
             keep_closing_tags: true,
             keep_comments: true,
@@ -249,16 +252,13 @@ mod io {
             minify_js: true,
             ..Default::default()
         };
-        let output = minify_html::minify(contents, &cfg);
-        rquickjs::TypedArray::new(ctx, output)
+        let output = minify_html::minify(contents.as_bytes(), &cfg);
+        let object = ctx.db.objects.store(output);
+        Ok(StoreObject { object })
     }
 
     #[rquickjs::function]
-    pub fn write_output(
-        name: String,
-        contents: Either<String, rquickjs::TypedArray<'_, u8>>,
-    ) -> rquickjs::Result<()> {
-        let ctx = unsafe { &*get_context()? };
+    pub fn write_output(name: String, contents: StoreObject) -> rquickjs::Result<()> {
         let path = PathBuf::from(name);
         if !path
             .components()
@@ -267,15 +267,14 @@ mod io {
             // Don't allow any path traversal outside the output directory
             return Err(error_message("directory traversal"));
         }
-        let content = match contents {
-            Either::Left(s) => s.into_bytes(),
-            Either::Right(buf) => buf
-                .as_bytes()
-                .ok_or(error_message("detached buffer"))?
-                .to_vec(),
+        unsafe {
+            push_output(WriteOutput {
+                path,
+                // SAFETY: being provided a StoreObject always means we've put it in the store
+                // already
+                object: contents.object,
+            })?
         };
-        let object = ctx.db.objects.store(content);
-        unsafe { push_output(WriteOutput { path, object })? };
         Ok(())
     }
 }

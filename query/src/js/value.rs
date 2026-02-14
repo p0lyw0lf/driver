@@ -2,6 +2,7 @@ use rquickjs::{FromJs, IntoJs, Value as JsValue};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
+use crate::js::StoreObject;
 use crate::to_hash::ToHash;
 
 /// All the simple javascript values that can be serialized/deserialized losslessly
@@ -13,6 +14,7 @@ pub enum RustValue {
     Int(i32),
     String(String),
     Array(Vec<RustValue>),
+    Store(StoreObject),
 }
 
 impl<'js> FromJs<'js> for RustValue {
@@ -60,11 +62,18 @@ impl<'js> FromJs<'js> for RustValue {
                 to: "RustValue",
                 message: None,
             }),
-            rquickjs::Type::Object => Err(rquickjs::Error::FromJs {
-                from: "Object",
-                to: "RustValue",
-                message: None,
-            }),
+            rquickjs::Type::Object => {
+                let object = value.as_object().unwrap();
+                if let Some(cls) = object.as_class::<StoreObject>() {
+                    Ok(RustValue::Store(cls.borrow().clone()))
+                } else {
+                    Err(rquickjs::Error::FromJs {
+                        from: "Object",
+                        to: "RustValue",
+                        message: None,
+                    })
+                }
+            }
             rquickjs::Type::Module => Err(rquickjs::Error::FromJs {
                 from: "Module",
                 to: "RustValue",
@@ -89,6 +98,7 @@ impl<'js> IntoJs<'js> for RustValue {
             RustValue::Int(i) => i.into_js(ctx),
             RustValue::String(s) => s.into_js(ctx),
             RustValue::Array(values) => values.into_js(ctx),
+            RustValue::Store(store_object) => store_object.into_js(ctx),
         }
     }
 }
@@ -120,6 +130,11 @@ impl ToHash for RustValue {
                 }
                 hasher.update(b")");
             }
+            RustValue::Store(store_object) => {
+                hasher.update(b"RustValue::Store(");
+                store_object.object.run_hash(hasher);
+                hasher.update(b")");
+            }
         }
     }
 }
@@ -143,6 +158,7 @@ impl std::fmt::Display for RustValue {
                 write!(f, "]")?;
                 Ok(())
             }
+            RustValue::Store(store_object) => write!(f, "objects/{}", store_object.object),
         }
     }
 }
