@@ -11,7 +11,6 @@ pkgs.mkShell {
     # For debugging
     vscode-extensions.vadimcn.vscode-lldb.adapter
     # For developing
-    typescript-language-server
-    prettier
+    cargo-watch
   ];
 }
