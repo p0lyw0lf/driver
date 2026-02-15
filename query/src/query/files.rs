@@ -12,6 +12,7 @@ query_key!(ReadFile(pub PathBuf););
 
 impl Producer for ReadFile {
     type Output = crate::Result<Object>;
+    #[tracing::instrument(level = "debug", skip(ctx))]
     fn produce(&self, ctx: &QueryContext) -> Self::Output {
         // println!("reading: {}", self.0.display());
         let content = std::fs::read(&self.0)?;
@@ -24,6 +25,7 @@ query_key!(ListDirectory(pub PathBuf););
 
 impl Producer for ListDirectory {
     type Output = crate::Result<Vec<PathBuf>>;
+    #[tracing::instrument(level = "debug", skip(_ctx))]
     fn produce(&self, _ctx: &QueryContext) -> Self::Output {
         // println!("walking: {}", self.0.display());
         let walk = ignore::WalkBuilder::new(&self.0)

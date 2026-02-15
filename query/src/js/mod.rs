@@ -141,6 +141,7 @@ mod memoized {
     }
 
     #[rquickjs::function]
+    #[tracing::instrument(level = "debug", skip(js_ctx))]
     pub fn read_file(js_ctx: Ctx<'_>, filename: String) -> rquickjs::Result<StoreObject> {
         // SAFETY: the only way these javascript functions get called is from inside a
         // `with_query_context()`
@@ -153,6 +154,7 @@ mod memoized {
     }
 
     #[rquickjs::function]
+    #[tracing::instrument(level = "debug", skip(js_ctx))]
     pub fn list_directory(js_ctx: Ctx<'_>, dirname: String) -> rquickjs::Result<Vec<String>> {
         // SAFETY: the only way these javascript functions get called is from inside a
         // `with_query_context()`
@@ -167,6 +169,7 @@ mod memoized {
     }
 
     #[rquickjs::function]
+    #[tracing::instrument(level = "debug", skip(js_ctx))]
     pub fn run_task(
         js_ctx: Ctx<'_>,
         filename: String,
@@ -198,6 +201,7 @@ mod io {
     use super::push_output;
 
     #[rquickjs::function]
+    #[tracing::instrument(level = "debug")]
     pub fn file_type(entry_name: String) -> rquickjs::Result<String> {
         let metadata = std::fs::metadata(PathBuf::from(entry_name))?;
 
@@ -214,6 +218,7 @@ mod io {
     }
 
     #[rquickjs::function]
+    #[tracing::instrument(level = "debug", skip(value))]
     pub fn store<'js>(
         value: Either<String, rquickjs::TypedArray<'js, u8>>,
     ) -> rquickjs::Result<StoreObject> {
@@ -228,11 +233,13 @@ mod io {
     }
 
     #[rquickjs::function]
-    pub fn markdown_to_html(contents: StoreObject) -> rquickjs::Result<String> {
+    #[tracing::instrument(level = "debug")]
+    pub fn markdown_to_html(contents: StoreObject) -> rquickjs::Result<StoreObject> {
         // SAFETY: we are in a javascript context
+        let ctx = unsafe { &*get_context()? };
         let contents = unsafe { contents.contents_as_string()? };
 
-        Ok(comrak::markdown_to_html_with_plugins(
+        let output = comrak::markdown_to_html_with_plugins(
             &contents,
             &comrak::Options {
                 extension: comrak::options::Extension::builder()
@@ -270,10 +277,14 @@ mod io {
                     heading_adapter: None,
                 })
                 .build(),
-        ))
+        );
+
+        let object = ctx.db.objects.store(output.into_bytes());
+        Ok(StoreObject { object })
     }
 
     #[rquickjs::function]
+    #[tracing::instrument(level = "debug")]
     pub fn minify_html(contents: StoreObject) -> rquickjs::Result<StoreObject> {
         // SAFETY: we are in a javascript context
         let ctx = unsafe { &*get_context()? };
@@ -292,6 +303,7 @@ mod io {
     }
 
     #[rquickjs::function]
+    #[tracing::instrument(level = "debug")]
     pub fn write_output(name: String, contents: StoreObject) -> rquickjs::Result<()> {
         let path = PathBuf::from(name);
         if !path
@@ -345,6 +357,7 @@ impl Default for MemoizedScriptLoader {
 }
 
 impl rquickjs::loader::Loader for MemoizedScriptLoader {
+    #[tracing::instrument(level = "debug", skip(self, js_ctx))]
     fn load<'js>(
         &mut self,
         js_ctx: &rquickjs::Ctx<'js>,
@@ -367,9 +380,17 @@ impl rquickjs::loader::Loader for MemoizedScriptLoader {
         let object = ReadFile(path)
             .query(ctx)
             .map_err(|err| rquickjs::Error::new_loading_message(name, format!("{err}")))?;
-        let source = ctx.db.objects.get(&object).expect("missing object");
+        // Need to clone the source so we don't hang onto it for too long when reading from it in
+        // the module; the module will clone it into a Vec anyways so no harm in doing that now.
+        let source = Vec::<u8>::from(
+            ctx.db
+                .objects
+                .get(&object)
+                .expect("missing object")
+                .as_ref(),
+        );
 
-        rquickjs::Module::declare(js_ctx.clone(), name, source.as_ref())
+        rquickjs::Module::declare(js_ctx.clone(), name, source)
     }
 }
 
@@ -450,6 +471,8 @@ impl ToHash for FileOutput {
 
 impl Producer for RunFile {
     type Output = crate::Result<FileOutput>;
+
+    #[tracing::instrument(level = "debug", skip(ctx))]
     fn produce(&self, ctx: &QueryContext) -> Self::Output {
         let name = self.file.display().to_string();
         println!(

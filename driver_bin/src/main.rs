@@ -1,7 +1,15 @@
 use clap::arg;
 use clap::command;
+use tracing_subscriber::fmt::format::FmtSpan;
+use tracing_subscriber::{EnvFilter, fmt};
 
 fn main() -> query::Result<()> {
+    fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_span_events(FmtSpan::ACTIVE)
+        .pretty()
+        .init();
+
     let matches = command!()
         .arg(arg!(script: "The directory to hash"))
         .get_matches();
