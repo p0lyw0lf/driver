@@ -295,7 +295,10 @@ mod io {
             .all(|component| matches!(component, Component::CurDir | Component::Normal(_)))
         {
             // Don't allow any path traversal outside the output directory
-            return Err(error_message("directory traversal"));
+            return Err(error_message(&format!(
+                "directory traversal {}",
+                path.display()
+            )));
         }
         unsafe {
             push_output(WriteOutput {
