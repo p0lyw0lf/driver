@@ -108,20 +108,22 @@ fn error_message(message: &str) -> rquickjs::Error {
 }
 
 #[rquickjs::module]
-mod memoized {
-    use std::path::PathBuf;
+mod driver {
+    use std::path::{Component, PathBuf};
 
+    use either::Either;
     use relative_path::RelativePath;
     use relative_path::RelativePathBuf;
     use rquickjs::Ctx;
 
+    use super::WriteOutput;
     use super::error_message;
     use super::get_context;
-    use super::value::RustValue;
-    use crate::js::get_current_file;
-    use crate::js::store_object::StoreObject;
+    use super::push_output;
+    use super::push_task;
+
+    use crate::js::{RunFile, get_current_file, store_object::StoreObject, value::RustValue};
     use crate::{
-        js::{RunFile, push_task},
         query::context::Producer,
         query::files::{ListDirectory, ReadFile},
     };
@@ -184,21 +186,6 @@ mod memoized {
             })
         }
     }
-}
-
-// TODO: most of these should actually be memoized as well I think.
-#[rquickjs::module]
-mod io {
-    use std::path::{Component, PathBuf};
-
-    use either::Either;
-
-    use crate::js::store_object::StoreObject;
-
-    use super::WriteOutput;
-    use super::error_message;
-    use super::get_context;
-    use super::push_output;
 
     #[rquickjs::function]
     #[tracing::instrument(level = "trace")]
@@ -398,14 +385,12 @@ thread_local! {
     static RUNTIME: RefCell<Runtime> = RefCell::new({
         let resolver = (
             BuiltinResolver::default()
-                .with_module("io")
-                .with_module("memoized"),
+                .with_module("driver"),
             FileResolver::default(),
         );
         let loader = (
             ModuleLoader::default()
-                .with_module("io", js_io)
-                .with_module("memoized", js_memoized),
+                .with_module("driver", js_driver),
             MemoizedScriptLoader::default(),
         );
 
