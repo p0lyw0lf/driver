@@ -100,10 +100,12 @@ impl DepGraph {
     pub fn dependencies(&self, key: &QueryKey) -> Option<Vec<QueryKey>> {
         self.indices.get(key).map(|key| {
             let graph = self.graph.read().unwrap();
-            graph
+            let mut deps = graph
                 .neighbors_directed(*key, petgraph::Direction::Outgoing)
                 .map(|i| graph[i].clone())
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            deps.sort();
+            deps
         })
     }
 }
