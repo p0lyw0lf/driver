@@ -1,7 +1,7 @@
 use std::{cell::RefCell, path::PathBuf};
 
 use rquickjs::{
-    Context, FromJs, IntoJs, Runtime, Value,
+    Context, Ctx, FromJs, IntoJs, Runtime, Value,
     loader::{BuiltinResolver, FileResolver, ModuleLoader},
 };
 use serde::Deserialize;
@@ -24,7 +24,6 @@ mod store_object;
 mod value;
 
 struct ContextFrame {
-    file: PathBuf,
     curr: *const QueryContext,
     prev: Option<Box<ContextFrame>>,
     output_queue: Vec<WriteOutput>,
@@ -40,14 +39,12 @@ thread_local! {
 /// as a result of that closure will access this ctx object. Therefore, all pointer accesses from
 /// `get_context()` have safety ensured as a result of running in this function.
 fn with_query_context<T>(
-    file: PathBuf,
     ctx: &QueryContext,
     f: impl FnOnce() -> crate::Result<T>,
 ) -> crate::Result<(T, Vec<WriteOutput>)> {
     let prev = QUERY_CONTEXT.take().map(Box::new);
     let curr = ctx as *const _;
     let new_frame = ContextFrame {
-        file,
         curr,
         prev,
         output_queue: vec![],
@@ -71,12 +68,14 @@ fn get_context() -> rquickjs::Result<*const QueryContext> {
     })
 }
 
-/// SAFETY: only safe to call when running inside `with_query_context()`
-unsafe fn get_current_file() -> rquickjs::Result<PathBuf> {
-    QUERY_CONTEXT.with_borrow(|ctx| -> rquickjs::Result<_> {
-        let ctx = ctx.as_ref().ok_or(rquickjs::Error::Unknown)?;
-        Ok(ctx.file.clone())
-    })
+// SHOULD be called from a Javascript callback
+fn get_current_file(js_ctx: Ctx<'_>) -> rquickjs::Result<PathBuf> {
+    Ok(PathBuf::from(
+        js_ctx
+            .script_or_module_name(0)
+            .ok_or(rquickjs::Error::Unknown)?
+            .to_string()?,
+    ))
 }
 
 /// SAFETY: only safe to call when running inside `with_query_context()`
@@ -114,6 +113,7 @@ mod memoized {
 
     use relative_path::RelativePath;
     use relative_path::RelativePathBuf;
+    use rquickjs::Ctx;
 
     use super::error_message;
     use super::get_context;
@@ -127,9 +127,8 @@ mod memoized {
     };
 
     /// Helper function that formats a path relative to the current file
-    /// SAFETY: MUST be called inside a javascript context
-    unsafe fn to_relative_path(path: String) -> rquickjs::Result<PathBuf> {
-        let base_file = unsafe { get_current_file()? };
+    fn to_relative_path(js_ctx: Ctx<'_>, path: String) -> rquickjs::Result<PathBuf> {
+        let base_file = get_current_file(js_ctx)?;
         let base_directory = base_file
             .parent()
             .ok_or(error_message("no parent directory?"))?;
@@ -142,22 +141,23 @@ mod memoized {
     }
 
     #[rquickjs::function]
-    pub fn read_file(filename: String) -> rquickjs::Result<StoreObject> {
+    pub fn read_file(js_ctx: Ctx<'_>, filename: String) -> rquickjs::Result<StoreObject> {
         // SAFETY: the only way these javascript functions get called is from inside a
         // `with_query_context()`
         let ctx = unsafe { &*get_context()? };
-        let object = ReadFile(unsafe { to_relative_path(filename)? })
+        let path = to_relative_path(js_ctx, filename)?;
+        let object = ReadFile(path)
             .query(ctx)
             .map_err(|e| error_message(&format!("{e}")))?;
         Ok(StoreObject { object })
     }
 
     #[rquickjs::function]
-    pub fn list_directory(dirname: String) -> rquickjs::Result<Vec<String>> {
+    pub fn list_directory(js_ctx: Ctx<'_>, dirname: String) -> rquickjs::Result<Vec<String>> {
         // SAFETY: the only way these javascript functions get called is from inside a
         // `with_query_context()`
         let ctx = unsafe { &*get_context()? };
-        let contents = ListDirectory(unsafe { to_relative_path(dirname)? })
+        let contents = ListDirectory(to_relative_path(js_ctx, dirname)?)
             .query(ctx)
             .map_err(|e| error_message(&format!("{e}")))?
             .into_iter()
@@ -167,12 +167,16 @@ mod memoized {
     }
 
     #[rquickjs::function]
-    pub fn run_task(filename: String, args: Option<RustValue>) -> rquickjs::Result<RustValue> {
+    pub fn run_task(
+        js_ctx: Ctx<'_>,
+        filename: String,
+        args: Option<RustValue>,
+    ) -> rquickjs::Result<RustValue> {
         // SAFETY: the only way these javascript functions get called is from inside a
         // `with_query_context()`
         unsafe {
             push_task(RunFile {
-                file: to_relative_path(filename)?,
+                file: to_relative_path(js_ctx, filename)?,
                 args,
             })
         }
@@ -464,7 +468,7 @@ impl Producer for RunFile {
             String::from_utf8(contents.as_ref().to_vec())?
         };
 
-        let (value, outputs) = with_query_context(self.file.clone(), ctx, || {
+        let (value, outputs) = with_query_context(ctx, || {
             with_js_ctx(|ctx| -> crate::Result<_> {
                 let globals = ctx.globals();
                 globals
