@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use dashmap::DashMap;
 use serde::Deserialize;
 use serde::Serialize;
@@ -10,11 +12,11 @@ use crate::to_hash::ToHash;
 #[macro_export]
 macro_rules! query_key {
     ($name:ident $tt:tt) => {
-        #[derive(Hash, PartialEq, Eq, Clone, Debug, Serialize, Deserialize)]
+        #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
         pub struct $name $tt
     };
     ($name:ident $tt:tt ;) => {
-        #[derive(Hash, PartialEq, Eq, Clone, Debug, Serialize, Deserialize)]
+        #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
         pub struct $name $tt ;
     };
 }
@@ -23,7 +25,7 @@ macro_rules! query_keys {
     ($key:ident ($cache:ident) { $(
         $name:ident : $type:ident ,
     )* }) => {
-        #[derive(Hash, PartialEq, Eq, Clone, Debug, Serialize, Deserialize)]
+        #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
         pub enum $key {
             $($type($type),)*
         }
@@ -99,6 +101,29 @@ impl QueryKey {
         match self {
             QueryKey::ReadFile(_) | QueryKey::ListDirectory(_) => true,
             QueryKey::RunFile(_) => false,
+        }
+    }
+}
+
+impl Display for QueryKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            QueryKey::ReadFile(read_file) => write!(f, "read_file({:?})", read_file.0),
+            QueryKey::ListDirectory(list_directory) => {
+                write!(f, "list_directory({:?})", list_directory.0)
+            }
+            QueryKey::RunFile(run_file) => {
+                write!(
+                    f,
+                    "{}({})",
+                    run_file.file.display(),
+                    run_file
+                        .args
+                        .as_ref()
+                        .map(|arg| arg.to_string())
+                        .unwrap_or_default(),
+                )
+            }
         }
     }
 }

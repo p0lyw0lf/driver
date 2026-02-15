@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use std::io::Read;
 use std::io::Write;
 use std::path::Path;
@@ -86,6 +87,30 @@ impl DepGraph {
                 .map(|i| graph[i].clone())
                 .collect::<Vec<_>>()
         })
+    }
+}
+
+impl Display for DepGraph {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let graph = self.graph.read().unwrap();
+        let mut nodes = graph.node_weights().collect::<Vec<_>>();
+        nodes.sort();
+        for node in nodes.into_iter() {
+            write!(f, "{}: ", node)?;
+            if let Some(mut deps) = self.dependencies(node)
+                && !deps.is_empty()
+            {
+                deps.sort();
+                writeln!(f, "[")?;
+                for dep in deps.into_iter() {
+                    writeln!(f, "\t{},", dep)?;
+                }
+                writeln!(f, "]")?;
+            } else {
+                writeln!(f, "None")?;
+            }
+        }
+        Ok(())
     }
 }
 

@@ -12,7 +12,7 @@ use crate::to_hash::{Hash, ToHash};
 pub struct Objects(DashMap<Object, Vec<u8>>);
 
 /// Newtype for a hash that represents it's an object in the store.
-#[derive(Clone, Hash, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
 pub struct Object(Hash);
 
 impl Object {

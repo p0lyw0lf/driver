@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use crate::db::object::Object;
 use crate::js::get_context;
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Trace, JsLifetime, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Trace, JsLifetime, Serialize, Deserialize,
+)]
 #[rquickjs::class]
 pub struct StoreObject {
     #[qjs(skip_trace)]

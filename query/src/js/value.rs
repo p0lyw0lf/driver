@@ -6,8 +6,9 @@ use crate::js::StoreObject;
 use crate::to_hash::ToHash;
 
 /// All the simple javascript values that can be serialized/deserialized losslessly
-#[derive(Hash, PartialEq, Eq, Debug, Clone, Serialize, Deserialize)]
+#[derive(Default, Hash, PartialEq, Eq, PartialOrd, Ord, Debug, Clone, Serialize, Deserialize)]
 pub enum RustValue {
+    #[default]
     Undefined,
     Null,
     Bool(bool),

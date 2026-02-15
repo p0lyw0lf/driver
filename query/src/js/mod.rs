@@ -141,7 +141,7 @@ mod memoized {
     }
 
     #[rquickjs::function]
-    #[tracing::instrument(level = "debug", skip(js_ctx))]
+    #[tracing::instrument(level = "trace", skip(js_ctx))]
     pub fn read_file(js_ctx: Ctx<'_>, filename: String) -> rquickjs::Result<StoreObject> {
         // SAFETY: the only way these javascript functions get called is from inside a
         // `with_query_context()`
@@ -154,7 +154,7 @@ mod memoized {
     }
 
     #[rquickjs::function]
-    #[tracing::instrument(level = "debug", skip(js_ctx))]
+    #[tracing::instrument(level = "trace", skip(js_ctx))]
     pub fn list_directory(js_ctx: Ctx<'_>, dirname: String) -> rquickjs::Result<Vec<String>> {
         // SAFETY: the only way these javascript functions get called is from inside a
         // `with_query_context()`
@@ -169,7 +169,7 @@ mod memoized {
     }
 
     #[rquickjs::function]
-    #[tracing::instrument(level = "debug", skip(js_ctx))]
+    #[tracing::instrument(level = "trace", skip(js_ctx))]
     pub fn run_task(
         js_ctx: Ctx<'_>,
         filename: String,
@@ -201,7 +201,7 @@ mod io {
     use super::push_output;
 
     #[rquickjs::function]
-    #[tracing::instrument(level = "debug")]
+    #[tracing::instrument(level = "trace")]
     pub fn file_type(entry_name: String) -> rquickjs::Result<String> {
         let metadata = std::fs::metadata(PathBuf::from(entry_name))?;
 
@@ -218,7 +218,7 @@ mod io {
     }
 
     #[rquickjs::function]
-    #[tracing::instrument(level = "debug", skip(value))]
+    #[tracing::instrument(level = "trace", skip(value))]
     pub fn store<'js>(
         value: Either<String, rquickjs::TypedArray<'js, u8>>,
     ) -> rquickjs::Result<StoreObject> {
@@ -233,7 +233,7 @@ mod io {
     }
 
     #[rquickjs::function]
-    #[tracing::instrument(level = "debug")]
+    #[tracing::instrument(level = "trace")]
     pub fn markdown_to_html(contents: StoreObject) -> rquickjs::Result<StoreObject> {
         // SAFETY: we are in a javascript context
         let ctx = unsafe { &*get_context()? };
@@ -284,7 +284,7 @@ mod io {
     }
 
     #[rquickjs::function]
-    #[tracing::instrument(level = "debug")]
+    #[tracing::instrument(level = "trace")]
     pub fn minify_html(contents: StoreObject) -> rquickjs::Result<StoreObject> {
         // SAFETY: we are in a javascript context
         let ctx = unsafe { &*get_context()? };
@@ -303,7 +303,7 @@ mod io {
     }
 
     #[rquickjs::function]
-    #[tracing::instrument(level = "debug")]
+    #[tracing::instrument(level = "trace")]
     pub fn write_output(name: String, contents: StoreObject) -> rquickjs::Result<()> {
         let path = PathBuf::from(name);
         if !path
@@ -357,7 +357,7 @@ impl Default for MemoizedScriptLoader {
 }
 
 impl rquickjs::loader::Loader for MemoizedScriptLoader {
-    #[tracing::instrument(level = "debug", skip(self, js_ctx))]
+    #[tracing::instrument(level = "trace", skip(self, js_ctx))]
     fn load<'js>(
         &mut self,
         js_ctx: &rquickjs::Ctx<'js>,
@@ -472,7 +472,7 @@ impl ToHash for FileOutput {
 impl Producer for RunFile {
     type Output = crate::Result<FileOutput>;
 
-    #[tracing::instrument(level = "debug", skip(ctx))]
+    #[tracing::instrument(level = "trace", skip(ctx))]
     fn produce(&self, ctx: &QueryContext) -> Self::Output {
         let name = self.file.display().to_string();
         println!(

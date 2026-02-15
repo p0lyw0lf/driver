@@ -1,10 +1,12 @@
 use std::any::Any;
 use std::any::TypeId;
 use std::fmt::Debug;
+use std::fmt::Display;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use dyn_clone::DynClone;
+use tracing::debug;
 
 use crate::db::Color;
 use crate::db::Database;
@@ -67,6 +69,10 @@ impl QueryContext {
         self.db.revision.fetch_add(1, Ordering::SeqCst);
     }
 
+    pub fn display_dep_graph(&self) -> &'_ impl Display {
+        &self.dep_graph
+    }
+
     pub(crate) fn query(&self, key: QueryKey) -> AnyOutput {
         if let Some(parent) = &self.parent {
             self.dep_graph.add_dependency(parent.clone(), key.clone());
@@ -84,10 +90,10 @@ impl QueryContext {
             });
 
             if self.db.cache.insert(key.clone(), value.clone()) {
-                // println!("marked green {key:?}");
+                debug!("marked green {key}");
                 self.db.colors.mark_green(&key, revision);
             } else {
-                // println!("marked red {key:?}");
+                debug!("marked red {key}");
                 self.db.colors.mark_red(&key, revision);
             }
 
@@ -95,24 +101,24 @@ impl QueryContext {
         };
 
         let Some((_, rev)) = self.db.colors.get(&key) else {
-            // println!("not found in colors db {key:?}");
+            debug!("not found in colors db {key}");
             return update_value(key);
         };
         if key.is_input() && rev < revision {
-            // println!("key is input and revision outdated {key:?}");
+            debug!("key is input and revision outdated {key}");
             return update_value(key);
         }
 
         match self.try_mark_green(key.clone()) {
             Color::Green => {
-                // println!("marked green after trying {key:?}");
+                debug!("marked green after trying {key}");
                 self.db
                     .cache
                     .get(&key)
-                    .unwrap_or_else(|| panic!("Green query {:?} missing value in cache", key))
+                    .unwrap_or_else(|| panic!("Green query {key} missing value in cache"))
             }
             Color::Red => {
-                // println!("marked red after trying {key:?}");
+                debug!("marked red after trying {key}");
                 update_value(key)
             }
         }
@@ -122,20 +128,19 @@ impl QueryContext {
         let revision = self.db.revision.load(Ordering::SeqCst);
         // If we have no dependencies in the graph, assume we need to run the query.
         let Some(deps) = self.dep_graph.dependencies(&key) else {
-            // println!("no dependencies found {key:?}");
+            debug!("no dependencies found {key}");
             return Color::Red;
         };
-        // println!("dependencies {deps:?} for key {key:?}");
         for dep in deps {
             match self.db.colors.get(&dep) {
                 // Dependency is up-to-date in this revision, is ok
                 Some((Color::Green, rev)) if revision == rev => {
-                    // println!("dependency {dep:?} green the first time for {key:?}");
+                    debug!("dependency {dep} green the first time for {key}");
                     continue;
                 }
                 // Out-of-date dependency, we must also be out-of-date
                 Some((Color::Red, _)) => {
-                    // println!("dependency {dep:?} was outdated for {key:?}");
+                    debug!("dependency {dep} was outdated for {key}");
                     return Color::Red;
                 }
                 _ => {
@@ -145,17 +150,17 @@ impl QueryContext {
                         // up-to-date.
                         match self.db.colors.get(&dep) {
                             Some((Color::Green, _)) => {
-                                // println!("dependency {dep:?} green the second time for {key:?}");
+                                debug!("dependency {dep} green the second time for {key}");
                                 continue;
                             }
                             Some((Color::Red, _)) => {
-                                // println!("dependency {dep:?} was still outdated for {key:?}");
+                                debug!("dependency {dep} was still outdated for {key}");
                                 return Color::Red;
                             }
                             None => unreachable!("we just ran the query"),
                         }
                     } else {
-                        // println!("successfully marked dependency {dep:?} green for {key:?}");
+                        debug!("successfully marked dependency {dep} green for {key}");
                     }
                 }
             }
