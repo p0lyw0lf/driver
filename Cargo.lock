@@ -1847,6 +1847,7 @@ dependencies = [
  "minify-html",
  "petgraph",
  "postcard",
+ "relative-path",
  "rquickjs",
  "serde",
  "sha2",

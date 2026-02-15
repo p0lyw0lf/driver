@@ -24,6 +24,7 @@ mod store_object;
 mod value;
 
 struct ContextFrame {
+    file: PathBuf,
     curr: *const QueryContext,
     prev: Option<Box<ContextFrame>>,
     output_queue: Vec<WriteOutput>,
@@ -39,12 +40,14 @@ thread_local! {
 /// as a result of that closure will access this ctx object. Therefore, all pointer accesses from
 /// `get_context()` have safety ensured as a result of running in this function.
 fn with_query_context<T>(
+    file: PathBuf,
     ctx: &QueryContext,
     f: impl FnOnce() -> crate::Result<T>,
 ) -> crate::Result<(T, Vec<WriteOutput>)> {
     let prev = QUERY_CONTEXT.take().map(Box::new);
     let curr = ctx as *const _;
     let new_frame = ContextFrame {
+        file,
         curr,
         prev,
         output_queue: vec![],
@@ -65,6 +68,14 @@ fn get_context() -> rquickjs::Result<*const QueryContext> {
     QUERY_CONTEXT.with_borrow(|ctx| -> rquickjs::Result<_> {
         let ctx = ctx.as_ref().ok_or(rquickjs::Error::Unknown)?;
         Ok(ctx.curr)
+    })
+}
+
+/// SAFETY: only safe to call when running inside `with_query_context()`
+unsafe fn get_current_file() -> rquickjs::Result<PathBuf> {
+    QUERY_CONTEXT.with_borrow(|ctx| -> rquickjs::Result<_> {
+        let ctx = ctx.as_ref().ok_or(rquickjs::Error::Unknown)?;
+        Ok(ctx.file.clone())
     })
 }
 
@@ -101,9 +112,13 @@ fn error_message(message: &str) -> rquickjs::Error {
 mod memoized {
     use std::path::PathBuf;
 
+    use relative_path::RelativePath;
+    use relative_path::RelativePathBuf;
+
     use super::error_message;
     use super::get_context;
     use super::value::RustValue;
+    use crate::js::get_current_file;
     use crate::js::store_object::StoreObject;
     use crate::{
         js::{RunFile, push_task},
@@ -111,12 +126,27 @@ mod memoized {
         query::files::{ListDirectory, ReadFile},
     };
 
+    /// Helper function that formats a path relative to the current file
+    /// SAFETY: MUST be called inside a javascript context
+    unsafe fn to_relative_path(path: String) -> rquickjs::Result<PathBuf> {
+        let base_file = unsafe { get_current_file()? };
+        let base_directory = base_file
+            .parent()
+            .ok_or(error_message("no parent directory?"))?;
+        Ok(RelativePathBuf::from_path(base_directory)
+            .map_err(|e| {
+                rquickjs::Error::new_from_js_message("String", "RelativePath", e.to_string())
+            })?
+            .join_normalized(RelativePath::new(&path))
+            .to_path("."))
+    }
+
     #[rquickjs::function]
     pub fn read_file(filename: String) -> rquickjs::Result<StoreObject> {
         // SAFETY: the only way these javascript functions get called is from inside a
         // `with_query_context()`
         let ctx = unsafe { &*get_context()? };
-        let object = ReadFile(PathBuf::from(filename))
+        let object = ReadFile(unsafe { to_relative_path(filename)? })
             .query(ctx)
             .map_err(|e| error_message(&format!("{e}")))?;
         Ok(StoreObject { object })
@@ -127,7 +157,7 @@ mod memoized {
         // SAFETY: the only way these javascript functions get called is from inside a
         // `with_query_context()`
         let ctx = unsafe { &*get_context()? };
-        let contents = ListDirectory(PathBuf::from(dirname))
+        let contents = ListDirectory(unsafe { to_relative_path(dirname)? })
             .query(ctx)
             .map_err(|e| error_message(&format!("{e}")))?
             .into_iter()
@@ -142,7 +172,7 @@ mod memoized {
         // `with_query_context()`
         unsafe {
             push_task(RunFile {
-                file: PathBuf::from(filename),
+                file: to_relative_path(filename)?,
                 args,
             })
         }
@@ -431,7 +461,7 @@ impl Producer for RunFile {
             String::from_utf8(contents.as_ref().to_vec())?
         };
 
-        let (value, outputs) = with_query_context(ctx, || {
+        let (value, outputs) = with_query_context(self.file.clone(), ctx, || {
             with_js_ctx(|ctx| -> crate::Result<_> {
                 let globals = ctx.globals();
                 globals
