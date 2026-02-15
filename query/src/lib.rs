@@ -21,12 +21,14 @@ pub fn run(file: PathBuf, ctx: &QueryContext) -> crate::Result<()> {
     // TODO: eventually I'd like to have some sort of diffing algorithm to make this more
     // efficient. But for now a "wipe and re-write" is probably good enough.
     let root = &OPTIONS.read().unwrap().output_dir;
-    std::fs::remove_dir_all(root)?;
+    if std::fs::exists(root)? {
+        std::fs::remove_dir_all(root)?;
+    }
     for output in output.outputs {
         let full_path = root.join(output.path);
         std::fs::create_dir_all(full_path.parent().unwrap())?;
         let content = ctx.db.objects.get(&output.object).expect("missing object");
-        std::fs::write(full_path, content.as_ref())?;
+        std::fs::write(full_path.clone(), content.as_ref())?;
     }
     Ok(())
 }
