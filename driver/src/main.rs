@@ -8,6 +8,7 @@ fn main() -> query::Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .with_span_events(FmtSpan::ACTIVE)
         .without_time() // TODO: remove once debugging complete
+        .with_ansi(false) // TODO: remove once debugging complete
         .init();
 
     let matches = command!()

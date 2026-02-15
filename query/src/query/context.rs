@@ -73,6 +73,7 @@ impl QueryContext {
         &self.dep_graph
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     pub(crate) fn query(&self, key: QueryKey) -> AnyOutput {
         if let Some(parent) = &self.parent {
             self.dep_graph.add_dependency(parent.clone(), key.clone());

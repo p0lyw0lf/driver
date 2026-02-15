@@ -30,11 +30,29 @@ pub struct ColorMap(DashMap<QueryKey, (Color, usize)>);
 
 impl ColorMap {
     pub fn mark_green(&self, key: &QueryKey, revision: usize) {
-        self.0.insert(key.clone(), (Color::Green, revision));
+        self.mark_color(key, Color::Green, revision);
     }
 
     pub fn mark_red(&self, key: &QueryKey, revision: usize) {
-        self.0.insert(key.clone(), (Color::Red, revision));
+        self.mark_color(key, Color::Red, revision);
+    }
+
+    /// This function makes sure that, once marked for a revision, only future revisions can update
+    /// the color.
+    fn mark_color(&self, key: &QueryKey, color: Color, revision: usize) {
+        match self.0.entry(key.clone()) {
+            dashmap::Entry::Vacant(vacant_entry) => {
+                vacant_entry.insert((color, revision));
+            }
+            dashmap::Entry::Occupied(mut occupied_entry) => {
+                let (_, old_revision) = occupied_entry.get();
+                if *old_revision < revision {
+                    occupied_entry.insert((color, revision));
+                } else {
+                    // Keep current color around
+                }
+            }
+        };
     }
 
     pub fn get(&self, key: &QueryKey) -> Option<(Color, usize)> {
