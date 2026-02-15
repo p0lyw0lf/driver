@@ -122,6 +122,8 @@ mod driver {
     use super::push_output;
     use super::push_task;
 
+    use crate::js::MarkdownToHtml;
+    use crate::js::MinifyHtml;
     use crate::js::{RunFile, get_current_file, store_object::StoreObject, value::RustValue};
     use crate::{
         query::context::Producer,
@@ -224,7 +226,56 @@ mod driver {
     pub fn markdown_to_html(contents: StoreObject) -> rquickjs::Result<StoreObject> {
         // SAFETY: we are in a javascript context
         let ctx = unsafe { &*get_context()? };
-        let contents = unsafe { contents.contents_as_string()? };
+        let object = MarkdownToHtml(contents.object)
+            .query(ctx)
+            .map_err(|e| error_message(&e.to_string()))?;
+        Ok(StoreObject { object })
+    }
+
+    #[rquickjs::function]
+    #[tracing::instrument(level = "trace")]
+    pub fn minify_html(contents: StoreObject) -> rquickjs::Result<StoreObject> {
+        // SAFETY: we are in a javascript context
+        let ctx = unsafe { &*get_context()? };
+        let object = MinifyHtml(contents.object)
+            .query(ctx)
+            .map_err(|e| error_message(&e.to_string()))?;
+        Ok(StoreObject { object })
+    }
+
+    #[rquickjs::function]
+    #[tracing::instrument(level = "trace")]
+    pub fn write_output(name: String, contents: StoreObject) -> rquickjs::Result<()> {
+        let path = PathBuf::from(name);
+        if !path
+            .components()
+            .all(|component| matches!(component, Component::CurDir | Component::Normal(_)))
+        {
+            // Don't allow any path traversal outside the output directory
+            return Err(error_message(&format!(
+                "directory traversal {}",
+                path.display()
+            )));
+        }
+        unsafe {
+            push_output(WriteOutput {
+                path,
+                // SAFETY: being provided a StoreObject always means we've put it in the store
+                // already
+                object: contents.object,
+            })?
+        };
+        Ok(())
+    }
+}
+
+query_key!(MarkdownToHtml(pub Object););
+
+impl Producer for MarkdownToHtml {
+    type Output = crate::Result<Object>;
+
+    fn produce(&self, ctx: &QueryContext) -> Self::Output {
+        let contents = self.0.contents_as_string(ctx)?;
 
         let output = comrak::markdown_to_html_with_plugins(
             &contents,
@@ -267,15 +318,17 @@ mod driver {
         );
 
         let object = ctx.db.objects.store(output.into_bytes());
-        Ok(StoreObject { object })
+        Ok(object)
     }
+}
 
-    #[rquickjs::function]
-    #[tracing::instrument(level = "trace")]
-    pub fn minify_html(contents: StoreObject) -> rquickjs::Result<StoreObject> {
-        // SAFETY: we are in a javascript context
-        let ctx = unsafe { &*get_context()? };
-        let contents = unsafe { contents.contents_as_string()? };
+query_key!(MinifyHtml(pub Object););
+
+impl Producer for MinifyHtml {
+    type Output = crate::Result<Object>;
+
+    fn produce(&self, ctx: &QueryContext) -> Self::Output {
+        let contents = self.0.contents_as_string(ctx)?;
         let cfg = minify_html::Cfg {
             keep_closing_tags: true,
             keep_comments: true,
@@ -286,32 +339,7 @@ mod driver {
         };
         let output = minify_html::minify(contents.as_bytes(), &cfg);
         let object = ctx.db.objects.store(output);
-        Ok(StoreObject { object })
-    }
-
-    #[rquickjs::function]
-    #[tracing::instrument(level = "trace")]
-    pub fn write_output(name: String, contents: StoreObject) -> rquickjs::Result<()> {
-        let path = PathBuf::from(name);
-        if !path
-            .components()
-            .all(|component| matches!(component, Component::CurDir | Component::Normal(_)))
-        {
-            // Don't allow any path traversal outside the output directory
-            return Err(error_message(&format!(
-                "directory traversal {}",
-                path.display()
-            )));
-        }
-        unsafe {
-            push_output(WriteOutput {
-                path,
-                // SAFETY: being provided a StoreObject always means we've put it in the store
-                // already
-                object: contents.object,
-            })?
-        };
-        Ok(())
+        Ok(object)
     }
 }
 

@@ -4,7 +4,10 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
-use crate::to_hash::{Hash, ToHash};
+use crate::{
+    QueryContext,
+    to_hash::{Hash, ToHash},
+};
 
 /// A store for all strings that would otherwise be too large to persist to disk multiple times.
 /// Uniquely keyed by the hashes of the strings it stores.
@@ -19,6 +22,29 @@ impl Object {
     /// SAFETY: this function MUST only be used for constructing objects from those saved to disk.
     pub unsafe fn from_hash(hash: Hash) -> Self {
         Self(hash)
+    }
+
+    pub fn contents_as_bytes(&self, ctx: &QueryContext) -> rquickjs::Result<Vec<u8>> {
+        Ok(ctx
+            .db
+            .objects
+            .get(self)
+            .ok_or(rquickjs::Error::new_into_js_message(
+                "StoreObject",
+                "TypedArray",
+                format!("object {} not found", self),
+            ))?
+            .as_ref()
+            .iter()
+            .map(Clone::clone)
+            .collect::<Vec<u8>>())
+    }
+
+    pub fn contents_as_string(&self, ctx: &QueryContext) -> rquickjs::Result<String> {
+        let bytes = self.contents_as_bytes(ctx)?;
+        String::from_utf8(bytes).map_err(|err| {
+            rquickjs::Error::new_into_js_message("StoreObject", "String", err.to_string())
+        })
     }
 }
 

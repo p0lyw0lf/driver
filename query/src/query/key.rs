@@ -4,6 +4,8 @@ use dashmap::DashMap;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::js::MarkdownToHtml;
+use crate::js::MinifyHtml;
 use crate::js::RunFile;
 use crate::query::files::ListDirectory;
 use crate::query::files::ReadFile;
@@ -93,14 +95,19 @@ query_keys!(QueryKey (QueryCache) {
     read_file: ReadFile,
     list_directory: ListDirectory,
     run_file: RunFile,
+    minify_html: MinifyHtml,
+    markdown_to_html: MarkdownToHtml,
 });
 
 impl QueryKey {
     // whether a new revision should cause this key to be immediately re-computed or not
     pub fn is_input(&self) -> bool {
         match self {
-            QueryKey::ReadFile(_) | QueryKey::ListDirectory(_) => true,
+            QueryKey::ReadFile(_) => true,
+            QueryKey::ListDirectory(_) => true,
             QueryKey::RunFile(_) => false,
+            QueryKey::MinifyHtml(_) => false,
+            QueryKey::MarkdownToHtml(_) => false,
         }
     }
 }
@@ -123,6 +130,10 @@ impl Display for QueryKey {
                         .map(|arg| arg.to_string())
                         .unwrap_or_default(),
                 )
+            }
+            QueryKey::MinifyHtml(minify_html) => write!(f, "minify_html({})", minify_html.0),
+            QueryKey::MarkdownToHtml(markdown_to_html) => {
+                write!(f, "markdown_to_html({})", markdown_to_html.0)
             }
         }
     }
