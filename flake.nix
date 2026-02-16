@@ -18,7 +18,7 @@
       rust-overlay,
     }:
     {
-      overlays.default = (final: prev: { inherit (self.packages.${final.system}) driver-bin; });
+      overlays.default = (final: prev: { inherit (self.packages.${final.system}) driver; });
     }
     // flake-utils.lib.eachDefaultSystem (
       system:
@@ -35,15 +35,15 @@
           rustc = rust-toolchain;
         };
 
-        driver-bin = naersk'.buildPackage {
+        driver = naersk'.buildPackage {
           src = ./.;
-          cargoBuildOptions = opts: opts ++ [ "--package driver_bin" ];
+          cargoBuildOptions = opts: opts ++ [ "--package driver" ];
         };
       in
       {
         packages = {
-          inherit driver-bin;
-          default = driver-bin;
+          inherit driver;
+          default = driver;
         };
 
         devShells.default = pkgs.callPackage ./devshell.nix { inherit rust-toolchain; };
