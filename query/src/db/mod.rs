@@ -18,6 +18,7 @@ use crate::query::key::QueryCache;
 use crate::to_hash::Hash;
 
 pub mod object;
+mod remote;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Color {
@@ -142,6 +143,7 @@ pub struct Database {
     pub cache: QueryCache,
 
     pub objects: object::Objects,
+    pub remotes: remote::RemoteObjects,
 }
 
 struct Filenames {
