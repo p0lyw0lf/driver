@@ -4,7 +4,7 @@ use dashmap::DashMap;
 use jiff::fmt::temporal::DateTimeParser;
 use jiff::{Span, Timestamp, ToSpan};
 use reqwest::blocking::Client;
-use reqwest::header::{EXPIRES, HeaderMap};
+use reqwest::header::{ETAG, EXPIRES, HeaderMap, HeaderValue, IF_MODIFIED_SINCE, IF_NONE_MATCH};
 use reqwest::{Url, header::CACHE_CONTROL};
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +31,21 @@ pub struct RemoteObject {
     /// fetch again)? Calculated according to https://httpwg.org/specs/rfc9111.html#calculating.freshness.lifetime,
     /// based on the HTTP responose headers.
     freshness_lifetime: Span,
+    /// When submitting to the cache server, we provide an ETag header so it can say "not modified"
+    /// to short-circuit make us not have to download as much data
+    etag: Option<Vec<u8>>,
+}
+
+impl RemoteObject {
+    /// Returns whether the object is still fresh at the time of the call.
+    fn is_fresh(&self) -> bool {
+        let now = Timestamp::now();
+        let since_then = now - self.fetched;
+        matches!(
+            self.freshness_lifetime.compare(since_then),
+            Ok(std::cmp::Ordering::Greater)
+        )
+    }
 }
 
 impl RemoteObjects {
@@ -51,11 +66,35 @@ impl RemoteObjects {
         1.day()
     }
 
-    /// Fetches a remote URL and adds it to the local store.
+    /// Fetches a remote URL and adds it to the local store if not present or too stale.
+    /// If the URL is present in the cache and still fresh, uses that instead of fetching.
     fn fetch(&self, objects: &Objects, url: Url) -> crate::Result<RemoteObject> {
-        let resp = self.client.get(url).send()?;
+        // If there is a fresh object in the cache, just use that
+        if let Some(remote_object) = self.cache.get(&url)
+            && remote_object.is_fresh()
+        {
+            return Ok(remote_object.clone());
+        }
+
+        // Otherwise, we need to fetch the URL.
+        let mut req = self.client.get(url.clone());
+        if let Some(remote_object) = self.cache.get(&url) {
+            // TODO: See
+            // https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/If-Modified-Since
+            // for the format of this. kinda cursed if you ask me tbh
+            req = req.header(
+                IF_MODIFIED_SINCE,
+                "TODO: correctly format this from remote_object.fetched",
+            );
+            if let Some(etag) = &remote_object.etag {
+                req = req.header(IF_NONE_MATCH, HeaderValue::from_bytes(etag)?);
+            }
+        }
+        let resp = req.send()?;
         let status = resp.status();
         if !status.is_success() {
+            // TODO: check for 304 status. should probably also hold the lock on remote_object
+            // until here if I can.
             return Err(crate::Error::new(
                 status.canonical_reason().unwrap_or("unknown response code"),
             ));
@@ -69,6 +108,10 @@ impl RemoteObjects {
                 tracing::warn!("getting freshness lifetime: {e}");
                 Self::default_freshness()
             });
+        let etag = resp
+            .headers()
+            .get(ETAG)
+            .map(|header| header.as_bytes().to_owned());
 
         let body = resp.bytes()?;
         let object = objects.store(body.into());
@@ -77,6 +120,7 @@ impl RemoteObjects {
             object,
             fetched,
             freshness_lifetime,
+            etag,
         })
     }
 
