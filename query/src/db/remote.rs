@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use dashmap::DashMap;
 use jiff::fmt::temporal::DateTimeParser;
 use jiff::{Span, Timestamp, ToSpan};
+use reqwest::StatusCode;
 use reqwest::blocking::Client;
 use reqwest::header::{ETAG, EXPIRES, HeaderMap, HeaderValue, IF_MODIFIED_SINCE, IF_NONE_MATCH};
 use reqwest::{Url, header::CACHE_CONTROL};
@@ -62,66 +63,103 @@ impl RemoteObjects {
             .expect("could not build HTTP client")
     }
 
-    fn default_freshness() -> Span {
-        1.day()
-    }
-
     /// Fetches a remote URL and adds it to the local store if not present or too stale.
     /// If the URL is present in the cache and still fresh, uses that instead of fetching.
     fn fetch(&self, objects: &Objects, url: Url) -> crate::Result<RemoteObject> {
-        // If there is a fresh object in the cache, just use that
-        if let Some(remote_object) = self.cache.get(&url)
-            && remote_object.is_fresh()
-        {
-            return Ok(remote_object.clone());
-        }
-
-        // Otherwise, we need to fetch the URL.
-        let mut req = self.client.get(url.clone());
-        if let Some(remote_object) = self.cache.get(&url) {
-            // TODO: See
-            // https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/If-Modified-Since
-            // for the format of this. kinda cursed if you ask me tbh
-            req = req.header(
-                IF_MODIFIED_SINCE,
-                "TODO: correctly format this from remote_object.fetched",
-            );
-            if let Some(etag) = &remote_object.etag {
-                req = req.header(IF_NONE_MATCH, HeaderValue::from_bytes(etag)?);
+        let req = {
+            // Limit lifetime of the remote object that we use to build the request
+            let remote_object = self.cache.get(&url);
+            if let Some(ref remote_object) = remote_object
+                && remote_object.is_fresh()
+            {
+                // If there is a fresh object in the cache, just use that
+                return Ok((*remote_object).clone());
             }
-        }
+
+            // Otherwise, we need to fetch the URL.
+            let mut req = self.client.get(url.clone());
+            if let Some(ref remote_object) = remote_object {
+                req = req.header(
+                    IF_MODIFIED_SINCE,
+                    format_header_date(remote_object.fetched)?,
+                );
+                if let Some(etag) = &remote_object.etag {
+                    req = req.header(IF_NONE_MATCH, HeaderValue::from_bytes(etag)?);
+                }
+            }
+            req
+        };
+
         let resp = req.send()?;
         let status = resp.status();
         if !status.is_success() {
-            // TODO: check for 304 status. should probably also hold the lock on remote_object
-            // until here if I can.
+            if status == StatusCode::NOT_MODIFIED {
+                // Cache thinks the object we have locally is still fresh, keep it around and
+                // update the headers.
+                let headers = ResponseHeaders::from_headers(resp.headers());
+                let remote_object = self.cache.get(&url).ok_or_else(|| {
+                    crate::Error::new("server returned 304, but object not found in cache")
+                })?;
+                return Ok(headers.with_object(remote_object.object.clone()));
+            }
+            // Otherwise, the error is unexpected
             return Err(crate::Error::new(
                 status.canonical_reason().unwrap_or("unknown response code"),
             ));
         }
 
+        let headers = ResponseHeaders::from_headers(resp.headers());
+
+        let body = resp.bytes()?;
+        let object = objects.store(body.into());
+
+        Ok(headers.with_object(object))
+    }
+}
+
+/// The part of RemoteObject that can be populated from the response headers we get
+struct ResponseHeaders {
+    fetched: Timestamp,
+    freshness_lifetime: Span,
+    etag: Option<Vec<u8>>,
+}
+
+impl ResponseHeaders {
+    fn with_object(self, object: Object) -> RemoteObject {
+        let Self {
+            fetched,
+            freshness_lifetime,
+            etag,
+        } = self;
+        RemoteObject {
+            object,
+            fetched,
+            freshness_lifetime,
+            etag,
+        }
+    }
+
+    /// If the server doesn't support cache tracking, how long should we cache anyways?
+    fn default_freshness() -> Span {
+        1.day()
+    }
+
+    fn from_headers(headers: &HeaderMap) -> Self {
         let fetched = Timestamp::now();
-        let freshness_lifetime = Self::calculate_freshness_lifetime(resp.headers(), fetched)
+        let freshness_lifetime = Self::calculate_freshness_lifetime(headers, fetched)
             .unwrap_or_else(|e| {
                 // Log the error, then continue with default freshness, since the server _did_ give
                 // us a response after all.
                 tracing::warn!("getting freshness lifetime: {e}");
                 Self::default_freshness()
             });
-        let etag = resp
-            .headers()
-            .get(ETAG)
-            .map(|header| header.as_bytes().to_owned());
+        let etag = headers.get(ETAG).map(|header| header.as_bytes().to_owned());
 
-        let body = resp.bytes()?;
-        let object = objects.store(body.into());
-
-        Ok(RemoteObject {
-            object,
+        Self {
             fetched,
             freshness_lifetime,
             etag,
-        })
+        }
     }
 
     /// Runs the algorithm described at https://httpwg.org/specs/rfc9111.html#rfc.section.4.2.1
@@ -168,6 +206,49 @@ impl RemoteObjects {
         // the cache is fresh)
         Ok(Self::default_freshness())
     }
+}
+
+/// Implements the formatting specification from https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/If-Modified-Since
+fn format_header_date(timestamp: Timestamp) -> crate::Result<HeaderValue> {
+    let gmt = timestamp.in_tz("Etc/GMT")?;
+
+    let weekday = match gmt.weekday() {
+        jiff::civil::Weekday::Monday => "Mon",
+        jiff::civil::Weekday::Tuesday => "Tue",
+        jiff::civil::Weekday::Wednesday => "Wed",
+        jiff::civil::Weekday::Thursday => "Thu",
+        jiff::civil::Weekday::Friday => "Fri",
+        jiff::civil::Weekday::Saturday => "Sat",
+        jiff::civil::Weekday::Sunday => "Sun",
+    };
+
+    let day = gmt.day();
+
+    let month = match gmt.month() {
+        1 => "Jan",
+        2 => "Feb",
+        3 => "Mar",
+        4 => "Apr",
+        5 => "May",
+        6 => "Jun",
+        7 => "Jul",
+        8 => "Aug",
+        9 => "Sep",
+        10 => "Oct",
+        11 => "Nov",
+        12 => "Dec",
+        _ => return Err(crate::Error::new("invalid month")),
+    };
+
+    let year = gmt.year();
+
+    let hour = gmt.hour();
+    let minute = gmt.minute();
+    let second = gmt.second();
+
+    let value =
+        format!("{weekday}, {day:0>2} {month} {year:0>4} {hour:0>2}:{minute:0>2}:{second:0>2} GMT");
+    Ok(HeaderValue::from_str(&value)?)
 }
 
 impl Serialize for RemoteObjects {
