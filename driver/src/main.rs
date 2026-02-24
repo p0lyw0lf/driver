@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use clap::arg;
 use clap::command;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -16,21 +18,22 @@ fn main() -> query::Result<()> {
         .arg(arg!([script] "The file to run"))
         .get_matches();
 
-    let ctx = query::QueryContext::restore().unwrap_or_else(|e| {
-        eprintln!("error restoring context: {e}");
-        query::QueryContext::default()
-    });
+    let rt = Arc::new(tokio::runtime::Runtime::new()?);
 
-    if let Some(filename) = matches.get_one::<String>("script")
-        && let Err(e) = query::run(filename.into(), &ctx)
-    {
-        eprintln!("{e}");
-    }
+    rt.block_on(async {
+        let ctx = query::QueryContext::restore_or_default(rt.clone()).await;
 
-    if matches.get_flag("print_graph") {
-        println!("{}", ctx.display_dep_graph());
-    }
+        if let Some(filename) = matches.get_one::<String>("script")
+            && let Err(e) = query::run(filename.into(), &ctx).await
+        {
+            eprintln!("{e}");
+        }
 
-    ctx.save()?;
-    Ok(())
+        if matches.get_flag("print_graph") {
+            println!("{}", ctx.display_dep_graph());
+        }
+
+        ctx.save().await?;
+        Ok(())
+    })
 }

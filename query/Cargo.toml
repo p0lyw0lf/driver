@@ -36,8 +36,10 @@ features = [
 version = "0.11"
 features = [
   "either",
-  "rust-alloc",
+  "futures",
   "loader",
   "macro",
+  "parallel",
   "phf",
+  "rust-alloc",
 ]

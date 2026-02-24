@@ -57,8 +57,9 @@ pub trait Producer {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct QueryContext {
+    pub(crate) rt: Arc<tokio::runtime::Runtime>,
     parent: Option<QueryKey>,
     pub(crate) db: Arc<Database>,
     dep_graph: Arc<DepGraph>,
@@ -80,15 +81,17 @@ impl QueryContext {
         }
 
         let revision = self.db.revision.load(Ordering::SeqCst);
-        let update_value = |key: QueryKey| {
+        let update_value = async |key: QueryKey| {
             // We're about to run the key again, so remove any dependencies it once had
             self.dep_graph.remove_all_dependencies(key.clone());
 
-            let value = key.produce(&QueryContext {
+            let value = Box::pin(key.produce(&QueryContext {
+                rt: self.rt.clone(),
                 parent: Some(key.clone()),
                 db: self.db.clone(),
                 dep_graph: self.dep_graph.clone(),
-            });
+            }))
+            .await;
 
             if self.db.cache.insert(key.clone(), value.clone()) {
                 debug!("marked green {key}");
@@ -103,14 +106,14 @@ impl QueryContext {
 
         let Some((_, rev)) = self.db.colors.get(&key) else {
             debug!("not found in colors db {key}");
-            return update_value(key);
+            return update_value(key).await;
         };
         if key.is_input() && rev < revision {
             debug!("key is input and revision outdated {key}");
-            return update_value(key);
+            return update_value(key).await;
         }
 
-        match self.try_mark_green(key.clone()) {
+        match self.try_mark_green(key.clone()).await {
             Color::Green => {
                 debug!("marked green after trying {key}");
                 self.db
@@ -120,12 +123,12 @@ impl QueryContext {
             }
             Color::Red => {
                 debug!("marked red after trying {key}");
-                update_value(key)
+                update_value(key).await
             }
         }
     }
 
-    fn try_mark_green(&self, key: QueryKey) -> Color {
+    async fn try_mark_green(&self, key: QueryKey) -> Color {
         let revision = self.db.revision.load(Ordering::SeqCst);
         // If we have no dependencies in the graph, assume we need to run the query.
         let Some(deps) = self.dep_graph.dependencies(&key) else {
@@ -145,8 +148,10 @@ impl QueryContext {
                     return Color::Red;
                 }
                 _ => {
-                    if dep.is_input() || self.try_mark_green(dep.clone()) != Color::Green {
-                        let _ = self.query(dep.clone());
+                    if dep.is_input()
+                        || Box::pin(self.try_mark_green(dep.clone())).await != Color::Green
+                    {
+                        let _ = Box::pin(self.query(dep.clone())).await;
                         // Because we just ran the query, we can be sure the revision is
                         // up-to-date.
                         match self.db.colors.get(&dep) {
@@ -172,18 +177,34 @@ impl QueryContext {
         Color::Green
     }
 
-    pub fn save(&self) -> crate::Result<()> {
+    pub async fn save(&self) -> crate::Result<()> {
         let cache_dir = &OPTIONS.read().unwrap().cache_dir;
         crate::db::save_to_directory(cache_dir, &self.db, &self.dep_graph)
     }
 
-    pub fn restore() -> crate::Result<Self> {
+    async fn restore(rt: Arc<tokio::runtime::Runtime>) -> crate::Result<Self> {
         let cache_dir = &OPTIONS.read().unwrap().cache_dir;
         let (db, dep_graph) = crate::db::restore_from_directory(cache_dir)?;
         Ok(Self {
+            rt,
             parent: None,
             db: Arc::new(db),
             dep_graph: Arc::new(dep_graph),
         })
+    }
+
+    pub async fn restore_or_default(rt: Arc<tokio::runtime::Runtime>) -> Self {
+        match Self::restore(rt.clone()).await {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                tracing::warn!("error restoring context: {e}");
+                Self {
+                    rt,
+                    parent: None,
+                    db: Default::default(),
+                    dep_graph: Default::default(),
+                }
+            }
+        }
     }
 }
