@@ -14,6 +14,7 @@ use serde::Serialize;
 
 use crate::QueryKey;
 use crate::db::object::Object;
+use crate::db::remote::RemoteObjects;
 use crate::query::key::QueryCache;
 use crate::to_hash::Hash;
 
@@ -149,6 +150,7 @@ pub struct Database {
 struct Filenames {
     cache_filename: PathBuf,
     depgraph_filename: PathBuf,
+    remote_filename: PathBuf,
     objects_dirname: PathBuf,
 }
 
@@ -156,6 +158,7 @@ fn get_filenames(dir: &Path) -> Filenames {
     Filenames {
         cache_filename: dir.join("cache.v1.pc"),
         depgraph_filename: dir.join("depgraph.v1.pc"),
+        remote_filename: dir.join("remote.v1.pc"),
         objects_dirname: dir.join("objects"),
     }
 }
@@ -164,6 +167,7 @@ pub fn save_to_directory(dir: &Path, db: &Database, deps: &DepGraph) -> crate::R
     let Filenames {
         cache_filename,
         depgraph_filename,
+        remote_filename,
         objects_dirname,
     } = get_filenames(dir);
 
@@ -176,6 +180,10 @@ pub fn save_to_directory(dir: &Path, db: &Database, deps: &DepGraph) -> crate::R
     {
         let depgraph_file = std::fs::File::create(depgraph_filename)?;
         postcard::to_io(deps, depgraph_file)?;
+    }
+    {
+        let remote_file = std::fs::File::create(remote_filename)?;
+        postcard::to_io(&db.remotes, remote_file)?;
     }
 
     db.objects.for_each(|hash, contents| -> crate::Result<_> {
@@ -206,6 +214,7 @@ pub fn restore_from_directory(dir: &Path) -> crate::Result<(Database, DepGraph)>
     let Filenames {
         cache_filename,
         depgraph_filename,
+        remote_filename,
         objects_dirname,
     } = get_filenames(dir);
 
@@ -214,6 +223,9 @@ pub fn restore_from_directory(dir: &Path) -> crate::Result<(Database, DepGraph)>
 
     let depgraph_bytes = std::fs::read(depgraph_filename)?;
     let depgraph: DepGraph = postcard::from_bytes(&depgraph_bytes[..])?;
+
+    let remote_bytes = std::fs::read(remote_filename)?;
+    let remotes: RemoteObjects = postcard::from_bytes(&remote_bytes[..])?;
 
     // Everything loaded from the disk is green to start with; this will be busted by input queries
     // changing for the next revision.
@@ -263,6 +275,7 @@ pub fn restore_from_directory(dir: &Path) -> crate::Result<(Database, DepGraph)>
         // Bust cache immediately
         revision: AtomicUsize::new(1),
         cache,
+        remotes,
         objects,
     };
 
