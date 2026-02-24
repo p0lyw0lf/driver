@@ -16,7 +16,7 @@ pub use query::context::QueryContext;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub fn run(file: PathBuf, ctx: &QueryContext) -> crate::Result<()> {
+pub async fn run(file: PathBuf, ctx: &QueryContext) -> crate::Result<()> {
     let output = js::RunFile { file, args: None }.query(ctx)?;
     // TODO: eventually I'd like to have some sort of diffing algorithm to make this more
     // efficient. But for now a "wipe and re-write" is probably good enough.

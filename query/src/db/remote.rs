@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use dashmap::DashMap;
 use jiff::fmt::temporal::DateTimeParser;
 use jiff::{Span, Timestamp, ToSpan};
+use reqwest::Client;
 use reqwest::StatusCode;
-use reqwest::blocking::Client;
 use reqwest::header::{ETAG, EXPIRES, HeaderMap, HeaderValue, IF_MODIFIED_SINCE, IF_NONE_MATCH};
 use reqwest::{Url, header::CACHE_CONTROL};
 use serde::{Deserialize, Serialize};
@@ -65,7 +65,7 @@ impl RemoteObjects {
 
     /// Fetches a remote URL and adds it to the local store if not present or too stale.
     /// If the URL is present in the cache and still fresh, uses that instead of fetching.
-    fn fetch(&self, objects: &Objects, url: Url) -> crate::Result<RemoteObject> {
+    async fn fetch(&self, objects: &Objects, url: Url) -> crate::Result<RemoteObject> {
         let req = {
             // Limit lifetime of the remote object that we use to build the request
             let remote_object = self.cache.get(&url);
@@ -90,7 +90,7 @@ impl RemoteObjects {
             req
         };
 
-        let resp = req.send()?;
+        let resp = req.send().await?;
         let status = resp.status();
         if !status.is_success() {
             if status == StatusCode::NOT_MODIFIED {
@@ -110,7 +110,7 @@ impl RemoteObjects {
 
         let headers = ResponseHeaders::from_headers(resp.headers());
 
-        let body = resp.bytes()?;
+        let body = resp.bytes().await?;
         let object = objects.store(body.into());
 
         Ok(headers.with_object(object))

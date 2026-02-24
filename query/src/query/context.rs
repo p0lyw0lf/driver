@@ -44,13 +44,13 @@ pub trait Producer {
     // is easily clone-able. This will eventually require string interning somewhere, not quite
     // sure where yet.
     type Output: Output + Sized + 'static;
-    fn produce(&self, ctx: &QueryContext) -> Self::Output;
-    fn query(self, ctx: &QueryContext) -> Self::Output
+    async fn produce(&self, ctx: &QueryContext) -> Self::Output;
+    async fn query(self, ctx: &QueryContext) -> Self::Output
     where
         Self: Sized,
         QueryKey: From<Self>,
     {
-        let value = ctx.query(self.into());
+        let value = ctx.query(self.into()).await;
         *value
             .downcast()
             .expect("query produced wrong value somehow")
@@ -74,7 +74,7 @@ impl QueryContext {
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
-    pub(crate) fn query(&self, key: QueryKey) -> AnyOutput {
+    pub(crate) async fn query(&self, key: QueryKey) -> AnyOutput {
         if let Some(parent) = &self.parent {
             self.dep_graph.add_dependency(parent.clone(), key.clone());
         }

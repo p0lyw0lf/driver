@@ -274,7 +274,7 @@ query_key!(MarkdownToHtml(pub Object););
 impl Producer for MarkdownToHtml {
     type Output = crate::Result<Object>;
 
-    fn produce(&self, ctx: &QueryContext) -> Self::Output {
+    async fn produce(&self, ctx: &QueryContext) -> Self::Output {
         let contents = self.0.contents_as_string(ctx)?;
 
         let output = comrak::markdown_to_html_with_plugins(
@@ -327,7 +327,7 @@ query_key!(MinifyHtml(pub Object););
 impl Producer for MinifyHtml {
     type Output = crate::Result<Object>;
 
-    fn produce(&self, ctx: &QueryContext) -> Self::Output {
+    async fn produce(&self, ctx: &QueryContext) -> Self::Output {
         let contents = self.0.contents_as_string(ctx)?;
         let cfg = minify_html::Cfg {
             keep_closing_tags: true,
@@ -486,7 +486,7 @@ impl Producer for RunFile {
     type Output = crate::Result<FileOutput>;
 
     #[tracing::instrument(level = "trace", skip(ctx))]
-    fn produce(&self, ctx: &QueryContext) -> Self::Output {
+    async fn produce(&self, ctx: &QueryContext) -> Self::Output {
         let name = self.file.display().to_string();
         println!(
             "running {}({})",
@@ -496,7 +496,7 @@ impl Producer for RunFile {
                 .map(|args| args.to_string())
                 .unwrap_or_default()
         );
-        let object = ReadFile(self.file.clone()).query(ctx)?;
+        let object = ReadFile(self.file.clone()).query(ctx).await?;
         let contents = {
             // Need to shorten the lifetime of our read from the database so that we don't deadlock
             // trying to read from the map multiple times
