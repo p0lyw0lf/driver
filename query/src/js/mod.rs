@@ -115,6 +115,7 @@ mod driver {
     use relative_path::RelativePath;
     use relative_path::RelativePathBuf;
     use rquickjs::Ctx;
+    use rquickjs::prelude::Promised;
 
     use super::WriteOutput;
     use super::error_message;
@@ -129,6 +130,8 @@ mod driver {
     };
 
     /// Helper function that formats a path relative to the current file
+    /// NOTE: this is only safe to call **BEFORE** the promise starts to execute. This is why we
+    /// have to do such crazy type signature things below.
     fn to_relative_path(js_ctx: Ctx<'_>, path: String) -> rquickjs::Result<PathBuf> {
         let base_file = get_current_file(js_ctx)?;
         let base_directory = base_file
@@ -144,45 +147,59 @@ mod driver {
 
     #[rquickjs::function]
     #[tracing::instrument(level = "trace", skip(js_ctx))]
-    pub async fn read_file(js_ctx: Ctx<'_>, filename: String) -> rquickjs::Result<StoreObject> {
+    pub fn read_file(
+        js_ctx: Ctx<'_>,
+        filename: String,
+    ) -> rquickjs::Result<Promised<impl Future<Output = rquickjs::Result<StoreObject>>>> {
         // SAFETY: the only way these javascript functions get called is from inside a
         // `with_query_context()`
         let ctx = unsafe { &*get_context()? };
         let path = to_relative_path(js_ctx, filename)?;
-        let object = ReadFile(path)
-            .query(ctx)
-            .await
-            .map_err(|e| error_message(format!("read_file: {e}")))?;
-        Ok(StoreObject { object })
+
+        Ok(Promised(async move {
+            let object = ReadFile(path)
+                .query(ctx)
+                .await
+                .map_err(|e| error_message(format!("read_file: {e}")))?;
+            Ok(StoreObject { object })
+        }))
     }
 
     #[rquickjs::function]
     #[tracing::instrument(level = "trace", skip(js_ctx))]
-    pub async fn list_directory(js_ctx: Ctx<'_>, dirname: String) -> rquickjs::Result<Vec<String>> {
+    pub fn list_directory(
+        js_ctx: Ctx<'_>,
+        dirname: String,
+    ) -> rquickjs::Result<Promised<impl Future<Output = rquickjs::Result<Vec<String>>>>> {
         // SAFETY: the only way these javascript functions get called is from inside a
         // `with_query_context()`
         let ctx = unsafe { &*get_context()? };
-        let contents = ListDirectory(to_relative_path(js_ctx, dirname)?)
-            .query(ctx)
-            .await
-            .map_err(|e| error_message(format!("list_directory: {e}")))?
-            .into_iter()
-            .map(|entry| entry.display().to_string())
-            .collect();
-        Ok(contents)
+        let dirname = to_relative_path(js_ctx, dirname)?;
+        Ok(Promised(async move {
+            let contents = ListDirectory(dirname)
+                .query(ctx)
+                .await
+                .map_err(|e| error_message(format!("list_directory: {e}")))?
+                .into_iter()
+                .map(|entry| entry.display().to_string())
+                .collect();
+            Ok(contents)
+        }))
     }
 
     #[rquickjs::function]
     #[tracing::instrument(level = "trace", skip(js_ctx))]
-    pub async fn run_task(
+    pub fn run_task(
         js_ctx: Ctx<'_>,
         filename: String,
         args: Option<RustValue>,
-    ) -> rquickjs::Result<RustValue> {
+    ) -> rquickjs::Result<Promised<impl Future<Output = rquickjs::Result<RustValue>>>> {
         let file = to_relative_path(js_ctx, filename)?;
-        // SAFETY: the only way these javascript functions get called is from inside a
-        // `with_query_context()`
-        unsafe { super::run_task(file, args) }.await
+        Ok(Promised(async move {
+            // SAFETY: the only way these javascript functions get called is from inside a
+            // `with_query_context()`
+            unsafe { super::run_task(file, args) }.await
+        }))
     }
 
     #[rquickjs::function]
@@ -275,45 +292,50 @@ impl Producer for MarkdownToHtml {
     async fn produce(&self, ctx: &QueryContext) -> Self::Output {
         let contents = self.0.contents_as_string(ctx)?;
 
-        let output = comrak::markdown_to_html_with_plugins(
-            &contents,
-            &comrak::Options {
-                extension: comrak::options::Extension::builder()
-                    .strikethrough(true)
-                    .table(true)
-                    .autolink(false)
-                    .tasklist(true)
-                    .superscript(false)
-                    .subscript(false)
-                    .footnotes(true)
-                    .math_dollars(true)
-                    .shortcodes(false)
-                    .underline(false)
-                    .spoiler(true)
-                    .subtext(true)
-                    .highlight(true)
-                    .build(),
-                parse: comrak::options::Parse::builder()
-                    .smart(false)
-                    .tasklist_in_table(true)
-                    .ignore_setext(true)
-                    .build(),
-                render: comrak::options::Render::builder()
-                    .hardbreaks(false)
-                    .r#unsafe(true)
-                    .escape(false)
-                    .tasklist_classes(true)
-                    .build(),
-            },
-            &comrak::options::Plugins::builder()
-                .render(comrak::options::RenderPlugins {
-                    codefence_syntax_highlighter: Some(
-                        &comrak::plugins::syntect::SyntectAdapterBuilder::new().build(),
-                    ),
-                    heading_adapter: None,
-                })
-                .build(),
-        );
+        let output = ctx
+            .rt
+            .spawn_blocking(move || {
+                comrak::markdown_to_html_with_plugins(
+                    &contents,
+                    &comrak::Options {
+                        extension: comrak::options::Extension::builder()
+                            .strikethrough(true)
+                            .table(true)
+                            .autolink(false)
+                            .tasklist(true)
+                            .superscript(false)
+                            .subscript(false)
+                            .footnotes(true)
+                            .math_dollars(true)
+                            .shortcodes(false)
+                            .underline(false)
+                            .spoiler(true)
+                            .subtext(true)
+                            .highlight(true)
+                            .build(),
+                        parse: comrak::options::Parse::builder()
+                            .smart(false)
+                            .tasklist_in_table(true)
+                            .ignore_setext(true)
+                            .build(),
+                        render: comrak::options::Render::builder()
+                            .hardbreaks(false)
+                            .r#unsafe(true)
+                            .escape(false)
+                            .tasklist_classes(true)
+                            .build(),
+                    },
+                    &comrak::options::Plugins::builder()
+                        .render(comrak::options::RenderPlugins {
+                            codefence_syntax_highlighter: Some(
+                                &comrak::plugins::syntect::SyntectAdapterBuilder::new().build(),
+                            ),
+                            heading_adapter: None,
+                        })
+                        .build(),
+                )
+            })
+            .await?;
 
         let object = ctx.db.objects.store(output.into_bytes());
         Ok(object)
@@ -335,7 +357,10 @@ impl Producer for MinifyHtml {
             minify_js: true,
             ..Default::default()
         };
-        let output = minify_html::minify(contents.as_bytes(), &cfg);
+        let output = ctx
+            .rt
+            .spawn_blocking(move || minify_html::minify(contents.as_bytes(), &cfg))
+            .await?;
         let object = ctx.db.objects.store(output);
         Ok(object)
     }
