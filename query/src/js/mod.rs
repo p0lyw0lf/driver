@@ -69,7 +69,7 @@ fn get_context() -> rquickjs::Result<*const QueryContext> {
 }
 
 // SHOULD be called from a Javascript callback
-fn get_current_file(js_ctx: Ctx<'_>) -> rquickjs::Result<PathBuf> {
+fn get_current_file(js_ctx: &Ctx<'_>) -> rquickjs::Result<PathBuf> {
     Ok(PathBuf::from(
         js_ctx
             .script_or_module_name(0)
@@ -132,7 +132,7 @@ mod driver {
     /// Helper function that formats a path relative to the current file
     /// NOTE: this is only safe to call **BEFORE** the promise starts to execute. This is why we
     /// have to do such crazy type signature things below.
-    fn to_relative_path(js_ctx: Ctx<'_>, path: String) -> rquickjs::Result<PathBuf> {
+    fn to_relative_path(js_ctx: &Ctx<'_>, path: String) -> rquickjs::Result<PathBuf> {
         let base_file = get_current_file(js_ctx)?;
         let base_directory = base_file
             .parent()
@@ -154,7 +154,7 @@ mod driver {
         // SAFETY: the only way these javascript functions get called is from inside a
         // `with_query_context()`
         let ctx = unsafe { &*get_context()? };
-        let path = to_relative_path(js_ctx, filename)?;
+        let path = to_relative_path(&js_ctx, filename)?;
 
         Ok(Promised(async move {
             let object = ReadFile(path)
@@ -174,7 +174,7 @@ mod driver {
         // SAFETY: the only way these javascript functions get called is from inside a
         // `with_query_context()`
         let ctx = unsafe { &*get_context()? };
-        let dirname = to_relative_path(js_ctx, dirname)?;
+        let dirname = to_relative_path(&js_ctx, dirname)?;
         Ok(Promised(async move {
             let contents = ListDirectory(dirname)
                 .query(ctx)
@@ -194,11 +194,15 @@ mod driver {
         filename: String,
         args: Option<RustValue>,
     ) -> rquickjs::Result<Promised<impl Future<Output = rquickjs::Result<RustValue>>>> {
-        let file = to_relative_path(js_ctx, filename)?;
+        let file = to_relative_path(&js_ctx, filename)?;
         Ok(Promised(async move {
-            // SAFETY: the only way these javascript functions get called is from inside a
-            // `with_query_context()`
-            unsafe { super::run_task(file, args) }.await
+            super::CTX
+                .scope(js_ctx.as_raw(), async {
+                    // SAFETY: the only way these javascript functions get called is from inside a
+                    // `with_query_context()`
+                    unsafe { super::run_task(file, args) }.await
+                })
+                .await
         }))
     }
 
@@ -417,10 +421,17 @@ impl rquickjs::loader::Loader for MemoizedScriptLoader {
         }
 
         let ctx = unsafe { &*get_context()? };
-        let object = self
-            .rt
-            .block_on(ReadFile(path).query(ctx))
-            .map_err(|err| rquickjs::Error::new_loading_message(name, format!("{err}")))?;
+        // Need to spawn a new thread to make tokio happy.
+        // Probably not a way around this until rquickjs supports asynchronous loaders.
+        let object = std::thread::scope(|s| {
+            let rt = self.rt.clone();
+            s.spawn(move || rt.block_on(ReadFile(path).query(ctx)))
+                .join()
+        })
+        .map_err(|err| {
+            rquickjs::Error::new_loading_message(name, format!("joining reader thread: {err:?}"))
+        })?
+        .map_err(|err| rquickjs::Error::new_loading_message(name, format!("{err}")))?;
         // Need to clone the source so we don't hang onto it for too long when reading from it in
         // the module; the module will clone it into a Vec anyways so no harm in doing that now.
         let source = Vec::<u8>::from(
@@ -485,7 +496,7 @@ where
                 .await;
 
             rquickjs::async_with!(context => |ctx| {
-                CTX.scope(ctx.as_raw(), callback(ctx)).await
+                callback(ctx).await
             })
             .await
         }
@@ -584,6 +595,7 @@ impl Producer for RunFile {
                     let module =
                         rquickjs::Module::declare(ctx.clone(), name, contents).map_err(catch)?;
                     let (module, promise) = module.eval().map_err(catch)?;
+
                     promise.into_future::<()>().await.map_err(catch)?;
 
                     let value: RustValue = module.get(rquickjs::atom::PredefinedAtom::Default)?;
