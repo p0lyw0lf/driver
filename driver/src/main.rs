@@ -18,7 +18,9 @@ fn main() -> query::Result<()> {
         .arg(arg!([script] "The file to run"))
         .get_matches();
 
-    let rt = Arc::new(tokio::runtime::Runtime::new()?);
+    // Don't need multithreading since things will be mostly limited by I/O & javascript single
+    // thread anyways. Just need concurrency.
+    let rt = Arc::new(tokio::runtime::Builder::new_current_thread().build()?);
 
     rt.block_on(async {
         let ctx = query::QueryContext::restore_or_default(rt.clone()).await;

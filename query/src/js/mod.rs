@@ -116,6 +116,7 @@ mod driver {
     use relative_path::RelativePathBuf;
     use rquickjs::Ctx;
     use rquickjs::prelude::Promised;
+    use url::Url;
 
     use super::WriteOutput;
     use super::error_message;
@@ -235,6 +236,23 @@ mod driver {
             Either::Right(arr) => Vec::from(AsRef::<[u8]>::as_ref(&arr)),
         };
         let object = ctx.db.objects.store(contents);
+        Ok(StoreObject { object })
+    }
+
+    #[rquickjs::function]
+    #[tracing::instrument(level = "trace")]
+    pub async fn get_url(url: String) -> rquickjs::Result<StoreObject> {
+        // SAFETY: we are in a javascript context
+        let ctx = unsafe { &*get_context()? };
+        let url = Url::parse(&url).map_err(|e| error_message(format!("parsing url: {e}")))?;
+
+        let object = ctx
+            .db
+            .remotes
+            .fetch(&ctx.db.objects, url)
+            .await
+            .map_err(|e| error_message(format!("fetching url: {e}")))?
+            .object;
         Ok(StoreObject { object })
     }
 

@@ -25,7 +25,7 @@ pub struct RemoteObjects {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RemoteObject {
     /// The stored object we fetched.
-    object: Object,
+    pub object: Object,
     /// The time at which we fetched the object.
     fetched: Timestamp,
     /// How long after `fetched` can we continue to treat the object as "fresh" (don't need to
@@ -65,7 +65,7 @@ impl RemoteObjects {
 
     /// Fetches a remote URL and adds it to the local store if not present or too stale.
     /// If the URL is present in the cache and still fresh, uses that instead of fetching.
-    async fn fetch(&self, objects: &Objects, url: Url) -> crate::Result<RemoteObject> {
+    pub async fn fetch(&self, objects: &Objects, url: Url) -> crate::Result<RemoteObject> {
         let req = {
             // Limit lifetime of the remote object that we use to build the request
             let remote_object = self.cache.get(&url);
