@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use dashmap::DashMap;
+use scc::hash_map::HashMap;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
@@ -12,7 +12,7 @@ use crate::{
 /// A store for all strings that would otherwise be too large to persist to disk multiple times.
 /// Uniquely keyed by the hashes of the strings it stores.
 #[derive(Default, Debug)]
-pub struct Objects(DashMap<Object, Vec<u8>>);
+pub struct Objects(HashMap<Object, Vec<u8>>);
 
 /// Newtype for a hash that represents it's an object in the store.
 #[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
@@ -25,19 +25,17 @@ impl Object {
     }
 
     pub fn contents_as_bytes(&self, ctx: &QueryContext) -> rquickjs::Result<Vec<u8>> {
-        Ok(ctx
-            .db
-            .objects
-            .get(self)
-            .ok_or(rquickjs::Error::new_into_js_message(
-                "StoreObject",
-                "TypedArray",
-                format!("object {} not found", self),
-            ))?
-            .as_ref()
-            .iter()
-            .map(Clone::clone)
-            .collect::<Vec<u8>>())
+        ctx.db.objects.with(self, |obj| {
+            Ok(obj
+                .ok_or(rquickjs::Error::new_into_js_message(
+                    "StoreObject",
+                    "TypedArray",
+                    format!("object {} not found", self),
+                ))?
+                .iter()
+                .map(Clone::clone)
+                .collect::<Vec<u8>>())
+        })
     }
 
     pub fn contents_as_string(&self, ctx: &QueryContext) -> rquickjs::Result<String> {
@@ -66,19 +64,27 @@ impl Objects {
 
     /// SAFETY: object must be the hash of contents
     pub unsafe fn store_raw(&self, object: Object, contents: Vec<u8>) {
-        self.0.insert(object.clone(), contents);
+        self.0.insert_sync(object.clone(), contents);
     }
 
-    pub fn get(&self, object: &Object) -> Option<impl AsRef<[u8]> + '_> {
-        let s = self.0.get(object);
-        // 1st map: map inside Option
-        // 2nd map: create a "MappedRef" that implements the traits we want.
-        s.map(|s| s.map(|s| s))
+    pub fn with<T>(&self, object: &Object, f: impl Fn(Option<&[u8]>) -> T) -> T {
+        let s = self.0.get_sync(object);
+        match s {
+            None => f(None),
+            Some(s) => f(Some(&s.get()[..])),
+        }
     }
 
-    pub fn for_each<E>(&self, f: impl Fn(&Object, &Vec<u8>) -> Result<(), E>) -> Result<(), E> {
-        for e in self.0.iter() {
-            f(e.key(), e.value())?
+    pub async fn for_each<E, F>(&self, f: F) -> Result<(), E>
+    where
+        F: Fn(&Object, &Vec<u8>) -> Result<(), E>,
+    {
+        let mut entry = self.0.begin_async().await;
+        while let Some(e) = entry {
+            // TODO: make this a future
+            // unfortunately it's a little bit tricky w/ the borrows and such
+            f(e.key(), e.get())?;
+            entry = e.next_async().await;
         }
         Ok(())
     }

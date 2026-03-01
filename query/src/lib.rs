@@ -5,6 +5,7 @@ mod error;
 mod js;
 mod options;
 mod query;
+mod serde;
 mod to_hash;
 
 use options::OPTIONS;
@@ -27,8 +28,13 @@ pub async fn run(file: PathBuf, ctx: &QueryContext) -> crate::Result<()> {
     for output in output.outputs {
         let full_path = root.join(output.path);
         std::fs::create_dir_all(full_path.parent().unwrap())?;
-        let content = ctx.db.objects.get(&output.object).expect("missing object");
-        std::fs::write(full_path.clone(), content.as_ref())?;
+        ctx.db
+            .objects
+            .with(&output.object, |obj| -> std::io::Result<_> {
+                let content = obj.expect("missing object");
+                std::fs::write(full_path.clone(), content)?;
+                Ok(())
+            })?;
     }
     Ok(())
 }

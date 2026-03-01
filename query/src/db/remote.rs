@@ -1,12 +1,10 @@
-use std::collections::HashMap;
-
-use dashmap::DashMap;
 use jiff::fmt::temporal::DateTimeParser;
 use jiff::{Span, Timestamp, ToSpan};
 use reqwest::Client;
 use reqwest::StatusCode;
 use reqwest::header::{ETAG, EXPIRES, HeaderMap, HeaderValue, IF_MODIFIED_SINCE, IF_NONE_MATCH};
 use reqwest::{Url, header::CACHE_CONTROL};
+use scc::hash_map::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::db::object::Object;
@@ -19,7 +17,7 @@ pub struct RemoteObjects {
     // TODO: eventually I'd like to have this be an async client, but porting all my code to be
     // async seems a little sus atm :)
     client: Client,
-    cache: DashMap<Url, RemoteObject>,
+    cache: crate::serde::SerializedEntries<Url, RemoteObject>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -68,7 +66,7 @@ impl RemoteObjects {
     pub async fn fetch(&self, objects: &Objects, url: Url) -> crate::Result<RemoteObject> {
         let req = {
             // Limit lifetime of the remote object that we use to build the request
-            let remote_object = self.cache.get(&url);
+            let remote_object = self.cache.0.get_async(&url).await;
             if let Some(ref remote_object) = remote_object
                 && remote_object.is_fresh()
             {
@@ -97,7 +95,7 @@ impl RemoteObjects {
                 // Cache thinks the object we have locally is still fresh, keep it around and
                 // update the headers.
                 let headers = ResponseHeaders::from_headers(resp.headers());
-                let remote_object = self.cache.get(&url).ok_or_else(|| {
+                let remote_object = self.cache.0.get_async(&url).await.ok_or_else(|| {
                     crate::Error::new("server returned 304, but object not found in cache")
                 })?;
                 return Ok(headers.with_object(remote_object.object.clone()));
@@ -179,7 +177,7 @@ impl ResponseHeaders {
                         Some(value.to_string()),
                     ),
                 })
-                .collect::<HashMap<_, _>>();
+                .collect::<std::collections::HashMap<_, _>>();
 
             if directives.contains_key("no-cache") || directives.contains_key("no-store") {
                 // Server says we shouldn't cache this value, return a zero-time span
@@ -267,7 +265,7 @@ impl<'de> Deserialize<'de> for RemoteObjects {
         D: serde::Deserializer<'de>,
     {
         let client = Self::default_client();
-        let cache = DashMap::deserialize(deserializer)?;
+        let cache = Deserialize::deserialize(deserializer)?;
         Ok(Self { client, cache })
     }
 }

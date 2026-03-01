@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+async-fs = "2.2"
 comrak = { version = "0.50", features = ["syntect"] }
-dashmap = { version = "6.1", features = ["serde"] }
 dyn-clone = "1.0"
 either = "1.15"
 generic-array = { version = "0.14", features = ["serde"] }
@@ -16,6 +16,7 @@ minify-html = "0.18"
 petgraph = { version = "0.8", features = ["serde-1"] }
 relative-path = "2.0"
 postcard = { version = "1.1", features = ["use-std"] }
+scc = "3.6"
 serde = { version = "1.0", features = ["derive"] }
 sha2 = "0.10"
 tokio = { version = "1.49", features = ["full"] }

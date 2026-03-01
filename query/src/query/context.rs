@@ -93,7 +93,7 @@ impl QueryContext {
             }))
             .await;
 
-            if self.db.cache.insert(key.clone(), value.clone()) {
+            if self.db.cache.insert(key.clone(), value.clone()).await {
                 debug!("marked green {key}");
                 self.db.colors.mark_green(&key, revision);
             } else {
@@ -119,6 +119,7 @@ impl QueryContext {
                 self.db
                     .cache
                     .get(&key)
+                    .await
                     .unwrap_or_else(|| panic!("Green query {key} missing value in cache"))
             }
             Color::Red => {
@@ -131,7 +132,7 @@ impl QueryContext {
     async fn try_mark_green(&self, key: QueryKey) -> Color {
         let revision = self.db.revision.load(Ordering::SeqCst);
         // If we have no dependencies in the graph, assume we need to run the query.
-        let Some(deps) = self.dep_graph.dependencies(&key) else {
+        let Some(deps) = self.dep_graph.dependencies(&key).await else {
             debug!("no dependencies found {key}");
             return Color::Red;
         };
@@ -179,12 +180,12 @@ impl QueryContext {
 
     pub async fn save(&self) -> crate::Result<()> {
         let cache_dir = &OPTIONS.read().unwrap().cache_dir;
-        crate::db::save_to_directory(cache_dir, &self.db, &self.dep_graph)
+        crate::db::save_to_directory(cache_dir, &self.db, &self.dep_graph).await
     }
 
     async fn restore(rt: Arc<tokio::runtime::Runtime>) -> crate::Result<Self> {
         let cache_dir = &OPTIONS.read().unwrap().cache_dir;
-        let (db, dep_graph) = crate::db::restore_from_directory(cache_dir)?;
+        let (db, dep_graph) = crate::db::restore_from_directory(cache_dir).await?;
         Ok(Self {
             rt,
             parent: None,

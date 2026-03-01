@@ -1,6 +1,5 @@
 use std::fmt::Display;
 
-use dashmap::DashMap;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -54,38 +53,49 @@ macro_rules! query_keys {
         // anything crazier with AnyOutput
         #[derive(Clone, Debug, Default, Serialize, Deserialize)]
         pub struct $cache { $(
-            pub $name: DashMap<$type, <$type as $crate::Producer>::Output>,
+            pub $name: $crate::serde::SerializedEntries<$type, <$type as $crate::Producer>::Output>,
         )* }
 
         impl $cache {
             /// REQUIRES: value was produced by key.
             /// RETURNS: whether cache was busted, that is, whether the cache changed based on the
             /// new value.
-            pub fn insert(&self, key: QueryKey, value: $crate::query::context::AnyOutput) -> bool {
+            pub async fn insert(&self, key: QueryKey, value: $crate::query::context::AnyOutput) -> bool {
                 match key { $(
                     $key::$type(key) => {
                         let value: <$type as $crate::query::context::Producer>::Output = *value.downcast().expect("must be produced by key");
                         let hash = value.to_hash();
-                        let old = self.$name.insert(key, value);
-                        old.is_none_or(|old| old.to_hash() == hash)
+                        let old = self.$name.0.insert_async(key, value).await;
+                        match old {
+                            // Not already present, did change
+                            Ok(()) => true,
+                            // Check old hash for change. Exactly as expensive as checking exact
+                            // equality, though now we don't have to clone `value` to do so.
+                            Err(old) => old.1.to_hash() == hash
+                        }
                     }
                 )* }
             }
 
-            pub fn get(&self, key: &QueryKey) -> Option<$crate::query::context::AnyOutput> {
+            pub async fn get(&self, key: &QueryKey) -> Option<$crate::query::context::AnyOutput> {
                 match key { $(
-                    $key::$type(key) => self.$name.get(key).map(|v| $crate::query::context::AnyOutput::new(v.clone())),
+                    $key::$type(key) => self.$name.0.get_async(key).await.map(|v| $crate::query::context::AnyOutput::new(v.clone())),
                 )* }
             }
 
-            pub fn iter_keys(&self) -> impl std::iter::Iterator<Item = QueryKey> {
-                std::iter::empty()
-                $(.chain(
-                    self.$name.iter()
-                    .map(|entry| {
-                        QueryKey::$type(entry.key().clone())
-                    })
-                ))*
+            pub async fn for_each_key<F, Fut>(&self, f: F)
+            where
+                F: Fn(QueryKey) -> Fut,
+                Fut: Future<Output=()>,
+            {
+                $(
+                    let mut entry = self.$name.0.begin_async().await;
+                    while let Some(e) = entry {
+                        // TODO: make this async. Borrow makes it tricky
+                        f(QueryKey::from(e.key().clone())).await;
+                        entry = e.next_async().await;
+                    }
+                )*
             }
         }
     }

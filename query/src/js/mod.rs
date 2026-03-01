@@ -450,15 +450,10 @@ impl rquickjs::loader::Loader for MemoizedScriptLoader {
             rquickjs::Error::new_loading_message(name, format!("joining reader thread: {err:?}"))
         })?
         .map_err(|err| rquickjs::Error::new_loading_message(name, format!("{err}")))?;
+
         // Need to clone the source so we don't hang onto it for too long when reading from it in
         // the module; the module will clone it into a Vec anyways so no harm in doing that now.
-        let source = Vec::<u8>::from(
-            ctx.db
-                .objects
-                .get(&object)
-                .expect("missing object")
-                .as_ref(),
-        );
+        let source = object.contents_as_bytes(ctx)?;
 
         rquickjs::Module::declare(js_ctx.clone(), name, source)
     }
@@ -557,12 +552,7 @@ impl Producer for RunFile {
                 .unwrap_or_default()
         );
         let object = ReadFile(self.file.clone()).query(ctx).await?;
-        let contents = {
-            // Need to shorten the lifetime of our read from the database so that we don't deadlock
-            // trying to read from the map multiple times
-            let contents = ctx.db.objects.get(&object).expect("missing object");
-            String::from_utf8(contents.as_ref().to_vec())?
-        };
+        let contents = object.contents_as_string(ctx)?;
 
         let (value, outputs) = with_query_context(ctx, async || {
             with_js_ctx(ctx.rt.clone(), |ctx| {

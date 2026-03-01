@@ -3,14 +3,14 @@ use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::RwLock;
 use std::sync::atomic::AtomicUsize;
 
-use dashmap::DashMap;
 use petgraph::graph::DiGraph;
 use petgraph::graph::NodeIndex;
+use scc::hash_map::HashMap;
 use serde::Deserialize;
 use serde::Serialize;
+use tokio::sync::RwLock;
 
 use crate::QueryKey;
 use crate::db::object::Object;
@@ -27,26 +27,26 @@ pub enum Color {
     Red,
 }
 
-#[derive(Default, Debug, Serialize, Deserialize)]
-pub struct ColorMap(DashMap<QueryKey, (Color, usize)>);
+#[derive(Default, Debug)]
+pub struct ColorMap(HashMap<QueryKey, (Color, usize)>);
 
 impl ColorMap {
-    pub fn mark_green(&self, key: &QueryKey, revision: usize) {
-        self.mark_color(key, Color::Green, revision);
+    pub async fn mark_green(&self, key: &QueryKey, revision: usize) {
+        self.mark_color(key, Color::Green, revision).await;
     }
 
-    pub fn mark_red(&self, key: &QueryKey, revision: usize) {
-        self.mark_color(key, Color::Red, revision);
+    pub async fn mark_red(&self, key: &QueryKey, revision: usize) {
+        self.mark_color(key, Color::Red, revision).await;
     }
 
     /// This function makes sure that, once marked for a revision, only future revisions can update
     /// the color.
-    fn mark_color(&self, key: &QueryKey, color: Color, revision: usize) {
-        match self.0.entry(key.clone()) {
-            dashmap::Entry::Vacant(vacant_entry) => {
-                vacant_entry.insert((color, revision));
+    async fn mark_color(&self, key: &QueryKey, color: Color, revision: usize) {
+        match self.0.entry_async(key.clone()).await {
+            scc::hash_map::Entry::Vacant(vacant_entry) => {
+                vacant_entry.insert_entry((color, revision));
             }
-            dashmap::Entry::Occupied(mut occupied_entry) => {
+            scc::hash_map::Entry::Occupied(mut occupied_entry) => {
                 let (_, old_revision) = occupied_entry.get();
                 if *old_revision < revision {
                     occupied_entry.insert((color, revision));
@@ -59,67 +59,74 @@ impl ColorMap {
 
     pub fn get(&self, key: &QueryKey) -> Option<(Color, usize)> {
         self.0
-            .get(key)
+            .get_sync(key)
             .as_deref()
             .map(|(color, rev)| (*color, *rev))
     }
 }
 
-#[derive(Default, Debug, Serialize, Deserialize)]
+#[derive(Default, Debug)]
 pub struct DepGraph {
     graph: RwLock<DiGraph<QueryKey, ()>>,
-    indices: DashMap<QueryKey, NodeIndex>,
+    indices: HashMap<QueryKey, NodeIndex>,
 }
 
 impl DepGraph {
-    fn node_for(&self, key: QueryKey) -> NodeIndex {
-        match self.indices.entry(key.clone()) {
-            dashmap::Entry::Occupied(entry) => *entry.get(),
-            dashmap::Entry::Vacant(entry) => {
-                let idx = self.graph.write().unwrap().add_node(key);
-                *entry.insert(idx)
+    async fn node_for(&self, key: QueryKey) -> NodeIndex {
+        match self.indices.entry_async(key.clone()).await {
+            scc::hash_map::Entry::Occupied(entry) => *entry.get(),
+            scc::hash_map::Entry::Vacant(entry) => {
+                let idx = self.graph.write().await.add_node(key);
+                *entry.insert_entry(idx)
             }
         }
     }
 
-    pub fn add_dependency(&self, from: QueryKey, to: QueryKey) {
-        let from = self.node_for(from);
-        let to = self.node_for(to);
-        self.graph.write().unwrap().update_edge(from, to, ());
+    pub async fn add_dependency(&self, from: QueryKey, to: QueryKey) {
+        let from = self.node_for(from).await;
+        let to = self.node_for(to).await;
+        self.graph.write().await.update_edge(from, to, ());
     }
 
-    pub fn remove_all_dependencies(&self, from: QueryKey) {
-        let from = self.node_for(from);
-        self.graph
-            .write()
-            .unwrap()
-            .retain_edges(|this, edge_index| {
-                let (edge_from, _) = &this.edge_endpoints(edge_index).unwrap();
-                *edge_from != from
-            });
+    pub async fn remove_all_dependencies(&self, from: QueryKey) {
+        let from = self.node_for(from).await;
+        self.graph.write().await.retain_edges(|this, edge_index| {
+            let (edge_from, _) = &this.edge_endpoints(edge_index).unwrap();
+            *edge_from != from
+        });
     }
 
-    pub fn dependencies(&self, key: &QueryKey) -> Option<Vec<QueryKey>> {
-        self.indices.get(key).map(|key| {
-            let graph = self.graph.read().unwrap();
-            let mut deps = graph
-                .neighbors_directed(*key, petgraph::Direction::Outgoing)
-                .map(|i| graph[i].clone())
-                .collect::<Vec<_>>();
-            deps.sort();
-            deps
-        })
+    pub async fn dependencies(&self, key: &QueryKey) -> Option<Vec<QueryKey>> {
+        let key = self.indices.get_async(key).await?;
+        let graph = self.graph.read().await;
+        let mut deps = graph
+            .neighbors_directed(*key, petgraph::Direction::Outgoing)
+            .map(|i| graph[i].clone())
+            .collect::<Vec<_>>();
+        deps.sort();
+        Some(deps)
+    }
+
+    fn blocking_dependencies(&self, key: &QueryKey) -> Option<Vec<QueryKey>> {
+        let key = self.indices.get_sync(key)?;
+        let graph = self.graph.blocking_read();
+        let mut deps = graph
+            .neighbors_directed(*key, petgraph::Direction::Outgoing)
+            .map(|i| graph[i].clone())
+            .collect::<Vec<_>>();
+        deps.sort();
+        Some(deps)
     }
 }
 
 impl Display for DepGraph {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let graph = self.graph.read().unwrap();
+        let graph = self.graph.blocking_read();
         let mut nodes = graph.node_weights().collect::<Vec<_>>();
         nodes.sort();
         for node in nodes.into_iter() {
             write!(f, "{}: ", node)?;
-            if let Some(mut deps) = self.dependencies(node)
+            if let Some(mut deps) = self.blocking_dependencies(node)
                 && !deps.is_empty()
             {
                 deps.sort();
@@ -133,6 +140,24 @@ impl Display for DepGraph {
             }
         }
         Ok(())
+    }
+}
+
+impl Serialize for DepGraph {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        todo!()
+    }
+}
+
+impl<'de> Deserialize<'de> for DepGraph {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        todo!()
     }
 }
 
@@ -163,7 +188,7 @@ fn get_filenames(dir: &Path) -> Filenames {
     }
 }
 
-pub fn save_to_directory(dir: &Path, db: &Database, deps: &DepGraph) -> crate::Result<()> {
+pub async fn save_to_directory(dir: &Path, db: &Database, deps: &DepGraph) -> crate::Result<()> {
     let Filenames {
         cache_filename,
         depgraph_filename,
@@ -171,8 +196,9 @@ pub fn save_to_directory(dir: &Path, db: &Database, deps: &DepGraph) -> crate::R
         objects_dirname,
     } = get_filenames(dir);
 
-    std::fs::create_dir_all(dir)?;
+    async_fs::create_dir_all(dir).await?;
 
+    // TODO: make these writes async & concurrent
     {
         let cache_file = std::fs::File::create(cache_filename)?;
         postcard::to_io(&db.cache, cache_file)?;
@@ -186,31 +212,33 @@ pub fn save_to_directory(dir: &Path, db: &Database, deps: &DepGraph) -> crate::R
         postcard::to_io(&db.remotes, remote_file)?;
     }
 
-    db.objects.for_each(|hash, contents| -> crate::Result<_> {
-        let hash = hash.to_string();
-        let (prefix, rest) = hash.split_at(2);
-        let object_directory = objects_dirname.join(prefix);
-        let object_filename = object_directory.join(rest);
+    db.objects
+        .for_each(|hash, contents| -> crate::Result<_> {
+            let hash = hash.to_string();
+            let (prefix, rest) = hash.split_at(2);
+            let object_directory = objects_dirname.join(prefix);
+            let object_filename = object_directory.join(rest);
+            if std::fs::exists(&object_filename)? {
+                // By the uniqueness of the hash, we're already done
+                return Ok(());
+            }
 
-        if std::fs::exists(&object_filename)? {
-            // By the uniqueness of the hash, we're already done
-            return Ok(());
-        }
-
-        // Otherwise, we have to write the object
-        std::fs::create_dir_all(object_directory)?;
-        // Compress with zstd so we don't have to read/write as much data to disk
-        let object_file = std::fs::File::create(&object_filename)?;
-        let mut encoder = zstd::stream::Encoder::new(object_file, 0)?.auto_finish();
-        encoder.write_all(contents)?;
-        encoder.flush()?;
-        Ok(())
-    })?;
+            // Otherwise, we have to write the object
+            std::fs::create_dir_all(object_directory)?;
+            // Compress with zstd so we don't have to read/write as much data to disk
+            // Launch in worker so we can do other stuff in the meantime.
+            let object_file = std::fs::File::create(&object_filename)?;
+            let mut encoder = zstd::stream::Encoder::new(object_file, 0)?.auto_finish();
+            encoder.write_all(contents)?;
+            encoder.flush()?;
+            Ok(())
+        })
+        .await?;
 
     Ok(())
 }
 
-pub fn restore_from_directory(dir: &Path) -> crate::Result<(Database, DepGraph)> {
+pub async fn restore_from_directory(dir: &Path) -> crate::Result<(Database, DepGraph)> {
     let Filenames {
         cache_filename,
         depgraph_filename,
@@ -230,9 +258,13 @@ pub fn restore_from_directory(dir: &Path) -> crate::Result<(Database, DepGraph)>
     // Everything loaded from the disk is green to start with; this will be busted by input queries
     // changing for the next revision.
     let colors = ColorMap::default();
-    for key in cache.iter_keys() {
-        colors.mark_green(&key, 0);
-    }
+    cache
+        .for_each_key(|key| {
+            // Wow this sucks can't wait for explicit captures
+            let colors = &colors;
+            async move { colors.mark_green(&key, 0).await }
+        })
+        .await;
 
     let objects = object::Objects::default();
     for prefix_entry in std::fs::read_dir(objects_dirname)? {
