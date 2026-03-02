@@ -63,7 +63,10 @@ where
             where
                 A: serde::de::MapAccess<'de>,
             {
-                let this = HashMap::new();
+                let this = match map.size_hint() {
+                    None => HashMap::new(),
+                    Some(n) => HashMap::with_capacity(n),
+                };
 
                 let mut entry = map.next_entry()?;
                 while let Some((k, v)) = entry {
@@ -80,6 +83,25 @@ where
         }
 
         deserializer.deserialize_map(Visitor(PhantomData))
+    }
+}
+
+#[cfg(test)]
+mod map_test {
+    use super::SerializedMap;
+    use scc::HashMap;
+
+    #[test]
+    fn roundtrip_postcard() {
+        let m1 = SerializedMap(HashMap::<i32, i32>::new());
+        let _ = m1.insert_sync(1, 2);
+        let _ = m1.insert_sync(3, 4);
+        let _ = m1.insert_sync(5, 6);
+
+        let bytes = postcard::to_stdvec(&m1).expect("serialization");
+        let m2: SerializedMap<i32, i32> =
+            postcard::from_bytes(&bytes[..]).expect("deserialization");
+        assert_eq!(m1.0, m2.0);
     }
 }
 
@@ -142,5 +164,20 @@ impl<T> std::ops::Deref for SerializedMutex<T> {
 impl<T> std::ops::DerefMut for SerializedMutex<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
+    }
+}
+
+#[cfg(test)]
+mod test_mutex {
+    use super::SerializedMutex;
+
+    #[test]
+    fn roundtrip_postcard() {
+        let v1 = SerializedMutex::new(123i32);
+
+        let bytes = postcard::to_stdvec(&v1).expect("serialization");
+        let v2: SerializedMutex<i32> = postcard::from_bytes(&bytes[..]).expect("deserialization");
+
+        assert_eq!(*v1.0.blocking_lock(), *v2.0.blocking_lock());
     }
 }
