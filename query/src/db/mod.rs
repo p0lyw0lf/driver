@@ -166,7 +166,23 @@ type SerializedDatabase =
 
 impl Database {
     fn as_serialized(&self) -> SerializedDatabase {
-        todo!()
+        let mut out = std::collections::HashMap::with_capacity(self.cache.len());
+
+        let mut entry = self.cache.begin_sync();
+        while let Some(e) = entry {
+            let key = e.key();
+            let value = e.get();
+            out.insert(
+                key.clone(),
+                (
+                    value.value.clone(),
+                    value.dependencies.blocking_lock().clone(),
+                ),
+            );
+            entry = e.next_sync();
+        }
+
+        out
     }
 }
 

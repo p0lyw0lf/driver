@@ -2,15 +2,23 @@ use std::sync::Arc;
 
 use clap::arg;
 use clap::command;
-use tracing_subscriber::fmt::format::FmtSpan;
-use tracing_subscriber::{EnvFilter, fmt};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, Layer, fmt};
 
 fn main() -> query::Result<()> {
-    fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .with_span_events(FmtSpan::ACTIVE)
-        .without_time() // TODO: remove once debugging complete
-        .with_ansi(false) // TODO: remove once debugging complete
+    let console_layer = console_subscriber::Builder::default()
+        .with_default_env()
+        .spawn();
+
+    let fmt_layer = fmt::layer()
+        .with_ansi(false)
+        .without_time()
+        .with_filter(EnvFilter::from_default_env());
+
+    tracing_subscriber::registry()
+        .with(console_layer)
+        .with(fmt_layer)
         .init();
 
     let matches = command!()

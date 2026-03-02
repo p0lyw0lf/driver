@@ -7,6 +7,7 @@ use rquickjs::{
 use serde::Deserialize;
 use serde::Serialize;
 use sha2::Digest;
+use tracing::trace;
 
 use crate::{
     db::object::Object,
@@ -123,6 +124,7 @@ mod driver {
     use super::error_message;
     use super::get_context;
 
+    use crate::js::GetUrl;
     use crate::js::MarkdownToHtml;
     use crate::js::MinifyHtml;
     use crate::js::{get_current_file, store_object::StoreObject, value::RustValue};
@@ -148,7 +150,6 @@ mod driver {
     }
 
     #[rquickjs::function]
-    #[tracing::instrument(level = "trace", skip(js_ctx))]
     pub fn read_file(
         js_ctx: Ctx<'_>,
         filename: String,
@@ -168,7 +169,6 @@ mod driver {
     }
 
     #[rquickjs::function]
-    #[tracing::instrument(level = "trace", skip(js_ctx))]
     pub fn list_directory(
         js_ctx: Ctx<'_>,
         dirname: String,
@@ -190,7 +190,6 @@ mod driver {
     }
 
     #[rquickjs::function]
-    #[tracing::instrument(level = "trace", skip(js_ctx))]
     pub fn run_task(
         js_ctx: Ctx<'_>,
         filename: String,
@@ -209,7 +208,6 @@ mod driver {
     }
 
     #[rquickjs::function]
-    #[tracing::instrument(level = "trace")]
     pub fn file_type(entry_name: String) -> rquickjs::Result<String> {
         let metadata = std::fs::metadata(PathBuf::from(entry_name))?;
 
@@ -226,7 +224,6 @@ mod driver {
     }
 
     #[rquickjs::function]
-    #[tracing::instrument(level = "trace", skip(value))]
     pub fn store<'js>(
         value: Either<String, rquickjs::TypedArray<'js, u8>>,
     ) -> rquickjs::Result<StoreObject> {
@@ -241,24 +238,19 @@ mod driver {
     }
 
     #[rquickjs::function]
-    #[tracing::instrument(level = "trace")]
     pub async fn get_url(url: String) -> rquickjs::Result<StoreObject> {
         // SAFETY: we are in a javascript context
         let ctx = unsafe { &*get_context()? };
         let url = Url::parse(&url).map_err(|e| error_message(format!("parsing url: {e}")))?;
 
-        let object = ctx
-            .db
-            .remotes
-            .fetch(&ctx.db.objects, url)
+        let object = GetUrl(url)
+            .query(ctx)
             .await
-            .map_err(|e| error_message(format!("fetching url: {e}")))?
-            .object;
+            .map_err(|e| error_message(format!("fetching url: {e}")))?;
         Ok(StoreObject { object })
     }
 
     #[rquickjs::function]
-    #[tracing::instrument(level = "trace")]
     pub async fn markdown_to_html(contents: StoreObject) -> rquickjs::Result<StoreObject> {
         // SAFETY: we are in a javascript context
         let ctx = unsafe { &*get_context()? };
@@ -270,7 +262,6 @@ mod driver {
     }
 
     #[rquickjs::function]
-    #[tracing::instrument(level = "trace")]
     pub async fn minify_html(contents: StoreObject) -> rquickjs::Result<StoreObject> {
         // SAFETY: we are in a javascript context
         let ctx = unsafe { &*get_context()? };
@@ -282,7 +273,6 @@ mod driver {
     }
 
     #[rquickjs::function]
-    #[tracing::instrument(level = "trace")]
     pub fn write_output(name: String, contents: StoreObject) -> rquickjs::Result<()> {
         let path = PathBuf::from(name);
         if !path
@@ -307,11 +297,28 @@ mod driver {
     }
 }
 
+query_key!(GetUrl(pub url::Url););
+
+impl Producer for GetUrl {
+    type Output = crate::Result<Object>;
+
+    #[tracing::instrument(level = "trace", skip_all)]
+    async fn produce<'a>(&self, ctx: &QueryContext<'a>) -> Self::Output {
+        Ok(ctx
+            .db
+            .remotes
+            .fetch(&ctx.db.objects, self.0.clone())
+            .await?
+            .object)
+    }
+}
+
 query_key!(MarkdownToHtml(pub Object););
 
 impl Producer for MarkdownToHtml {
     type Output = crate::Result<Object>;
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn produce<'a>(&self, ctx: &QueryContext<'a>) -> Self::Output {
         let contents = self.0.contents_as_string(ctx)?;
 
@@ -370,6 +377,7 @@ query_key!(MinifyHtml(pub Object););
 impl Producer for MinifyHtml {
     type Output = crate::Result<Object>;
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn produce<'a>(&self, ctx: &QueryContext<'a>) -> Self::Output {
         let contents = self.0.contents_as_string(ctx)?;
         let cfg = minify_html::Cfg {
@@ -541,7 +549,7 @@ impl ToHash for FileOutput {
 impl Producer for RunFile {
     type Output = crate::Result<FileOutput>;
 
-    #[tracing::instrument(level = "trace", skip(ctx))]
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn produce<'a>(&self, ctx: &QueryContext<'a>) -> Self::Output {
         let name = self.file.display().to_string();
         println!(
@@ -553,10 +561,14 @@ impl Producer for RunFile {
                 .unwrap_or_default()
         );
         let object = ReadFile(self.file.clone()).query(ctx).await?;
+        trace!("read file");
         let contents = object.contents_as_string(ctx)?;
+        trace!("read file contents");
 
         let (value, outputs) = with_query_context(ctx, async || {
-            with_js_ctx(ctx.rt.clone(), |ctx| {
+            trace!("with_query_context start");
+            let out = with_js_ctx(ctx.rt.clone(), |ctx| {
+                trace!("with_js_ctx start");
                 let name = name.clone();
                 // SAFETY: lifetimes work out trust me bro
                 let ctx = unsafe { rquickjs::Ctx::from_raw(ctx.as_raw()) };
@@ -608,10 +620,13 @@ impl Producer for RunFile {
                     promise.into_future::<()>().await.map_err(catch)?;
 
                     let value: RustValue = module.get(rquickjs::atom::PredefinedAtom::Default)?;
+                    trace!("with_js_ctx end");
                     Ok(value)
                 }
             })
-            .await
+            .await;
+            trace!("with_query_context end");
+            out
         })
         .await
         .map_err(|e| {
@@ -625,7 +640,7 @@ impl Producer for RunFile {
                 e
             ))
         })?;
-
+        trace!("finished");
         Ok(FileOutput { value, outputs })
     }
 }

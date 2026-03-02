@@ -9,6 +9,7 @@ use dyn_clone::DynClone;
 use serde::Deserialize;
 use serde::Serialize;
 use tracing::debug;
+use tracing::trace;
 
 use crate::db::Color;
 use crate::db::Database;
@@ -91,45 +92,53 @@ impl<'a> QueryContext<'a> {
         todo!()
     }
 
-    #[tracing::instrument(level = "debug", skip(self))]
+    #[tracing::instrument(level = "debug", skip(self), fields(key=%key))]
     pub(crate) async fn query(&self, key: QueryKey) -> AnyOutput {
+        trace!("starting query");
         if let Some(parent) = &self.parent {
+            trace!("adding self to parent");
             parent.add_dependency(key.clone()).await;
+            trace!("added");
         }
 
+        trace!("locking db entry");
         let entry = &mut self.db.entry(key.clone()).await;
+        trace!("locked");
 
         let revision = self.db.revision.load(Ordering::SeqCst);
 
         let Some((_, rev)) = entry.color() else {
-            debug!("not found in colors db {key}");
+            debug!("not found in colors db");
             return self.update_value(revision, key, entry).await;
         };
         if key.is_input() && rev < revision {
-            debug!("key is input and revision outdated {key}");
+            debug!("key is input and revision outdated");
             return self.update_value(revision, key, entry).await;
         }
 
         match self.try_mark_green(revision, entry).await {
             Ok(value) => {
-                debug!("marked green after trying {key}");
+                debug!("marked green after trying");
                 value
             }
             Err(()) => {
-                debug!("marked red after trying {key}");
+                debug!("marked red after trying");
                 self.update_value(revision, key, entry).await
             }
         }
     }
 
+    #[tracing::instrument(level = "trace", skip(self, entry), fields(key=%key))]
     async fn update_value<'b>(
         &self,
         revision: usize,
         key: QueryKey,
         entry: &'b mut Entry<'b>,
     ) -> AnyOutput {
+        trace!("removing dependencies");
         // We're about to run the key again, so remove any dependencies it once had
         entry.remove_all_dependencies().await;
+        trace!("removed");
 
         let (value, entry) = {
             let ctx = QueryContext {

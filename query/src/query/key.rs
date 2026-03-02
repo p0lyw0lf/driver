@@ -3,6 +3,7 @@ use std::fmt::Display;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::js::GetUrl;
 use crate::js::MarkdownToHtml;
 use crate::js::MinifyHtml;
 use crate::js::RunFile;
@@ -51,22 +52,24 @@ macro_rules! query_key {
 }
 
 query_key!(QueryKey {
-    ReadFile,
+    GetUrl,
     ListDirectory,
-    RunFile,
-    MinifyHtml,
     MarkdownToHtml,
+    MinifyHtml,
+    ReadFile,
+    RunFile,
 });
 
 impl QueryKey {
     // whether a new revision should cause this key to be immediately re-computed or not
     pub fn is_input(&self) -> bool {
         match self {
-            QueryKey::ReadFile(_) => true,
+            QueryKey::GetUrl(_) => true,
             QueryKey::ListDirectory(_) => true,
-            QueryKey::RunFile(_) => false,
-            QueryKey::MinifyHtml(_) => false,
             QueryKey::MarkdownToHtml(_) => false,
+            QueryKey::MinifyHtml(_) => false,
+            QueryKey::ReadFile(_) => true,
+            QueryKey::RunFile(_) => false,
         }
     }
 }
@@ -74,10 +77,16 @@ impl QueryKey {
 impl Display for QueryKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            QueryKey::ReadFile(read_file) => write!(f, "read_file({:?})", read_file.0),
+            QueryKey::GetUrl(url) => write!(f, "get_url({})", url.0),
             QueryKey::ListDirectory(list_directory) => {
                 write!(f, "list_directory({:?})", list_directory.0)
             }
+
+            QueryKey::MarkdownToHtml(markdown_to_html) => {
+                write!(f, "markdown_to_html({})", markdown_to_html.0)
+            }
+            QueryKey::MinifyHtml(minify_html) => write!(f, "minify_html({})", minify_html.0),
+            QueryKey::ReadFile(read_file) => write!(f, "read_file({:?})", read_file.0),
             QueryKey::RunFile(run_file) => {
                 write!(
                     f,
@@ -89,10 +98,6 @@ impl Display for QueryKey {
                         .map(|arg| arg.to_string())
                         .unwrap_or_default(),
                 )
-            }
-            QueryKey::MinifyHtml(minify_html) => write!(f, "minify_html({})", minify_html.0),
-            QueryKey::MarkdownToHtml(markdown_to_html) => {
-                write!(f, "markdown_to_html({})", markdown_to_html.0)
             }
         }
     }
