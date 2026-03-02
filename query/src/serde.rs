@@ -27,9 +27,9 @@ where
     where
         S: serde::Serializer,
     {
-        // TODO: If postcard doesn't support this, try doing Some(self.len()) instead.
-        // Will be mighty unsafe in the presence of concurrent modifications however...
-        let mut s = serializer.serialize_map(None)?;
+        // Might panic in the presence of concurrent modifications...
+        // Good thing we don't have those!!!
+        let mut s = serializer.serialize_map(Some(self.len()))?;
 
         let mut entry = self.begin_sync();
         while let Some(e) = entry {
@@ -97,8 +97,15 @@ impl<K: Eq + Hash, V> std::ops::DerefMut for SerializedMap<K, V> {
     }
 }
 
+/// Newtype for tokio::Mutex that allow the things inside to be serialized.
 #[derive(Debug, Default)]
 pub struct SerializedMutex<T>(pub Mutex<T>);
+
+impl<T> SerializedMutex<T> {
+    pub fn new(t: T) -> Self {
+        Self(Mutex::new(t))
+    }
+}
 
 impl<T> Serialize for SerializedMutex<T>
 where

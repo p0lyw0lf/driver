@@ -42,7 +42,7 @@ macro_rules! query_key {
 
         impl $crate::Producer for $key {
             type Output = $crate::query::context::AnyOutput;
-            async fn produce<'a>(&self, ctx: &$crate::query::context::QueryContext<'a>) -> Self::Output {
+            async fn produce(&self, ctx: &$crate::query::context::QueryContext) -> Self::Output {
                 match self { $(
                     Self::$type(v) => $crate::query::context::AnyOutput::new(v.produce(ctx).await),
                 )* }
