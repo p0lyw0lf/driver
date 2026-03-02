@@ -11,6 +11,7 @@ use scc::hash_map::HashMap;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::MutexGuard;
+use tracing::trace;
 
 use crate::QueryKey;
 use crate::db::object::Object;
@@ -259,17 +260,16 @@ pub async fn restore_from_directory(dir: &Path) -> crate::Result<Database> {
 
     // TODO: make these reads async & concurrent
 
+    trace!("deserializing cache");
     let cache_bytes = async_fs::read(cache_filename).await?;
     let serialized_cache: SerializedDatabase = postcard::from_bytes(&cache_bytes[..])?;
-
-    let remote_bytes = async_fs::read(remote_filename).await?;
-    let remotes: RemoteObjects = postcard::from_bytes(&remote_bytes[..])?;
 
     // Everything loaded from the disk is green to start with; this will be busted by input queries
     // changing for the next revision.
     let cache = HashMap::with_capacity(serialized_cache.len());
     let dep_graph = HashMap::with_capacity(serialized_cache.len());
 
+    trace!("reading cache into maps");
     for (key, (value, dependencies)) in serialized_cache {
         let _ = cache
             .insert_async(
@@ -283,6 +283,11 @@ pub async fn restore_from_directory(dir: &Path) -> crate::Result<Database> {
         let _ = dep_graph.insert_async(key, dependencies).await;
     }
 
+    trace!("deserializing remotes");
+    let remote_bytes = async_fs::read(remote_filename).await?;
+    let remotes: RemoteObjects = postcard::from_bytes(&remote_bytes[..])?;
+
+    trace!("deserializing objects");
     let objects = object::Objects::default();
     for prefix_entry in std::fs::read_dir(objects_dirname)? {
         let prefix_entry = prefix_entry?;

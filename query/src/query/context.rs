@@ -29,17 +29,31 @@ dyn_clone::clone_trait_object!(Output);
 
 // TODO: I'd eventuallly like to put these in a macro somewhere. For now, though, we have do do
 // these manually
-#[typetag::serde]
+#[typetag::serde(name = "Object")]
 impl Output for crate::Result<crate::db::object::Object> {}
-#[typetag::serde]
+#[typetag::serde(name = "FileOutput")]
 impl Output for crate::Result<crate::js::FileOutput> {}
-#[typetag::serde]
+#[typetag::serde(name = "Vec<PathBuf>")]
 impl Output for crate::Result<Vec<PathBuf>> {}
-#[typetag::serde]
+#[typetag::serde(name = "AnyOutput")]
 impl Output for AnyOutput {}
 // For temporary values ONLY
 #[typetag::serde(name = "NOT_PRESENT")]
 impl Output for () {}
+
+#[cfg(test)]
+mod test_any_output {
+    use super::AnyOutput;
+
+    #[test]
+    fn postcard_roundtrip() {
+        let a1 = AnyOutput::new(());
+
+        let bytes = postcard::to_stdvec(&a1).expect("serialization");
+        let a2: AnyOutput = postcard::from_bytes(&bytes[..]).expect("deserialization");
+        assert_eq!(a1.0.type_id(), a2.0.type_id());
+    }
+}
 
 impl ToHash for AnyOutput {
     fn run_hash(&self, hasher: &mut sha2::Sha256) {
