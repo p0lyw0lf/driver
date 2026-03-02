@@ -1,26 +1,44 @@
 use std::any::Any;
 use std::any::TypeId;
 use std::fmt::Debug;
-use std::fmt::Display;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use dyn_clone::DynClone;
+use serde::Deserialize;
+use serde::Serialize;
 use tracing::debug;
 
 use crate::db::Color;
 use crate::db::Database;
-use crate::db::DepGraph;
+use crate::db::Entry;
 use crate::options::OPTIONS;
 use crate::query::key::QueryKey;
 use crate::to_hash::ToHash;
 
 /// NOTE: a newtype is needed to get around some associated type jank.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AnyOutput(pub Box<dyn Output>);
-pub trait Output: ToHash + DynClone + Any + Debug {}
+
+#[typetag::serde(tag = "query")]
+pub trait Output: ToHash + DynClone + Any + Debug + Send + Sync {}
 dyn_clone::clone_trait_object!(Output);
-impl<T> Output for T where T: ToHash + DynClone + Any + Debug {}
+
+// TODO: I'd eventuallly like to put these in a macro somewhere. For now, though, we have do do
+// these manually
+#[typetag::serde]
+impl Output for crate::Result<crate::db::object::Object> {}
+#[typetag::serde]
+impl Output for crate::Result<crate::js::FileOutput> {}
+#[typetag::serde]
+impl Output for crate::Result<Vec<PathBuf>> {}
+#[typetag::serde]
+impl Output for AnyOutput {}
+// For temporary values ONLY
+#[typetag::serde(name = "NOT_PRESENT")]
+impl Output for () {}
+
 impl ToHash for AnyOutput {
     fn run_hash(&self, hasher: &mut sha2::Sha256) {
         // no prefix because we _do_ want this to be treated as the underlying value.
@@ -44,8 +62,8 @@ pub trait Producer {
     // is easily clone-able. This will eventually require string interning somewhere, not quite
     // sure where yet.
     type Output: Output + Sized + 'static;
-    async fn produce(&self, ctx: &QueryContext) -> Self::Output;
-    async fn query(self, ctx: &QueryContext) -> Self::Output
+    async fn produce<'a>(&self, ctx: &QueryContext<'a>) -> Self::Output;
+    async fn query<'a>(self, ctx: &QueryContext<'a>) -> Self::Output
     where
         Self: Sized,
         QueryKey: From<Self>,
@@ -58,139 +76,148 @@ pub trait Producer {
 }
 
 #[derive(Debug)]
-pub struct QueryContext {
+pub struct QueryContext<'a> {
     pub(crate) rt: Arc<tokio::runtime::Runtime>,
-    parent: Option<QueryKey>,
+    parent: Option<&'a mut Entry<'a>>,
     pub(crate) db: Arc<Database>,
-    dep_graph: Arc<DepGraph>,
 }
 
-impl QueryContext {
+impl<'a> QueryContext<'a> {
     pub fn new_revision(&self) {
         self.db.revision.fetch_add(1, Ordering::SeqCst);
     }
 
-    pub fn display_dep_graph(&self) -> &'_ impl Display {
-        &self.dep_graph
+    pub fn display_dep_graph(&self) -> &'static str {
+        todo!()
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
     pub(crate) async fn query(&self, key: QueryKey) -> AnyOutput {
         if let Some(parent) = &self.parent {
-            self.dep_graph.add_dependency(parent.clone(), key.clone());
+            parent.add_dependency(key.clone()).await;
         }
 
+        let entry = &mut self.db.entry(key.clone()).await;
+
         let revision = self.db.revision.load(Ordering::SeqCst);
-        let update_value = async |key: QueryKey| {
-            // We're about to run the key again, so remove any dependencies it once had
-            self.dep_graph.remove_all_dependencies(key.clone());
 
-            let value = Box::pin(key.produce(&QueryContext {
-                rt: self.rt.clone(),
-                parent: Some(key.clone()),
-                db: self.db.clone(),
-                dep_graph: self.dep_graph.clone(),
-            }))
-            .await;
-
-            if self.db.cache.insert(key.clone(), value.clone()).await {
-                debug!("marked green {key}");
-                self.db.colors.mark_green(&key, revision);
-            } else {
-                debug!("marked red {key}");
-                self.db.colors.mark_red(&key, revision);
-            }
-
-            value
-        };
-
-        let Some((_, rev)) = self.db.colors.get(&key) else {
+        let Some((_, rev)) = entry.color() else {
             debug!("not found in colors db {key}");
-            return update_value(key).await;
+            return self.update_value(revision, key, entry).await;
         };
         if key.is_input() && rev < revision {
             debug!("key is input and revision outdated {key}");
-            return update_value(key).await;
+            return self.update_value(revision, key, entry).await;
         }
 
-        match self.try_mark_green(key.clone()).await {
-            Color::Green => {
+        match self.try_mark_green(revision, entry).await {
+            Ok(value) => {
                 debug!("marked green after trying {key}");
-                self.db
-                    .cache
-                    .get(&key)
-                    .await
-                    .unwrap_or_else(|| panic!("Green query {key} missing value in cache"))
+                value
             }
-            Color::Red => {
+            Err(()) => {
                 debug!("marked red after trying {key}");
-                update_value(key).await
+                self.update_value(revision, key, entry).await
             }
         }
     }
 
-    async fn try_mark_green(&self, key: QueryKey) -> Color {
-        let revision = self.db.revision.load(Ordering::SeqCst);
+    async fn update_value<'b>(
+        &self,
+        revision: usize,
+        key: QueryKey,
+        entry: &'b mut Entry<'b>,
+    ) -> AnyOutput {
+        // We're about to run the key again, so remove any dependencies it once had
+        entry.remove_all_dependencies().await;
+
+        let (value, entry) = {
+            let ctx = QueryContext {
+                rt: self.rt.clone(),
+                parent: Some(entry),
+                db: self.db.clone(),
+            };
+            let value = Box::pin(key.produce(&ctx)).await;
+            let entry = ctx.parent.unwrap();
+            (value, entry)
+        };
+
+        entry.insert(revision, value.clone());
+
+        value
+    }
+
+    /// Ok == Green, Err == Red
+    async fn try_mark_green<'b>(
+        &self,
+        revision: usize,
+        entry: &mut Entry<'b>,
+    ) -> Result<AnyOutput, ()> {
         // If we have no dependencies in the graph, assume we need to run the query.
-        let Some(deps) = self.dep_graph.dependencies(&key).await else {
-            debug!("no dependencies found {key}");
-            return Color::Red;
+        let Some(deps) = entry.dependencies().await else {
+            debug!("no dependencies found");
+            return Err(());
         };
         for dep in deps {
-            match self.db.colors.get(&dep) {
+            match self.db.get_color(&dep) {
                 // Dependency is up-to-date in this revision, is ok
                 Some((Color::Green, rev)) if revision == rev => {
-                    debug!("dependency {dep} green the first time for {key}");
+                    debug!("dependency {dep} green the first time");
                     continue;
                 }
                 // Out-of-date dependency, we must also be out-of-date
                 Some((Color::Red, _)) => {
-                    debug!("dependency {dep} was outdated for {key}");
-                    return Color::Red;
+                    debug!("dependency {dep} was outdated");
+                    return Err(());
                 }
                 _ => {
-                    if dep.is_input()
-                        || Box::pin(self.try_mark_green(dep.clone())).await != Color::Green
-                    {
+                    let needs_recalculation = if dep.is_input() {
+                        true
+                    } else {
+                        let mut dep = self.db.entry(dep.clone()).await;
+                        Box::pin(self.try_mark_green(revision, &mut dep))
+                            .await
+                            .is_err()
+                    };
+                    if needs_recalculation {
                         let _ = Box::pin(self.query(dep.clone())).await;
                         // Because we just ran the query, we can be sure the revision is
                         // up-to-date.
-                        match self.db.colors.get(&dep) {
+                        match self.db.get_color(&dep) {
                             Some((Color::Green, _)) => {
-                                debug!("dependency {dep} green the second time for {key}");
+                                debug!("dependency {dep} green the second time");
                                 continue;
                             }
                             Some((Color::Red, _)) => {
-                                debug!("dependency {dep} was still outdated for {key}");
-                                return Color::Red;
+                                debug!("dependency {dep} was still outdated");
+                                return Err(());
                             }
                             None => unreachable!("we just ran the query"),
                         }
                     } else {
-                        debug!("successfully marked dependency {dep} green for {key}");
+                        debug!("successfully marked dependency {dep} green");
                     }
                 }
             }
         }
 
         // If we marked all dependencies as green, mark this node green too.
-        self.db.colors.mark_green(&key, revision);
-        Color::Green
+        entry.mark_green(revision);
+        Ok(entry.value().ok_or(())?.clone())
     }
 
     pub async fn save(&self) -> crate::Result<()> {
-        let cache_dir = &OPTIONS.read().unwrap().cache_dir;
-        crate::db::save_to_directory(cache_dir, &self.db, &self.dep_graph).await
+        let cache_dir = OPTIONS.read().unwrap().cache_dir.clone();
+        crate::db::save_to_directory(&cache_dir, &self.db).await
     }
 
     async fn restore(rt: Arc<tokio::runtime::Runtime>) -> crate::Result<Self> {
-        let cache_dir = &OPTIONS.read().unwrap().cache_dir;
-        let (db, dep_graph) = crate::db::restore_from_directory(cache_dir).await?;
+        let cache_dir = OPTIONS.read().unwrap().cache_dir.clone();
+        let db = crate::db::restore_from_directory(&cache_dir).await?;
         Ok(Self {
             rt,
             parent: None,
             db: Arc::new(db),
-            dep_graph: Arc::new(dep_graph),
         })
     }
 
@@ -203,7 +230,6 @@ impl QueryContext {
                     rt,
                     parent: None,
                     db: Default::default(),
-                    dep_graph: Default::default(),
                 }
             }
         }

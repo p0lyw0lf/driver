@@ -24,7 +24,7 @@ mod store_object;
 mod value;
 
 struct ContextFrame {
-    curr: *const QueryContext,
+    curr: *const QueryContext<'static>,
     output_queue: Vec<WriteOutput>,
 }
 
@@ -35,11 +35,12 @@ tokio::task_local! {
 /// Runs a closure with a QueryContext pushed onto the stack. All calls to `get_context()` that run
 /// as a result of that closure will access this ctx object. Therefore, all pointer accesses from
 /// `get_context()` have safety ensured as a result of running in this function.
-async fn with_query_context<T, F: Future<Output = crate::Result<T>>>(
-    ctx: &QueryContext,
+async fn with_query_context<'a, T, F: Future<Output = crate::Result<T>>>(
+    ctx: &QueryContext<'a>,
     f: impl FnOnce() -> F,
 ) -> crate::Result<(T, Vec<WriteOutput>)> {
-    let curr = ctx as *const _;
+    #[allow(clippy::unnecessary_cast)]
+    let curr = ctx as *const QueryContext<'a> as *const QueryContext<'static>;
     let new_frame = ContextFrame {
         curr,
         output_queue: vec![],
@@ -62,7 +63,7 @@ fn error_message(
 }
 
 /// Only safe to dereference the returned pointer if running inside a call to `with_context()`.
-fn get_context() -> rquickjs::Result<*const QueryContext> {
+fn get_context() -> rquickjs::Result<*const QueryContext<'static>> {
     QUERY_CONTEXT
         .try_with(|ctx| ctx.borrow().curr)
         .map_err(error_message)
@@ -311,7 +312,7 @@ query_key!(MarkdownToHtml(pub Object););
 impl Producer for MarkdownToHtml {
     type Output = crate::Result<Object>;
 
-    async fn produce(&self, ctx: &QueryContext) -> Self::Output {
+    async fn produce<'a>(&self, ctx: &QueryContext<'a>) -> Self::Output {
         let contents = self.0.contents_as_string(ctx)?;
 
         let output = ctx
@@ -369,7 +370,7 @@ query_key!(MinifyHtml(pub Object););
 impl Producer for MinifyHtml {
     type Output = crate::Result<Object>;
 
-    async fn produce(&self, ctx: &QueryContext) -> Self::Output {
+    async fn produce<'a>(&self, ctx: &QueryContext<'a>) -> Self::Output {
         let contents = self.0.contents_as_string(ctx)?;
         let cfg = minify_html::Cfg {
             keep_closing_tags: true,
@@ -541,7 +542,7 @@ impl Producer for RunFile {
     type Output = crate::Result<FileOutput>;
 
     #[tracing::instrument(level = "trace", skip(ctx))]
-    async fn produce(&self, ctx: &QueryContext) -> Self::Output {
+    async fn produce<'a>(&self, ctx: &QueryContext<'a>) -> Self::Output {
         let name = self.file.display().to_string();
         println!(
             "running {}({})",

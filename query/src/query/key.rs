@@ -8,7 +8,6 @@ use crate::js::MinifyHtml;
 use crate::js::RunFile;
 use crate::query::files::ListDirectory;
 use crate::query::files::ReadFile;
-use crate::to_hash::ToHash;
 
 #[macro_export]
 macro_rules! query_key {
@@ -22,9 +21,9 @@ macro_rules! query_key {
     };
 }
 
-macro_rules! query_keys {
-    ($key:ident ($cache:ident) { $(
-        $name:ident : $type:ident ,
+macro_rules! query_key {
+    ($key:ident { $(
+        $type:ident ,
     )* }) => {
         #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
         pub enum $key {
@@ -42,71 +41,21 @@ macro_rules! query_keys {
 
         impl $crate::Producer for $key {
             type Output = $crate::query::context::AnyOutput;
-            async fn produce(&self, ctx: &$crate::query::context::QueryContext) -> Self::Output {
+            async fn produce<'a>(&self, ctx: &$crate::query::context::QueryContext<'a>) -> Self::Output {
                 match self { $(
                     Self::$type(v) => $crate::query::context::AnyOutput::new(v.produce(ctx).await),
                 )* }
             }
         }
-
-        // We put the cache in here too so that it can be Serialize/Deserialize without doing
-        // anything crazier with AnyOutput
-        #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-        pub struct $cache { $(
-            pub $name: $crate::serde::SerializedEntries<$type, <$type as $crate::Producer>::Output>,
-        )* }
-
-        impl $cache {
-            /// REQUIRES: value was produced by key.
-            /// RETURNS: whether cache was busted, that is, whether the cache changed based on the
-            /// new value.
-            pub async fn insert(&self, key: QueryKey, value: $crate::query::context::AnyOutput) -> bool {
-                match key { $(
-                    $key::$type(key) => {
-                        let value: <$type as $crate::query::context::Producer>::Output = *value.downcast().expect("must be produced by key");
-                        let hash = value.to_hash();
-                        let old = self.$name.0.insert_async(key, value).await;
-                        match old {
-                            // Not already present, did change
-                            Ok(()) => true,
-                            // Check old hash for change. Exactly as expensive as checking exact
-                            // equality, though now we don't have to clone `value` to do so.
-                            Err(old) => old.1.to_hash() == hash
-                        }
-                    }
-                )* }
-            }
-
-            pub async fn get(&self, key: &QueryKey) -> Option<$crate::query::context::AnyOutput> {
-                match key { $(
-                    $key::$type(key) => self.$name.0.get_async(key).await.map(|v| $crate::query::context::AnyOutput::new(v.clone())),
-                )* }
-            }
-
-            pub async fn for_each_key<F, Fut>(&self, f: F)
-            where
-                F: Fn(QueryKey) -> Fut,
-                Fut: Future<Output=()>,
-            {
-                $(
-                    let mut entry = self.$name.0.begin_async().await;
-                    while let Some(e) = entry {
-                        // TODO: make this async. Borrow makes it tricky
-                        f(QueryKey::from(e.key().clone())).await;
-                        entry = e.next_async().await;
-                    }
-                )*
-            }
-        }
     }
 }
 
-query_keys!(QueryKey (QueryCache) {
-    read_file: ReadFile,
-    list_directory: ListDirectory,
-    run_file: RunFile,
-    minify_html: MinifyHtml,
-    markdown_to_html: MarkdownToHtml,
+query_key!(QueryKey {
+    ReadFile,
+    ListDirectory,
+    RunFile,
+    MinifyHtml,
+    MarkdownToHtml,
 });
 
 impl QueryKey {

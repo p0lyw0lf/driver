@@ -1,22 +1,24 @@
+use std::hash::Hash;
 use std::marker::PhantomData;
 
 use scc::hash_map::HashMap;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::ser::SerializeMap;
+use tokio::sync::Mutex;
 
 /// Newtype for scc::HashMap that allows for serializing/deserializing, so long as the & is
 /// actually an &mut or owned value.
 #[derive(Clone, Debug)]
-pub struct SerializedEntries<K: Eq + std::hash::Hash, V>(pub HashMap<K, V>);
+pub struct SerializedMap<K: Eq + Hash, V>(pub HashMap<K, V>);
 
-impl<K: Eq + std::hash::Hash, V> Default for SerializedEntries<K, V> {
+impl<K: Eq + Hash, V> Default for SerializedMap<K, V> {
     fn default() -> Self {
         Self(HashMap::new())
     }
 }
 
-impl<K: Eq + std::hash::Hash, V> Serialize for SerializedEntries<K, V>
+impl<K: Eq + Hash, V> Serialize for SerializedMap<K, V>
 where
     K: Serialize,
     V: Serialize,
@@ -25,11 +27,11 @@ where
     where
         S: serde::Serializer,
     {
-        // TODO: If postcard doesn't support this, try doing Some(self.0.len()) instead.
+        // TODO: If postcard doesn't support this, try doing Some(self.len()) instead.
         // Will be mighty unsafe in the presence of concurrent modifications however...
         let mut s = serializer.serialize_map(None)?;
 
-        let mut entry = self.0.begin_sync();
+        let mut entry = self.begin_sync();
         while let Some(e) = entry {
             s.serialize_entry(e.key(), e.get())?;
             entry = e.next_sync();
@@ -39,7 +41,7 @@ where
     }
 }
 
-impl<'de, K: Eq + std::hash::Hash, V> Deserialize<'de> for SerializedEntries<K, V>
+impl<'de, K: Eq + Hash, V> Deserialize<'de> for SerializedMap<K, V>
 where
     K: Deserialize<'de>,
     V: Deserialize<'de>,
@@ -48,14 +50,14 @@ where
     where
         D: serde::Deserializer<'de>,
     {
-        struct DeserializeVisitor<K: Eq + std::hash::Hash, V>(PhantomData<(K, V)>);
+        struct Visitor<K: Eq + Hash, V>(PhantomData<(K, V)>);
 
-        impl<'de, K: Eq + std::hash::Hash, V> serde::de::Visitor<'de> for DeserializeVisitor<K, V>
+        impl<'de, K: Eq + Hash, V> serde::de::Visitor<'de> for Visitor<K, V>
         where
             K: Deserialize<'de>,
             V: Deserialize<'de>,
         {
-            type Value = SerializedEntries<K, V>;
+            type Value = SerializedMap<K, V>;
 
             fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
             where
@@ -69,14 +71,69 @@ where
                     entry = map.next_entry()?;
                 }
 
-                Ok(SerializedEntries(this))
+                Ok(SerializedMap(this))
             }
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                write!(formatter, "expected map")
+                write!(formatter, "SerializedMap")
             }
         }
 
-        deserializer.deserialize_map(DeserializeVisitor(PhantomData))
+        deserializer.deserialize_map(Visitor(PhantomData))
+    }
+}
+
+impl<K: Eq + Hash, V> std::ops::Deref for SerializedMap<K, V> {
+    type Target = HashMap<K, V>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<K: Eq + Hash, V> std::ops::DerefMut for SerializedMap<K, V> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct SerializedMutex<T>(pub Mutex<T>);
+
+impl<T> Serialize for SerializedMutex<T>
+where
+    T: Serialize,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.blocking_lock().serialize(serializer)
+    }
+}
+
+impl<'de, T> Deserialize<'de> for SerializedMutex<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(Self(Mutex::new(T::deserialize(deserializer)?)))
+    }
+}
+
+impl<T> std::ops::Deref for SerializedMutex<T> {
+    type Target = Mutex<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> std::ops::DerefMut for SerializedMutex<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }

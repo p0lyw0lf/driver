@@ -64,7 +64,7 @@ impl Objects {
 
     /// SAFETY: object must be the hash of contents
     pub unsafe fn store_raw(&self, object: Object, contents: Vec<u8>) {
-        self.0.insert_sync(object.clone(), contents);
+        let _ = self.0.insert_sync(object.clone(), contents);
     }
 
     pub fn with<T>(&self, object: &Object, f: impl Fn(Option<&[u8]>) -> T) -> T {
@@ -75,16 +75,14 @@ impl Objects {
         }
     }
 
-    pub async fn for_each<E, F>(&self, f: F) -> Result<(), E>
+    pub fn for_each<E, F>(&self, f: F) -> Result<(), E>
     where
         F: Fn(&Object, &Vec<u8>) -> Result<(), E>,
     {
-        let mut entry = self.0.begin_async().await;
+        let mut entry = self.0.begin_sync();
         while let Some(e) = entry {
-            // TODO: make this a future
-            // unfortunately it's a little bit tricky w/ the borrows and such
             f(e.key(), e.get())?;
-            entry = e.next_async().await;
+            entry = e.next_sync();
         }
         Ok(())
     }

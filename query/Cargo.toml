@@ -13,7 +13,6 @@ hex = "0.4"
 ignore = "0.4"
 jiff = { version = "0.2", features = ["serde"] }
 minify-html = "0.18"
-petgraph = { version = "0.8", features = ["serde-1"] }
 relative-path = "2.0"
 postcard = { version = "1.1", features = ["use-std"] }
 scc = "3.6"
@@ -21,6 +20,7 @@ serde = { version = "1.0", features = ["derive"] }
 sha2 = "0.10"
 tokio = { version = "1.49", features = ["full"] }
 tracing = "0.1"
+typetag = "0.2"
 url = { version = "2.5", features = ["serde"] }
 zstd = "0.13"
 
