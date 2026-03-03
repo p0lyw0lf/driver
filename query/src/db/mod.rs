@@ -188,7 +188,7 @@ type SerializedDatabase =
     std::collections::HashMap<QueryKey, (AnyOutput, std::collections::BTreeSet<QueryKey>)>;
 
 impl Database {
-    async fn as_serialized(&self) -> SerializedDatabase {
+    pub(crate) async fn as_serialized(&self) -> SerializedDatabase {
         let mut out = std::collections::HashMap::with_capacity(self.cache.len());
 
         let mut entry = self.cache.begin_sync();

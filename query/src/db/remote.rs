@@ -11,12 +11,20 @@ use crate::db::object::Objects;
 
 /// A store for all URLs that have been fetched remotely. Maps a URL to an object hash and
 /// expiration time, if present on the fetched headers.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RemoteObjects {
-    // TODO: eventually I'd like to have this be an async client, but porting all my code to be
-    // async seems a little sus atm :)
+    #[serde(skip, default = "RemoteObjects::default_client")]
     client: Client,
     cache: crate::serde::SerializedMap<Url, RemoteObject>,
+}
+
+impl Default for RemoteObjects {
+    fn default() -> Self {
+        Self {
+            client: Self::default_client(),
+            cache: Default::default(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -246,34 +254,4 @@ fn format_header_date(timestamp: Timestamp) -> crate::Result<HeaderValue> {
     let value =
         format!("{weekday}, {day:0>2} {month} {year:0>4} {hour:0>2}:{minute:0>2}:{second:0>2} GMT");
     Ok(HeaderValue::from_str(&value)?)
-}
-
-impl Serialize for RemoteObjects {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        // Only serialize the cache; client is built manually
-        self.cache.serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for RemoteObjects {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let client = Self::default_client();
-        let cache = Deserialize::deserialize(deserializer)?;
-        Ok(Self { client, cache })
-    }
-}
-
-impl Default for RemoteObjects {
-    fn default() -> Self {
-        Self {
-            client: Self::default_client(),
-            cache: Default::default(),
-        }
-    }
 }

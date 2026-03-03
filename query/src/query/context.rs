@@ -41,20 +41,6 @@ impl Output for AnyOutput {}
 #[typetag::serde(name = "NOT_PRESENT")]
 impl Output for () {}
 
-#[cfg(test)]
-mod test_any_output {
-    use super::AnyOutput;
-
-    #[test]
-    fn postcard_roundtrip() {
-        let a1 = AnyOutput::new(());
-
-        let bytes = postcard::to_stdvec(&a1).expect("serialization");
-        let a2: AnyOutput = postcard::from_bytes(&bytes[..]).expect("deserialization");
-        assert_eq!(a1.0.type_id(), a2.0.type_id());
-    }
-}
-
 impl ToHash for AnyOutput {
     fn run_hash(&self, hasher: &mut sha2::Sha256) {
         // no prefix because we _do_ want this to be treated as the underlying value.
@@ -70,6 +56,12 @@ impl AnyOutput {
     }
     pub fn downcast<T: Output>(self) -> Option<Box<T>> {
         (self.0 as Box<dyn Any>).downcast().ok()
+    }
+}
+
+impl PartialEq for AnyOutput {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_hash() == other.to_hash()
     }
 }
 

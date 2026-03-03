@@ -86,25 +86,6 @@ where
     }
 }
 
-#[cfg(test)]
-mod map_test {
-    use super::SerializedMap;
-    use scc::HashMap;
-
-    #[test]
-    fn roundtrip_postcard() {
-        let m1 = SerializedMap(HashMap::<i32, i32>::new());
-        let _ = m1.insert_sync(1, 2);
-        let _ = m1.insert_sync(3, 4);
-        let _ = m1.insert_sync(5, 6);
-
-        let bytes = postcard::to_stdvec(&m1).expect("serialization");
-        let m2: SerializedMap<i32, i32> =
-            postcard::from_bytes(&bytes[..]).expect("deserialization");
-        assert_eq!(m1.0, m2.0);
-    }
-}
-
 impl<K: Eq + Hash, V> std::ops::Deref for SerializedMap<K, V> {
     type Target = HashMap<K, V>;
 
@@ -168,16 +149,123 @@ impl<T> std::ops::DerefMut for SerializedMutex<T> {
 }
 
 #[cfg(test)]
-mod test_mutex {
+mod test {
+    use super::SerializedMap;
     use super::SerializedMutex;
+    use crate::db::Database;
+    use crate::js::GetUrl;
+    use crate::query::context::AnyOutput;
+    use crate::query::key::QueryKey;
 
     #[test]
-    fn roundtrip_postcard() {
+    fn roundtrip_any_output() {
+        let a1 = AnyOutput::new(());
+
+        let bytes = postcard::to_stdvec(&a1).expect("serialization");
+        let a2: AnyOutput = postcard::from_bytes(&bytes[..]).expect("deserialization");
+        assert_eq!(a1.0.type_id(), a2.0.type_id());
+    }
+
+    #[test]
+    fn roundtrip_map() {
+        let m1 = SerializedMap::default();
+        let _ = m1.insert_sync(1, 2);
+        let _ = m1.insert_sync(3, 4);
+        let _ = m1.insert_sync(5, 6);
+
+        let bytes = postcard::to_stdvec(&m1).expect("serialization");
+        let m2: SerializedMap<i32, i32> =
+            postcard::from_bytes(&bytes[..]).expect("deserialization");
+        assert_eq!(m1.0, m2.0);
+    }
+
+    #[test]
+    fn roundtrip_mutex() {
         let v1 = SerializedMutex::new(123i32);
 
         let bytes = postcard::to_stdvec(&v1).expect("serialization");
         let v2: SerializedMutex<i32> = postcard::from_bytes(&bytes[..]).expect("deserialization");
 
         assert_eq!(*v1.0.blocking_lock(), *v2.0.blocking_lock());
+    }
+
+    #[test]
+    fn roundtrip_database() {
+        let db = Database::default();
+        let k1 = QueryKey::GetUrl(GetUrl(
+            url::Url::parse("https://example.com/page1").unwrap(),
+        ));
+        let k2 = QueryKey::GetUrl(GetUrl(
+            url::Url::parse("https://example.com/page2").unwrap(),
+        ));
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let db1 = rt.block_on(async move {
+            db.with_entry(k1.clone(), async |mut entry| {
+                entry.insert(1, AnyOutput::new(()));
+            })
+            .await;
+            db.with_entry(k2.clone(), async |mut entry| {
+                entry.insert(2, AnyOutput::new(()));
+            })
+            .await;
+            db.add_dependency(k1, k2).await;
+            db.as_serialized().await
+        });
+
+        let bytes = postcard::to_stdvec(&db1).expect("serialization");
+        let db2 = postcard::from_bytes::<
+            std::collections::HashMap<QueryKey, (AnyOutput, std::collections::BTreeSet<QueryKey>)>,
+        >(&bytes[..])
+        .expect("deserialization");
+        // assert!(std::collections::HashMap::eq(&db1, &db2)); // fails to compile, debugging below
+    }
+
+    #[test]
+    fn am_i_crazy() {
+        let db1 = std::collections::HashMap::<
+            QueryKey,
+            (AnyOutput, std::collections::BTreeSet<QueryKey>),
+        >::new();
+        let db2 = std::collections::HashMap::<
+            QueryKey,
+            (AnyOutput, std::collections::BTreeSet<QueryKey>),
+        >::new();
+        // assert_eq!(db1, db2); // fails to compile
+
+        let db1 = std::collections::HashMap::<i32, i32>::new();
+        let db2 = std::collections::HashMap::<i32, i32>::new();
+        assert_eq!(db1, db2); // compiles!!
+
+        let db1 = std::collections::HashMap::<QueryKey, i32>::new();
+        let db2 = std::collections::HashMap::<QueryKey, i32>::new();
+        assert_eq!(db1, db2); // compiles!!
+
+        let db1 = std::collections::HashMap::<
+            i32,
+            (AnyOutput, std::collections::BTreeSet<QueryKey>),
+        >::new();
+        let db2 = std::collections::HashMap::<
+            i32,
+            (AnyOutput, std::collections::BTreeSet<QueryKey>),
+        >::new();
+        // assert_eq!(db1, db2); // fails to compile
+
+        let db1 =
+            std::collections::HashMap::<i32, (i32, std::collections::BTreeSet<QueryKey>)>::new();
+        let db2 =
+            std::collections::HashMap::<i32, (i32, std::collections::BTreeSet<QueryKey>)>::new();
+        assert_eq!(db1, db2); // compiles!!
+
+        let db1 = std::collections::HashMap::<i32, (AnyOutput, i32)>::new();
+        let db2 = std::collections::HashMap::<i32, (AnyOutput, i32)>::new();
+        // assert_eq!(db1, db2); // fails to compile
+
+        let db1 = std::collections::HashMap::<i32, AnyOutput>::new();
+        let db2 = std::collections::HashMap::<i32, AnyOutput>::new();
+        // assert_eq!(db1, db2); // fails to compile
+
+        // Everything that fails to compile is because AnyOutput does not implement PartialEq
+        // (or did, at least). See https://play.rust-lang.org/?version=stable&mode=debug&edition=2024&gist=91d32fa6c39378d7e4864c67d96291aa
     }
 }
