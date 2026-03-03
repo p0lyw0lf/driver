@@ -218,54 +218,6 @@ mod test {
             std::collections::HashMap<QueryKey, (AnyOutput, std::collections::BTreeSet<QueryKey>)>,
         >(&bytes[..])
         .expect("deserialization");
-        // assert!(std::collections::HashMap::eq(&db1, &db2)); // fails to compile, debugging below
-    }
-
-    #[test]
-    fn am_i_crazy() {
-        let db1 = std::collections::HashMap::<
-            QueryKey,
-            (AnyOutput, std::collections::BTreeSet<QueryKey>),
-        >::new();
-        let db2 = std::collections::HashMap::<
-            QueryKey,
-            (AnyOutput, std::collections::BTreeSet<QueryKey>),
-        >::new();
-        // assert_eq!(db1, db2); // fails to compile
-
-        let db1 = std::collections::HashMap::<i32, i32>::new();
-        let db2 = std::collections::HashMap::<i32, i32>::new();
-        assert_eq!(db1, db2); // compiles!!
-
-        let db1 = std::collections::HashMap::<QueryKey, i32>::new();
-        let db2 = std::collections::HashMap::<QueryKey, i32>::new();
-        assert_eq!(db1, db2); // compiles!!
-
-        let db1 = std::collections::HashMap::<
-            i32,
-            (AnyOutput, std::collections::BTreeSet<QueryKey>),
-        >::new();
-        let db2 = std::collections::HashMap::<
-            i32,
-            (AnyOutput, std::collections::BTreeSet<QueryKey>),
-        >::new();
-        // assert_eq!(db1, db2); // fails to compile
-
-        let db1 =
-            std::collections::HashMap::<i32, (i32, std::collections::BTreeSet<QueryKey>)>::new();
-        let db2 =
-            std::collections::HashMap::<i32, (i32, std::collections::BTreeSet<QueryKey>)>::new();
-        assert_eq!(db1, db2); // compiles!!
-
-        let db1 = std::collections::HashMap::<i32, (AnyOutput, i32)>::new();
-        let db2 = std::collections::HashMap::<i32, (AnyOutput, i32)>::new();
-        // assert_eq!(db1, db2); // fails to compile
-
-        let db1 = std::collections::HashMap::<i32, AnyOutput>::new();
-        let db2 = std::collections::HashMap::<i32, AnyOutput>::new();
-        // assert_eq!(db1, db2); // fails to compile
-
-        // Everything that fails to compile is because AnyOutput does not implement PartialEq
-        // (or did, at least). See https://play.rust-lang.org/?version=stable&mode=debug&edition=2024&gist=91d32fa6c39378d7e4864c67d96291aa
+        assert_eq!(db1, db2);
     }
 }
