@@ -33,7 +33,7 @@ dyn_clone::clone_trait_object!(Output);
 impl Output for crate::Result<crate::db::object::Object> {}
 #[typetag::serde(name = "FileOutput")]
 impl Output for crate::Result<crate::js::FileOutput> {}
-#[typetag::serde(name = "Vec<PathBuf>")]
+#[typetag::serde(name = "Vec_PathBuf")]
 impl Output for crate::Result<Vec<PathBuf>> {}
 #[typetag::serde(name = "AnyOutput")]
 impl Output for AnyOutput {}

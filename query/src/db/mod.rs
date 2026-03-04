@@ -218,9 +218,13 @@ pub async fn save_to_directory(dir: &Path, db: &Database) -> crate::Result<()> {
     async_fs::create_dir_all(dir).await?;
 
     // TODO: make these writes async & concurrent
+    // {
+    //     let cache_file = std::fs::File::create(cache_filename)?;
+    //     postcard::to_io(&db.as_serialized().await, cache_file)?;
+    // }
     {
-        let cache_file = std::fs::File::create(cache_filename)?;
-        postcard::to_io(&db.as_serialized().await, cache_file)?;
+        let bytes = postcard::to_stdvec(&db.as_serialized().await)?;
+        std::fs::write(cache_filename, bytes)?;
     }
     {
         let remote_file = std::fs::File::create(remote_filename)?;
@@ -260,8 +264,9 @@ pub async fn restore_from_directory(dir: &Path) -> crate::Result<Database> {
 
     // TODO: make these reads async & concurrent
 
-    trace!("deserializing cache");
+    trace!("deserializing cache {}", cache_filename.display());
     let cache_bytes = async_fs::read(cache_filename).await?;
+    trace!("read cache file");
     let serialized_cache: SerializedDatabase = postcard::from_bytes(&cache_bytes[..])?;
 
     // Everything loaded from the disk is green to start with; this will be busted by input queries

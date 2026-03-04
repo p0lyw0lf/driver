@@ -150,11 +150,21 @@ impl<T> std::ops::DerefMut for SerializedMutex<T> {
 
 #[cfg(test)]
 mod test {
+    use std::path::PathBuf;
+
     use super::SerializedMap;
     use super::SerializedMutex;
     use crate::db::Database;
+    use crate::db::object::Object;
+    use crate::js::FileOutput;
     use crate::js::GetUrl;
+    use crate::js::MarkdownToHtml;
+    use crate::js::MinifyHtml;
+    use crate::js::RunFile;
+    use crate::js::WriteOutput;
     use crate::query::context::AnyOutput;
+    use crate::query::files::ListDirectory;
+    use crate::query::files::ReadFile;
     use crate::query::key::QueryKey;
 
     #[test]
@@ -192,23 +202,65 @@ mod test {
     #[test]
     fn roundtrip_database() {
         let db = Database::default();
+
+        let obj = |n: u8| unsafe { Object::from_hash([n; 32].into()) };
+
         let k1 = QueryKey::GetUrl(GetUrl(
             url::Url::parse("https://example.com/page1").unwrap(),
         ));
-        let k2 = QueryKey::GetUrl(GetUrl(
-            url::Url::parse("https://example.com/page2").unwrap(),
-        ));
+        let k2 = QueryKey::ListDirectory(ListDirectory(PathBuf::from(".")));
+        let k3 = QueryKey::MarkdownToHtml(MarkdownToHtml(obj(3)));
+        let k4 = QueryKey::MinifyHtml(MinifyHtml(obj(4)));
+        let k5 = QueryKey::ReadFile(ReadFile(PathBuf::from("./file.js")));
+        let k6 = QueryKey::RunFile(RunFile {
+            file: PathBuf::from("./file.js"),
+            args: Some(crate::js::RustValue::Store(crate::js::StoreObject {
+                object: obj(6),
+            })),
+        });
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let db1 = rt.block_on(async move {
+            /*
             db.with_entry(k1.clone(), async |mut entry| {
-                entry.insert(1, AnyOutput::new(()));
+                entry.insert(1, AnyOutput::new(crate::Result::Ok(obj(1))));
             })
             .await;
+            */
             db.with_entry(k2.clone(), async |mut entry| {
-                entry.insert(2, AnyOutput::new(()));
+                entry.insert(
+                    2,
+                    AnyOutput::new(crate::Result::Ok(vec![PathBuf::from("./file.js")])),
+                );
             })
             .await;
+            /*
+            db.with_entry(k3.clone(), async |mut entry| {
+                entry.insert(3, AnyOutput::new(crate::Result::Ok(obj(3))));
+            })
+            .await;
+            db.with_entry(k4.clone(), async |mut entry| {
+                entry.insert(4, AnyOutput::new(crate::Result::Ok(obj(4))));
+            })
+            .await;
+            db.with_entry(k5.clone(), async |mut entry| {
+                entry.insert(5, AnyOutput::new(crate::Result::Ok(obj(5))));
+            })
+            .await;
+            db.with_entry(k6.clone(), async |mut entry| {
+                entry.insert(
+                    6,
+                    AnyOutput::new(crate::Result::Ok(FileOutput {
+                        value: crate::js::RustValue::Null,
+                        outputs: vec![WriteOutput {
+                            path: PathBuf::from("./index.html"),
+                            object: obj(6),
+                        }],
+                    })),
+                );
+            })
+            .await;
+            */
             db.add_dependency(k1, k2).await;
             db.as_serialized().await
         });

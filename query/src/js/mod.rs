@@ -11,8 +11,6 @@ use tracing::trace;
 
 use crate::{
     db::object::Object,
-    js::store_object::StoreObject,
-    js::value::RustValue,
     query::{
         context::{Producer, QueryContext},
         files::ReadFile,
@@ -23,6 +21,12 @@ use crate::{
 
 mod store_object;
 mod value;
+
+#[cfg(test)]
+pub use self::{store_object::StoreObject, value::RustValue};
+
+#[cfg(not(test))]
+use self::{store_object::StoreObject, value::RustValue};
 
 struct ContextFrame {
     curr: *const QueryContext,
@@ -531,6 +535,9 @@ query_key!(RunFile {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileOutput {
+    #[cfg(test)]
+    pub value: RustValue,
+    #[cfg(not(test))]
     value: RustValue,
     pub outputs: Vec<WriteOutput>,
 }
