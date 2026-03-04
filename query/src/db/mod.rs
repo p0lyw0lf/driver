@@ -304,6 +304,8 @@ pub async fn restore_from_directory(dir: &Path) -> crate::Result<Database> {
 
             let hash = format!("{}{}", prefix, rest);
             let hash_bytes = hex::decode(&hash)?;
+            // TODO: remove this once sha2 updates off generic-array@0.14.9
+            #[allow(deprecated)]
             let hash = Hash::from_exact_iter(hash_bytes)
                 .ok_or_else(|| crate::Error::new("couldn't convert object filename to hash"))?;
             // SAFETY: we are restoring from disk here

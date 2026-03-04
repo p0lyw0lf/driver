@@ -44,3 +44,17 @@ features = [
   "phf",
   "rust-alloc",
 ]
+
+[dependencies.zune-image]
+version = "0.5"
+default-features = false
+features = [
+  "log",
+  "metadata",
+  "simd",
+  "threads",
+  "jpeg",
+  "jpeg-xl",
+  "png",
+  "webp",
+]
