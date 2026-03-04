@@ -2,13 +2,10 @@ use std::any::Any;
 use std::any::TypeId;
 use std::fmt::Debug;
 use std::fmt::Display;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use dyn_clone::DynClone;
-use serde::Deserialize;
-use serde::Serialize;
 use tracing::debug;
 use tracing::trace;
 
@@ -20,26 +17,10 @@ use crate::query::key::QueryKey;
 use crate::to_hash::ToHash;
 
 /// NOTE: a newtype is needed to get around some associated type jank.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct AnyOutput(pub Box<dyn Output>);
-
-#[typetag::serde(tag = "query")]
 pub trait Output: ToHash + DynClone + Any + Debug + Send + Sync {}
 dyn_clone::clone_trait_object!(Output);
-
-// TODO: I'd eventuallly like to put these in a macro somewhere. For now, though, we have do do
-// these manually
-#[typetag::serde(name = "Object")]
-impl Output for crate::Result<crate::db::object::Object> {}
-#[typetag::serde(name = "FileOutput")]
-impl Output for crate::Result<crate::js::FileOutput> {}
-#[typetag::serde(name = "Vec_PathBuf")]
-impl Output for crate::Result<Vec<PathBuf>> {}
-#[typetag::serde(name = "AnyOutput")]
-impl Output for AnyOutput {}
-// For temporary values ONLY
-#[typetag::serde(name = "NOT_PRESENT")]
-impl Output for () {}
 
 impl ToHash for AnyOutput {
     fn run_hash(&self, hasher: &mut sha2::Sha256) {
