@@ -3,12 +3,13 @@ use std::fmt::Display;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::js::GetUrl;
-use crate::js::MarkdownToHtml;
-use crate::js::MinifyHtml;
 use crate::js::RunFile;
 use crate::query::files::ListDirectory;
 use crate::query::files::ReadFile;
+use crate::query::html::MarkdownToHtml;
+use crate::query::html::MinifyHtml;
+use crate::query::image::ConvertImage;
+use crate::query::remote::GetUrl;
 
 #[macro_export]
 macro_rules! query_key {
@@ -52,6 +53,7 @@ macro_rules! query_key {
 }
 
 query_key!(QueryKey {
+    ConvertImage,
     GetUrl,
     ListDirectory,
     MarkdownToHtml,
@@ -64,6 +66,7 @@ impl QueryKey {
     // whether a new revision should cause this key to be immediately re-computed or not
     pub fn is_input(&self) -> bool {
         match self {
+            QueryKey::ConvertImage(_) => false,
             QueryKey::GetUrl(_) => true,
             QueryKey::ListDirectory(_) => true,
             QueryKey::MarkdownToHtml(_) => false,
@@ -77,6 +80,19 @@ impl QueryKey {
 impl Display for QueryKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            QueryKey::ConvertImage(convert_image) => {
+                write!(f, "convert_image({}, {{", convert_image.input,)?;
+                if let Some(size) = &convert_image.size {
+                    write!(f, " size: {},", size)?;
+                }
+                if let Some(fit) = &convert_image.fit {
+                    write!(f, " fit: {},", fit)?;
+                }
+                if let Some(format) = &convert_image.format {
+                    write!(f, " format: {},", format)?;
+                }
+                write!(f, " }})")
+            }
             QueryKey::GetUrl(url) => write!(f, "get_url({})", url.0),
             QueryKey::ListDirectory(list_directory) => {
                 write!(f, "list_directory({:?})", list_directory.0)

@@ -2149,6 +2149,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "moxcms"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04e5f643aebb3c117fa77e268557e3bf19e250769062820fcaf3ff33ea560adf"
+dependencies = [
+ "num-traits",
+ "pxfm",
+]
+
+[[package]]
 name = "mutate_once"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2996,6 +3006,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "pxfm"
+version = "0.1.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5a041e753da8b807c9255f28de81879c78c876392ff2469cde94799b2896b9d"
+
+[[package]]
 name = "query"
 version = "0.1.0"
 dependencies = [
@@ -3019,7 +3035,9 @@ dependencies = [
  "tracing",
  "url",
  "zstd",
+ "zune-core",
  "zune-image",
+ "zune-imageprocs",
 ]
 
 [[package]]
@@ -4935,6 +4953,17 @@ dependencies = [
  "zune-jpeg",
  "zune-jpegxl",
  "zune-png",
+]
+
+[[package]]
+name = "zune-imageprocs"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "915f2f441a4fe4a113839e6e0832c91516f09137f6421b3ce834d3db3ff1b067"
+dependencies = [
+ "moxcms",
+ "zune-core",
+ "zune-image",
 ]
 
 [[package]]

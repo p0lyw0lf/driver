@@ -22,6 +22,8 @@ tokio = { version = "1.49", features = ["full"] }
 tracing = "0.1"
 url = { version = "2.5", features = ["serde"] }
 zstd = "0.13"
+zune-core = "0.5"
+zune-imageprocs = "0.5"
 
 [dependencies.reqwest]
 version = "0.13"

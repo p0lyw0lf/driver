@@ -123,17 +123,14 @@ mod driver {
     use rquickjs::prelude::Promised;
     use url::Url;
 
-    use super::WriteOutput;
-    use super::error_message;
-    use super::get_context;
+    use super::{WriteOutput, error_message, get_context, get_current_file};
 
-    use crate::js::GetUrl;
-    use crate::js::MarkdownToHtml;
-    use crate::js::MinifyHtml;
-    use crate::js::{get_current_file, store_object::StoreObject, value::RustValue};
-    use crate::{
-        query::context::Producer,
-        query::files::{ListDirectory, ReadFile},
+    use crate::js::{store_object::StoreObject, value::RustValue};
+    use crate::query::{
+        context::Producer,
+        files::{ListDirectory, ReadFile},
+        html::{MarkdownToHtml, MinifyHtml},
+        remote::GetUrl,
     };
 
     /// Helper function that formats a path relative to the current file
@@ -297,106 +294,6 @@ mod driver {
             }])?
         };
         Ok(())
-    }
-}
-
-query_key!(GetUrl(pub url::Url););
-
-impl Producer for GetUrl {
-    type Output = crate::Result<Object>;
-
-    #[tracing::instrument(level = "trace", skip_all)]
-    async fn produce(&self, ctx: &QueryContext) -> Self::Output {
-        Ok(ctx
-            .db
-            .remotes
-            .fetch(&ctx.db.objects, self.0.clone())
-            .await?
-            .object)
-    }
-}
-
-query_key!(MarkdownToHtml(pub Object););
-
-impl Producer for MarkdownToHtml {
-    type Output = crate::Result<Object>;
-
-    #[tracing::instrument(level = "trace", skip_all)]
-    async fn produce(&self, ctx: &QueryContext) -> Self::Output {
-        let contents = self.0.contents_as_string(ctx)?;
-
-        let output = ctx
-            .rt
-            .spawn_blocking(move || {
-                comrak::markdown_to_html_with_plugins(
-                    &contents,
-                    &comrak::Options {
-                        extension: comrak::options::Extension::builder()
-                            .strikethrough(true)
-                            .table(true)
-                            .autolink(false)
-                            .tasklist(true)
-                            .superscript(false)
-                            .subscript(false)
-                            .footnotes(true)
-                            .math_dollars(true)
-                            .shortcodes(false)
-                            .underline(false)
-                            .spoiler(true)
-                            .subtext(true)
-                            .highlight(true)
-                            .build(),
-                        parse: comrak::options::Parse::builder()
-                            .smart(false)
-                            .tasklist_in_table(true)
-                            .ignore_setext(true)
-                            .build(),
-                        render: comrak::options::Render::builder()
-                            .hardbreaks(false)
-                            .r#unsafe(true)
-                            .escape(false)
-                            .tasklist_classes(true)
-                            .build(),
-                    },
-                    &comrak::options::Plugins::builder()
-                        .render(comrak::options::RenderPlugins {
-                            codefence_syntax_highlighter: Some(
-                                &comrak::plugins::syntect::SyntectAdapterBuilder::new().build(),
-                            ),
-                            heading_adapter: None,
-                        })
-                        .build(),
-                )
-            })
-            .await?;
-
-        let object = ctx.db.objects.store(output.into_bytes());
-        Ok(object)
-    }
-}
-
-query_key!(MinifyHtml(pub Object););
-
-impl Producer for MinifyHtml {
-    type Output = crate::Result<Object>;
-
-    #[tracing::instrument(level = "trace", skip_all)]
-    async fn produce(&self, ctx: &QueryContext) -> Self::Output {
-        let contents = self.0.contents_as_string(ctx)?;
-        let cfg = minify_html::Cfg {
-            keep_closing_tags: true,
-            keep_comments: true,
-            keep_html_and_head_opening_tags: true,
-            minify_css: true,
-            minify_js: true,
-            ..Default::default()
-        };
-        let output = ctx
-            .rt
-            .spawn_blocking(move || minify_html::minify(contents.as_bytes(), &cfg))
-            .await?;
-        let object = ctx.db.objects.store(output);
-        Ok(object)
     }
 }
 
