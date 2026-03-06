@@ -12,7 +12,7 @@ query_key!(GetUrl(pub url::Url););
 impl Producer for GetUrl {
     type Output = crate::Result<Object>;
 
-    #[tracing::instrument(level = "trace", skip_all)]
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn produce(&self, ctx: &QueryContext) -> Self::Output {
         Ok(ctx
             .db

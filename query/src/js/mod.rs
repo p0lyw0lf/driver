@@ -72,7 +72,7 @@ fn error_message(
 fn get_context() -> rquickjs::Result<*const QueryContext> {
     QUERY_CONTEXT
         .try_with(|ctx| ctx.borrow().curr)
-        .map_err(error_message)
+        .map_err(|e| error_message(format!("get_context: {e}")))
 }
 
 /// SAFETY: only safe to call when running inside `with_query_context()`
@@ -114,6 +114,20 @@ mod driver {
 
     use super::{WriteOutput, error_message, get_context};
 
+    /// Helper for constructing a promise type
+    macro_rules! promise_ty {
+        ($ty:ty) => {
+            rquickjs::prelude::Promised<impl Future<Output = $ty>>
+        };
+    }
+
+    /// Helper for constructing a promise body
+    macro_rules! promise {
+        ($tt:tt) => {
+            rquickjs::prelude::Promised(async move { $tt })
+        };
+    }
+
     use crate::js::{image::JsImage, object::JsObject, path::JsPath, value::JsValue};
     use crate::query::{
         context::Producer,
@@ -124,16 +138,18 @@ mod driver {
     };
 
     #[rquickjs::function]
-    pub async fn read_file(path: JsPath) -> rquickjs::Result<JsObject> {
-        // SAFETY: the only way these javascript functions get called is from inside a
-        // `with_query_context()`
-        let ctx = unsafe { &*get_context()? };
+    pub fn read_file(path: JsPath) -> promise_ty!(rquickjs::Result<JsObject>) {
+        promise!({
+            // SAFETY: the only way these javascript functions get called is from inside a
+            // `with_query_context()`
+            let ctx = unsafe { &*get_context()? };
 
-        let object = ReadFile(path.0)
-            .query(ctx)
-            .await
-            .map_err(|e| error_message(format!("read_file: {e}")))?;
-        Ok(JsObject { object })
+            let object = ReadFile(path.0)
+                .query(ctx)
+                .await
+                .map_err(|e| error_message(format!("read_file: {e}")))?;
+            Ok(JsObject { object })
+        })
     }
 
     #[rquickjs::function]
@@ -152,18 +168,20 @@ mod driver {
     }
 
     #[rquickjs::function]
-    pub async fn run_task(
+    pub fn run_task(
         js_ctx: Ctx<'_>,
         filename: JsPath,
         args: Option<JsValue>,
-    ) -> rquickjs::Result<JsValue> {
-        super::CTX
-            .scope(js_ctx.as_raw(), async {
-                // SAFETY: the only way these javascript functions get called is from inside a
-                // `with_query_context()`
-                unsafe { super::run_task(filename.0, args) }.await
-            })
-            .await
+    ) -> promise_ty!(rquickjs::Result<JsValue>) {
+        promise!({
+            super::CTX
+                .scope(js_ctx.as_raw(), async {
+                    // SAFETY: the only way these javascript functions get called is from inside a
+                    // `with_query_context()`
+                    unsafe { super::run_task(filename.0, args) }.await
+                })
+                .await
+        })
     }
 
     #[rquickjs::function]
@@ -334,7 +352,7 @@ impl MemoizedScriptLoader {
 }
 
 impl rquickjs::loader::Loader for MemoizedScriptLoader {
-    #[tracing::instrument(level = "trace", skip(self, js_ctx))]
+    #[tracing::instrument(level = "debug", skip(self, js_ctx))]
     fn load<'js>(
         &mut self,
         js_ctx: &rquickjs::Ctx<'js>,
@@ -458,84 +476,90 @@ impl ToHash for FileOutput {
 impl Producer for RunFile {
     type Output = crate::Result<FileOutput>;
 
-    #[tracing::instrument(level = "trace", skip_all)]
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn produce(&self, ctx: &QueryContext) -> Self::Output {
         let name = self.file.display().to_string();
-        println!(
-            "running {}({})",
+        let key = format!(
+            "{}({})",
             name,
             self.args
                 .as_ref()
                 .map(|args| args.to_string())
                 .unwrap_or_default()
         );
+        println!("running {key}");
         let object = ReadFile(self.file.clone()).query(ctx).await?;
         trace!("read file");
         let contents = object.contents_as_string(ctx)?;
         trace!("read file contents");
 
-        let (value, outputs) = with_query_context(ctx, async || {
-            trace!("with_query_context start");
-            let out = with_js_ctx(ctx.rt.clone(), |ctx| {
-                trace!("with_js_ctx start");
-                let name = name.clone();
-                // SAFETY: lifetimes work out trust me bro
-                let ctx = unsafe { rquickjs::Ctx::from_raw(ctx.as_raw()) };
-                async move {
-                    let globals = ctx.globals();
-                    globals
-                        .set(
-                            "print",
-                            rquickjs::Function::new(ctx.clone(), |msg: String| println!("{msg}"))
-                                .unwrap()
-                                .with_name("print")
-                                .unwrap(),
-                        )
-                        .unwrap();
+        let (value, outputs) = with_js_ctx(ctx.rt.clone(), |js_ctx| {
+            trace!("with_js_ctx start");
+            let name = name.clone();
+            // SAFETY: lifetimes work out trust me bro
+            let js_ctx = unsafe { rquickjs::Ctx::from_raw(js_ctx.as_raw()) };
+            async move {
+                let globals = js_ctx.globals();
+                globals
+                    .set(
+                        "print",
+                        rquickjs::Function::new(js_ctx.clone(), |msg: String| println!("{msg}"))
+                            .unwrap()
+                            .with_name("print")
+                            .unwrap(),
+                    )
+                    .unwrap();
 
-                    globals
-                        .set(
-                            "ARGS",
-                            match &self.args {
-                                Some(args) => args.clone().into_js(&ctx).unwrap(),
-                                None => Value::new_undefined(ctx.clone()),
-                            },
-                        )
-                        .unwrap();
+                globals
+                    .set(
+                        "ARGS",
+                        match &self.args {
+                            Some(args) => args.clone().into_js(&js_ctx).unwrap(),
+                            None => Value::new_undefined(js_ctx.clone()),
+                        },
+                    )
+                    .unwrap();
 
-                    let catch = |err: rquickjs::Error| -> crate::Error {
-                        match err {
-                            rquickjs::Error::Exception => {
-                                let value = ctx.catch();
-                                if let Some(err) = value.as_exception() {
-                                    let message = err.message().unwrap_or_default();
-                                    let stack = err.stack().unwrap_or_default();
-                                    eprintln!("js exception: {message}");
-                                    eprintln!("{stack}");
-                                } else if let Ok(value) = JsValue::from_js(&ctx, value.clone()) {
-                                    eprintln!("js thrown value: {}", value);
-                                } else {
-                                    eprintln!("js error: {:?}", value);
-                                }
-                                crate::Error::from(rquickjs::Error::Exception)
+                let catch = |err: rquickjs::Error| -> crate::Error {
+                    match err {
+                        rquickjs::Error::Exception => {
+                            let value = js_ctx.catch();
+                            if let Some(err) = value.as_exception() {
+                                let message = err.message().unwrap_or_default();
+                                let stack = err.stack().unwrap_or_default();
+                                eprintln!("js exception: {message}");
+                                eprintln!("{stack}");
+                            } else if let Ok(value) = JsValue::from_js(&js_ctx, value.clone()) {
+                                eprintln!("js thrown value: {}", value);
+                            } else {
+                                eprintln!("js error: {:?}", value);
                             }
-                            otherwise => crate::Error::from(otherwise),
+                            crate::Error::from(rquickjs::Error::Exception)
                         }
-                    };
-                    let module =
-                        rquickjs::Module::declare(ctx.clone(), name, contents).map_err(catch)?;
-                    let (module, promise) = module.eval().map_err(catch)?;
+                        otherwise => crate::Error::from(otherwise),
+                    }
+                };
 
+                let out = with_query_context(ctx, async || {
+                    trace!("with_query_context start");
+                    println!("declaring {key}");
+                    let module =
+                        rquickjs::Module::declare(js_ctx.clone(), name, contents).map_err(catch)?;
+                    println!("evaulating {key}");
+                    let (module, promise) = module.eval().map_err(catch)?;
+                    println!("awaiting {key}");
                     promise.into_future::<()>().await.map_err(catch)?;
+                    println!("done with {key}");
 
                     let value: JsValue = module.get(rquickjs::atom::PredefinedAtom::Default)?;
-                    trace!("with_js_ctx end");
+                    trace!("with_query_context end");
                     Ok(value)
-                }
-            })
-            .await;
-            trace!("with_query_context end");
-            out
+                })
+                .await;
+
+                trace!("with_js_ctx end");
+                out
+            }
         })
         .await
         .map_err(|e| {

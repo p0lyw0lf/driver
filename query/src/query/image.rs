@@ -147,7 +147,7 @@ query_key!(
 impl Producer for ConvertImage {
     type Output = crate::Result<ImageObject>;
 
-    #[tracing::instrument(level = "trace", skip_all)]
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn produce(&self, ctx: &QueryContext) -> Self::Output {
         // NOTE: I know that reading this into memory only to read it into more memory is wasteful,
         // but this is the best way to not have a dependency on ctx while we do the main

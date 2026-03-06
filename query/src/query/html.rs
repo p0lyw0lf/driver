@@ -12,7 +12,7 @@ query_key!(MarkdownToHtml(pub Object););
 impl Producer for MarkdownToHtml {
     type Output = crate::Result<Object>;
 
-    #[tracing::instrument(level = "trace", skip_all)]
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn produce(&self, ctx: &QueryContext) -> Self::Output {
         let contents = self.0.contents_as_string(ctx)?;
 
@@ -71,7 +71,7 @@ query_key!(MinifyHtml(pub Object););
 impl Producer for MinifyHtml {
     type Output = crate::Result<Object>;
 
-    #[tracing::instrument(level = "trace", skip_all)]
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn produce(&self, ctx: &QueryContext) -> Self::Output {
         let contents = self.0.contents_as_string(ctx)?;
         let cfg = minify_html::Cfg {

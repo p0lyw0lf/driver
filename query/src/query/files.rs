@@ -13,7 +13,7 @@ query_key!(ReadFile(pub PathBuf););
 
 impl Producer for ReadFile {
     type Output = crate::Result<Object>;
-    #[tracing::instrument(level = "trace", skip_all)]
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn produce(&self, ctx: &QueryContext) -> Self::Output {
         trace!("start");
         let content = async_fs::read(&self.0).await?;
@@ -28,7 +28,7 @@ query_key!(ListDirectory(pub PathBuf););
 
 impl Producer for ListDirectory {
     type Output = crate::Result<Vec<PathBuf>>;
-    #[tracing::instrument(level = "trace", skip_all)]
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn produce(&self, _ctx: &QueryContext) -> Self::Output {
         let walk = ignore::WalkBuilder::new(&self.0)
             .max_depth(Some(1))

@@ -82,41 +82,46 @@ impl QueryContext {
 
     #[tracing::instrument(level = "debug", skip(self), fields(key=%key))]
     pub(crate) async fn query(&self, key: QueryKey) -> AnyOutput {
-        trace!("starting query");
-        if let Some(parent) = &self.parent {
-            trace!("adding self to parent");
-            self.db.add_dependency(parent.clone(), key.clone()).await;
-            trace!("added");
-        }
-
         trace!("locking db entry");
         self.db
             .with_entry(key.clone(), async |mut entry| {
                 trace!("locked");
                 let entry = &mut entry;
-                let revision = self.db.revision.load(Ordering::SeqCst);
-
-                let Some((_, rev)) = entry.color() else {
-                    debug!("not found in colors db");
-                    return self.update_value(revision, key, entry).await;
-                };
-                if key.is_input() && rev < revision {
-                    debug!("key is input and revision outdated");
-                    return self.update_value(revision, key, entry).await;
-                }
-
-                match self.try_mark_green(revision, key.clone(), entry).await {
-                    Ok(value) => {
-                        debug!("marked green after trying");
-                        value
-                    }
-                    Err(()) => {
-                        debug!("marked red after trying");
-                        self.update_value(revision, key, entry).await
-                    }
-                }
+                self.query_entry(key, entry).await
             })
             .await
+    }
+
+    #[tracing::instrument(level = "trace", skip(self, entry), fields(key=%key))]
+    async fn query_entry<'a>(&self, key: QueryKey, entry: &mut Entry<'a>) -> AnyOutput {
+        trace!("starting query");
+        if let Some(parent) = &self.parent {
+            tracing::info!("adding edge {parent} -> {key}");
+            self.db.add_dependency(parent.clone(), key.clone()).await;
+            trace!("added");
+        }
+
+        let revision = self.db.revision.load(Ordering::SeqCst);
+
+        let Some((_, rev)) = entry.color() else {
+            debug!("not found in colors db");
+            return self.update_value(revision, key, entry).await;
+        };
+        if key.is_input() && rev < revision {
+            debug!("key is input and revision outdated");
+            return self.update_value(revision, key, entry).await;
+        }
+
+        match self.try_mark_green(revision, key.clone(), entry).await {
+            Ok(value) => {
+                debug!("marked green after trying");
+                value
+            }
+            Err(()) => {
+                debug!("marked red after trying");
+                self.update_value(revision, key, entry).await
+            }
+        }
     }
 
     #[tracing::instrument(level = "trace", skip(self, entry), fields(key=%key))]
@@ -137,8 +142,10 @@ impl QueryContext {
             db: self.db.clone(),
         }))
         .await;
+        trace!("produced value");
 
         entry.insert(revision, value.clone());
+        trace!("inserted entry");
 
         value
     }
@@ -168,38 +175,42 @@ impl QueryContext {
                     return Err(());
                 }
                 _ => {
-                    let needs_recalculation = if dep.is_input() {
-                        // Inputs always need to be recalculated.
-                        true
-                    } else {
-                        // Dependencies that themselves have out-of-date dependencies need to be
-                        // recalculated.
-                        self.db
-                            .with_entry(dep.clone(), async |mut dep_entry| {
-                                Box::pin(self.try_mark_green(revision, dep.clone(), &mut dep_entry))
+                    trace!("locking {dep}");
+                    self.db
+                        .with_entry(dep.clone(), async |mut dep_entry| {
+                            trace!("locked {dep}");
+                            let dep_entry = &mut dep_entry;
+                            let needs_recalculation = if dep.is_input() {
+                                // Inputs always need to be recalculated.
+                                true
+                            } else {
+                                // Dependencies that themselves have out-of-date dependencies need to be
+                                // recalculated.
+                                Box::pin(self.try_mark_green(revision, dep.clone(), dep_entry))
                                     .await
                                     .is_err()
-                            })
-                            .await
-                    };
-                    if needs_recalculation {
-                        let _ = Box::pin(self.query(dep.clone())).await;
-                        // Because we just ran the query, we can be sure the revision is
-                        // up-to-date.
-                        match self.db.get_color(&dep).await {
-                            Some((Color::Green, _)) => {
-                                debug!("dependency {dep} green the second time");
-                                continue;
+                            };
+                            if needs_recalculation {
+                                let _ = Box::pin(self.query_entry(dep.clone(), dep_entry)).await;
+                                // Because we just ran the query, we can be sure the revision is
+                                // up-to-date.
+                                match dep_entry.color() {
+                                    Some((Color::Green, _)) => {
+                                        debug!("dependency {dep} green the second time");
+                                        Ok(())
+                                    }
+                                    Some((Color::Red, _)) => {
+                                        debug!("dependency {dep} was still outdated");
+                                        Err(())
+                                    }
+                                    None => unreachable!("we just ran the query"),
+                                }
+                            } else {
+                                debug!("successfully marked dependency {dep} green");
+                                Ok(())
                             }
-                            Some((Color::Red, _)) => {
-                                debug!("dependency {dep} was still outdated");
-                                return Err(());
-                            }
-                            None => unreachable!("we just ran the query"),
-                        }
-                    } else {
-                        debug!("successfully marked dependency {dep} green");
-                    }
+                        })
+                        .await?
                 }
             }
         }

@@ -357,7 +357,7 @@ impl Database {
                 keys.sort();
 
                 for key in keys {
-                    writeln!(f, "{}: ", key)?;
+                    write!(f, "{}: ", key)?;
 
                     if let Some(deps) = self.0.get_sync(&key)
                         && !deps.is_empty()
