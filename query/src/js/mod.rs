@@ -19,14 +19,15 @@ use crate::{
     to_hash::ToHash,
 };
 
-mod store_object;
+mod image;
+mod object;
 mod value;
 
 #[cfg(test)]
-pub use self::{store_object::StoreObject, value::RustValue};
+pub use self::{object::JsObject, value::JsValue};
 
 #[cfg(not(test))]
-use self::{store_object::StoreObject, value::RustValue};
+use self::{object::JsObject, value::JsValue};
 
 struct ContextFrame {
     curr: *const QueryContext,
@@ -84,7 +85,7 @@ fn get_current_file(js_ctx: &Ctx<'_>) -> rquickjs::Result<PathBuf> {
 }
 
 /// SAFETY: only safe to call when running inside `with_query_context()`
-async unsafe fn run_task(file: PathBuf, args: Option<RustValue>) -> rquickjs::Result<RustValue> {
+async unsafe fn run_task(file: PathBuf, args: Option<JsValue>) -> rquickjs::Result<JsValue> {
     let ctx = unsafe { &*get_context()? };
     let task = RunFile {
         file: file.clone(),
@@ -125,7 +126,7 @@ mod driver {
 
     use super::{WriteOutput, error_message, get_context, get_current_file};
 
-    use crate::js::{store_object::StoreObject, value::RustValue};
+    use crate::js::{object::JsObject, value::JsValue};
     use crate::query::{
         context::Producer,
         files::{ListDirectory, ReadFile},
@@ -153,7 +154,7 @@ mod driver {
     pub fn read_file(
         js_ctx: Ctx<'_>,
         filename: String,
-    ) -> rquickjs::Result<Promised<impl Future<Output = rquickjs::Result<StoreObject>>>> {
+    ) -> rquickjs::Result<Promised<impl Future<Output = rquickjs::Result<JsObject>>>> {
         // SAFETY: the only way these javascript functions get called is from inside a
         // `with_query_context()`
         let ctx = unsafe { &*get_context()? };
@@ -164,7 +165,7 @@ mod driver {
                 .query(ctx)
                 .await
                 .map_err(|e| error_message(format!("read_file: {e}")))?;
-            Ok(StoreObject { object })
+            Ok(JsObject { object })
         }))
     }
 
@@ -193,8 +194,8 @@ mod driver {
     pub fn run_task(
         js_ctx: Ctx<'_>,
         filename: String,
-        args: Option<RustValue>,
-    ) -> rquickjs::Result<Promised<impl Future<Output = rquickjs::Result<RustValue>>>> {
+        args: Option<JsValue>,
+    ) -> rquickjs::Result<Promised<impl Future<Output = rquickjs::Result<JsValue>>>> {
         let file = to_relative_path(&js_ctx, filename)?;
         Ok(Promised(async move {
             super::CTX
@@ -226,7 +227,7 @@ mod driver {
     #[rquickjs::function]
     pub fn store<'js>(
         value: Either<String, rquickjs::TypedArray<'js, u8>>,
-    ) -> rquickjs::Result<StoreObject> {
+    ) -> rquickjs::Result<JsObject> {
         // SAFETY: we are in a javascript context
         let ctx = unsafe { &*get_context()? };
         let contents = match value {
@@ -234,11 +235,11 @@ mod driver {
             Either::Right(arr) => Vec::from(AsRef::<[u8]>::as_ref(&arr)),
         };
         let object = ctx.db.objects.store(contents);
-        Ok(StoreObject { object })
+        Ok(JsObject { object })
     }
 
     #[rquickjs::function]
-    pub async fn get_url(url: String) -> rquickjs::Result<StoreObject> {
+    pub async fn get_url(url: String) -> rquickjs::Result<JsObject> {
         // SAFETY: we are in a javascript context
         let ctx = unsafe { &*get_context()? };
         let url = Url::parse(&url).map_err(|e| error_message(format!("parsing url: {e}")))?;
@@ -247,29 +248,29 @@ mod driver {
             .query(ctx)
             .await
             .map_err(|e| error_message(format!("fetching url: {e}")))?;
-        Ok(StoreObject { object })
+        Ok(JsObject { object })
     }
 
     #[rquickjs::function]
-    pub async fn markdown_to_html(contents: StoreObject) -> rquickjs::Result<StoreObject> {
+    pub async fn markdown_to_html(contents: JsObject) -> rquickjs::Result<JsObject> {
         // SAFETY: we are in a javascript context
         let ctx = unsafe { &*get_context()? };
         let object = MarkdownToHtml(contents.object)
             .query(ctx)
             .await
             .map_err(|e| error_message(format!("markdown_to_html: {e}")))?;
-        Ok(StoreObject { object })
+        Ok(JsObject { object })
     }
 
     #[rquickjs::function]
-    pub async fn minify_html(contents: StoreObject) -> rquickjs::Result<StoreObject> {
+    pub async fn minify_html(contents: JsObject) -> rquickjs::Result<JsObject> {
         // SAFETY: we are in a javascript context
         let ctx = unsafe { &*get_context()? };
         let object = MinifyHtml(contents.object)
             .query(ctx)
             .await
             .map_err(|e| error_message(format!("minify_html: {e}")))?;
-        Ok(StoreObject { object })
+        Ok(JsObject { object })
     }
 
     #[rquickjs::function]
@@ -283,7 +284,7 @@ mod driver {
     }
 
     #[rquickjs::function]
-    pub fn write_output(name: String, contents: StoreObject) -> rquickjs::Result<()> {
+    pub fn write_output(name: String, contents: JsObject) -> rquickjs::Result<()> {
         let path = PathBuf::from(name);
         if !path
             .components()
@@ -437,15 +438,15 @@ where
 
 query_key!(RunFile {
     pub file: PathBuf,
-    pub args: Option<RustValue>,
+    pub args: Option<JsValue>,
 });
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileOutput {
     #[cfg(test)]
-    pub value: RustValue,
+    pub value: JsValue,
     #[cfg(not(test))]
-    value: RustValue,
+    value: JsValue,
     pub outputs: Vec<WriteOutput>,
 }
 
@@ -516,7 +517,7 @@ impl Producer for RunFile {
                                     let stack = err.stack().unwrap_or_default();
                                     eprintln!("js exception: {message}");
                                     eprintln!("{stack}");
-                                } else if let Ok(value) = RustValue::from_js(&ctx, value.clone()) {
+                                } else if let Ok(value) = JsValue::from_js(&ctx, value.clone()) {
                                     eprintln!("js thrown value: {}", value);
                                 } else {
                                     eprintln!("js error: {:?}", value);
@@ -532,7 +533,7 @@ impl Producer for RunFile {
 
                     promise.into_future::<()>().await.map_err(catch)?;
 
-                    let value: RustValue = module.get(rquickjs::atom::PredefinedAtom::Default)?;
+                    let value: JsValue = module.get(rquickjs::atom::PredefinedAtom::Default)?;
                     trace!("with_js_ctx end");
                     Ok(value)
                 }

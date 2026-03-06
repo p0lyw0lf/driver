@@ -8,12 +8,12 @@ use crate::js::get_context;
     Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Trace, JsLifetime, Serialize, Deserialize,
 )]
 #[rquickjs::class]
-pub struct StoreObject {
+pub struct JsObject {
     #[qjs(skip_trace)]
     pub object: Object,
 }
 
-impl StoreObject {
+impl JsObject {
     /// SAFETY: only safe to call when in a javascript context
     pub unsafe fn contents_as_bytes(self) -> rquickjs::Result<Vec<u8>> {
         let ctx = unsafe { &*get_context()? };
@@ -28,11 +28,17 @@ impl StoreObject {
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
-impl StoreObject {
+impl JsObject {
     #[qjs(get)]
     fn data<'js>(&self, js_ctx: Ctx<'js>) -> rquickjs::Result<rquickjs::TypedArray<'js, u8>> {
+        // SAFETY: we are in a javascript context
         let src = unsafe { self.clone().contents_as_bytes()? };
         rquickjs::TypedArray::new(js_ctx, src)
+    }
+
+    #[qjs(get)]
+    fn hash(&self) -> String {
+        self.object.to_string()
     }
 
     #[allow(clippy::inherent_to_string)]

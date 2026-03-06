@@ -89,10 +89,10 @@ impl Display for QueryKey {
                     write!(f, " size: {},", size)?;
                 }
                 if let Some(fit) = &convert_image.fit {
-                    write!(f, " fit: {},", fit)?;
+                    write!(f, " fit: \"{}\",", fit)?;
                 }
                 if let Some(format) = &convert_image.format {
-                    write!(f, " format: {},", format)?;
+                    write!(f, " format: \"{}\",", format)?;
                 }
                 write!(f, " }})")
             }

@@ -39,7 +39,7 @@ impl ToHash for ImageFormat {
     }
 }
 
-#[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
+#[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct ImageSize {
     pub width: usize,
     pub height: usize,
@@ -134,13 +134,13 @@ pub enum ImageFit {
 query_key!(
     ConvertImage {
         pub input: ImageObject,
+        /// If None, will preserve the format of the source image if possible, defaulting to Webp
+        /// if not.
+        pub format: Option<ImageFormat>,
         /// If None, will preserve the dimensions of the source image.
         pub size: Option<ImageSize>,
         /// If None, will use ImageFit::Contain
         pub fit: Option<ImageFit>,
-        /// If None, will preserve the format of the source image if possible, defaulting to Webp
-        /// if not.
-        pub format: Option<ImageFormat>,
     }
 );
 
@@ -243,9 +243,9 @@ impl Display for ImageSize {
 impl Display for ImageFit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            ImageFit::Fill => "\"fill\"",
-            ImageFit::Contain => "\"contain\"",
-            ImageFit::Cover => "\"cover\"",
+            ImageFit::Fill => "fill",
+            ImageFit::Contain => "contain",
+            ImageFit::Cover => "cover",
         })
     }
 }
@@ -264,10 +264,10 @@ impl From<ImageFormat> for zune_image::codecs::ImageFormat {
 impl Display for ImageFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            ImageFormat::Jpeg => "\"jpeg\"",
-            ImageFormat::Jxl => "\"jxl\"",
-            ImageFormat::Png => "\"png\"",
-            ImageFormat::Webp => "\"webp\"",
+            ImageFormat::Jpeg => "jpeg",
+            ImageFormat::Jxl => "jxl",
+            ImageFormat::Png => "png",
+            ImageFormat::Webp => "webp",
         })
     }
 }

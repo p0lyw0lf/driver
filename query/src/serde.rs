@@ -330,7 +330,7 @@ mod test {
         let k5 = QueryKey::ReadFile(ReadFile(PathBuf::from("./file.js")));
         let k6 = QueryKey::RunFile(RunFile {
             file: PathBuf::from("./file.js"),
-            args: Some(crate::js::RustValue::Store(crate::js::StoreObject {
+            args: Some(crate::js::JsValue::Store(crate::js::JsObject {
                 object: obj(6),
             })),
         });
@@ -364,7 +364,7 @@ mod test {
                 entry.insert(
                     6,
                     AnyOutput::new(crate::Result::Ok(FileOutput {
-                        value: crate::js::RustValue::Null,
+                        value: crate::js::JsValue::Null,
                         outputs: vec![WriteOutput {
                             path: PathBuf::from("./index.html"),
                             object: obj(6),
