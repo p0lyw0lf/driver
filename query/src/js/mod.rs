@@ -273,6 +273,16 @@ mod driver {
     }
 
     #[rquickjs::function]
+    pub async fn parse_image() -> rquickjs::Result<()> {
+        todo!();
+    }
+
+    #[rquickjs::function]
+    pub async fn convert_image() -> rquickjs::Result<()> {
+        todo!();
+    }
+
+    #[rquickjs::function]
     pub fn write_output(name: String, contents: StoreObject) -> rquickjs::Result<()> {
         let path = PathBuf::from(name);
         if !path

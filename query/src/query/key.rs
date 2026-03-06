@@ -9,6 +9,7 @@ use crate::query::files::ReadFile;
 use crate::query::html::MarkdownToHtml;
 use crate::query::html::MinifyHtml;
 use crate::query::image::ConvertImage;
+use crate::query::image::ParseImage;
 use crate::query::remote::GetUrl;
 
 #[macro_export]
@@ -58,6 +59,7 @@ query_key!(QueryKey {
     ListDirectory,
     MarkdownToHtml,
     MinifyHtml,
+    ParseImage,
     ReadFile,
     RunFile,
 });
@@ -71,6 +73,7 @@ impl QueryKey {
             QueryKey::ListDirectory(_) => true,
             QueryKey::MarkdownToHtml(_) => false,
             QueryKey::MinifyHtml(_) => false,
+            QueryKey::ParseImage(_) => false,
             QueryKey::ReadFile(_) => true,
             QueryKey::RunFile(_) => false,
         }
@@ -81,7 +84,7 @@ impl Display for QueryKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             QueryKey::ConvertImage(convert_image) => {
-                write!(f, "convert_image({}, {{", convert_image.input,)?;
+                write!(f, "convert_image({}, {{", convert_image.input.object,)?;
                 if let Some(size) = &convert_image.size {
                     write!(f, " size: {},", size)?;
                 }
@@ -102,6 +105,7 @@ impl Display for QueryKey {
                 write!(f, "markdown_to_html({})", markdown_to_html.0)
             }
             QueryKey::MinifyHtml(minify_html) => write!(f, "minify_html({})", minify_html.0),
+            QueryKey::ParseImage(parse_image) => write!(f, "parse_image({})", parse_image.0),
             QueryKey::ReadFile(read_file) => write!(f, "read_file({:?})", read_file.0),
             QueryKey::RunFile(run_file) => {
                 write!(

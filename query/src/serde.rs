@@ -97,6 +97,7 @@ valid_outputs![
     crate::Result<crate::db::object::Object>,
     crate::Result<crate::js::FileOutput>,
     crate::Result<Vec<std::path::PathBuf>>,
+    crate::Result<crate::query::image::ImageObject>,
     // Just for placeholder purposes, shouldn't show up in serialized DB
     (),
 ];
@@ -251,15 +252,15 @@ mod test {
     use crate::db::Database;
     use crate::db::object::Object;
     use crate::js::FileOutput;
-    use crate::js::GetUrl;
-    use crate::js::MarkdownToHtml;
-    use crate::js::MinifyHtml;
     use crate::js::RunFile;
     use crate::js::WriteOutput;
     use crate::query::context::AnyOutput;
     use crate::query::files::ListDirectory;
     use crate::query::files::ReadFile;
+    use crate::query::html::MarkdownToHtml;
+    use crate::query::html::MinifyHtml;
     use crate::query::key::QueryKey;
+    use crate::query::remote::GetUrl;
 
     // just for testing purposes, never refers to actual data.
     fn obj(n: u8) -> Object {

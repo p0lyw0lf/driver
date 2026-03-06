@@ -3,24 +3,40 @@ use std::fmt::Display;
 use serde::Deserialize;
 use serde::Serialize;
 
+use sha2::Digest;
 use zune_core::bytestream::ZCursor;
 use zune_core::options::DecoderOptions;
-use zune_image::image::Image;
+use zune_image::codecs::jpeg::JpegDecoder;
+use zune_image::codecs::jpeg_xl::JxlDecoder;
+use zune_image::codecs::png::PngDecoder;
+use zune_image::codecs::webp::ZuneWebpDecoder;
+use zune_image::traits::DecoderTrait;
 use zune_image::traits::OperationsTrait;
 
+use crate::to_hash::ToHash;
 use crate::{
     db::object::Object,
     query::context::{Producer, QueryContext},
     query_key,
 };
 
-#[derive(Default, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
+#[derive(
+    Default, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug, Serialize, Deserialize,
+)]
 pub enum ImageFormat {
     Jpeg,
     Jxl,
     Png,
     #[default]
     Webp,
+}
+
+impl ToHash for ImageFormat {
+    fn run_hash(&self, hasher: &mut sha2::Sha256) {
+        hasher.update(b"ImageFormat(");
+        hasher.update([*self as u8]);
+        hasher.update(b")");
+    }
 }
 
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
@@ -33,6 +49,73 @@ impl ImageSize {
     /// Returns (width, height)
     fn as_dimensions(&self) -> (usize, usize) {
         (self.width, self.height)
+    }
+}
+
+impl ToHash for ImageSize {
+    fn run_hash(&self, hasher: &mut sha2::Sha256) {
+        hasher.update(b"ImageSize(");
+        hasher.update(self.width.to_le_bytes());
+        hasher.update(self.height.to_le_bytes());
+        hasher.update(b")");
+    }
+}
+
+/// Parsed data about an image, so that we can access cruicial information about it without having
+/// to re-parse the headers.
+#[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
+pub struct ImageObject {
+    pub object: Object,
+    pub format: ImageFormat,
+    pub size: ImageSize,
+}
+
+impl ToHash for ImageObject {
+    fn run_hash(&self, hasher: &mut sha2::Sha256) {
+        hasher.update(b"ImageObject(");
+        self.object.run_hash(hasher);
+        self.format.run_hash(hasher);
+        self.size.run_hash(hasher);
+        hasher.update(b")");
+    }
+}
+
+query_key!(ParseImage(pub Object););
+
+impl Producer for ParseImage {
+    type Output = crate::Result<ImageObject>;
+
+    async fn produce(&self, ctx: &QueryContext) -> Self::Output {
+        let contents = ZCursor::new(self.0.contents_as_bytes(ctx)?);
+        let object = self.0.clone();
+
+        ctx.rt
+            .spawn_blocking(move || -> crate::Result<_> {
+                let metadata = zune_image::utils::decode_info(contents)
+                    .ok_or_else(|| crate::Error::new("could not parse image metadata"))?;
+
+                let format = match metadata.image_format() {
+                    Some(zune_image::codecs::ImageFormat::JPEG) => ImageFormat::Jpeg,
+                    Some(zune_image::codecs::ImageFormat::JPEG_XL) => ImageFormat::Jxl,
+                    Some(zune_image::codecs::ImageFormat::PNG) => ImageFormat::Png,
+                    Some(zune_image::codecs::ImageFormat::WEBP) => ImageFormat::Webp,
+                    Some(other) => {
+                        return Err(crate::Error::new(&format!(
+                            "invalid image format {other:?}"
+                        )));
+                    }
+                    None => return Err(crate::Error::new("could not get image format")),
+                };
+
+                let (width, height) = metadata.dimensions();
+
+                Ok(ImageObject {
+                    object,
+                    format,
+                    size: ImageSize { width, height },
+                })
+            })
+            .await?
     }
 }
 
@@ -50,7 +133,7 @@ pub enum ImageFit {
 
 query_key!(
     ConvertImage {
-        pub input: Object,
+        pub input: ImageObject,
         /// If None, will preserve the dimensions of the source image.
         pub size: Option<ImageSize>,
         /// If None, will use ImageFit::Contain
@@ -62,7 +145,7 @@ query_key!(
 );
 
 impl Producer for ConvertImage {
-    type Output = crate::Result<Object>;
+    type Output = crate::Result<ImageObject>;
 
     #[tracing::instrument(level = "trace", skip_all)]
     async fn produce(&self, ctx: &QueryContext) -> Self::Output {
@@ -70,18 +153,39 @@ impl Producer for ConvertImage {
         // but this is the best way to not have a dependency on ctx while we do the main
         // processing.
 
-        let contents = self.input.contents_as_bytes(ctx)?;
+        let input_format = self.input.format;
+        let (source_width, source_height) = self.input.size.as_dimensions();
+        let input_contents = ZCursor::new(self.input.object.contents_as_bytes(ctx)?);
+        let decoder_options = DecoderOptions::new_fast();
 
         let size = self.size.clone();
         let fit = self.fit.clone().unwrap_or_default();
-        let format = self.format.clone().unwrap_or_default();
+        let format = self.format.unwrap_or_default();
 
-        let output = ctx
+        let (output, format, size) = ctx
             .rt
             .spawn_blocking(move || -> crate::Result<_> {
-                let mut image = Image::read(ZCursor::new(contents), DecoderOptions::new_fast())?;
+                let mut image =
+                    match input_format {
+                        ImageFormat::Jpeg => DecoderTrait::decode(
+                            &mut JpegDecoder::new_with_options(input_contents, decoder_options),
+                        )?,
+                        ImageFormat::Jxl => DecoderTrait::decode(&mut JxlDecoder::try_new(
+                            input_contents,
+                            decoder_options,
+                        )?)?,
+                        ImageFormat::Png => DecoderTrait::decode(
+                            &mut PngDecoder::new_with_options(input_contents, decoder_options),
+                        )?,
+                        ImageFormat::Webp => {
+                            DecoderTrait::decode(&mut ZuneWebpDecoder::new(input_contents)?)?
+                        }
+                    };
 
-                let (source_width, source_height) = image.dimensions();
+                if image.dimensions() != (source_width, source_height) {
+                    panic!("corrupted image dimensions");
+                }
+
                 let (target_width, target_height) = size
                     .as_ref()
                     .map(ImageSize::as_dimensions)
@@ -109,12 +213,24 @@ impl Producer for ConvertImage {
                     resize_op.execute(&mut image)?;
                 }
 
-                Ok(image.write_to_vec(format.into())?)
+                Ok((
+                    image.write_to_vec(format.into())?,
+                    format,
+                    ImageSize {
+                        width: dest_width,
+                        height: dest_height,
+                    },
+                ))
             })
             .await??;
 
         let object = ctx.db.objects.store(output);
-        Ok(object)
+
+        Ok(ImageObject {
+            object,
+            format,
+            size,
+        })
     }
 }
 
