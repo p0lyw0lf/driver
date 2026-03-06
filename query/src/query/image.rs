@@ -120,7 +120,9 @@ impl Producer for ParseImage {
 }
 
 /// https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/object-fit
-#[derive(Default, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
+#[derive(
+    Default, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug, Serialize, Deserialize,
+)]
 pub enum ImageFit {
     /// scales both dimensions to match exactly.
     Fill,
@@ -158,8 +160,8 @@ impl Producer for ConvertImage {
         let input_contents = ZCursor::new(self.input.object.contents_as_bytes(ctx)?);
         let decoder_options = DecoderOptions::new_fast();
 
-        let size = self.size.clone();
-        let fit = self.fit.clone().unwrap_or_default();
+        let size = self.size;
+        let fit = self.fit.unwrap_or_default();
         let format = self.format.unwrap_or_default();
 
         let (output, format, size) = ctx

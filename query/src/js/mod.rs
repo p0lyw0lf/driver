@@ -51,7 +51,12 @@ async fn with_query_context<T, F: Future<Output = crate::Result<T>>>(
         curr,
         output_queue: vec![],
     };
-    let fut = QUERY_CONTEXT.scope(RefCell::new(new_frame), async { f().await });
+    let fut = QUERY_CONTEXT.scope(RefCell::new(new_frame), async {
+        println!("scope begins");
+        let out = f().await;
+        println!("scope ends");
+        out
+    });
     tokio::pin!(fut);
 
     let out = (&mut fut).await?;
@@ -117,14 +122,14 @@ mod driver {
     /// Helper for constructing a promise type
     macro_rules! promise_ty {
         ($ty:ty) => {
-            rquickjs::prelude::Promised<impl Future<Output = $ty>>
+            rquickjs::Result<rquickjs::prelude::Promised<impl Future<Output = $ty>>>
         };
     }
 
     /// Helper for constructing a promise body
     macro_rules! promise {
         ($tt:tt) => {
-            rquickjs::prelude::Promised(async move { $tt })
+            Ok(rquickjs::prelude::Promised(async move { $tt }))
         };
     }
 
@@ -139,11 +144,11 @@ mod driver {
 
     #[rquickjs::function]
     pub fn read_file(path: JsPath) -> promise_ty!(rquickjs::Result<JsObject>) {
-        promise!({
-            // SAFETY: the only way these javascript functions get called is from inside a
-            // `with_query_context()`
-            let ctx = unsafe { &*get_context()? };
+        // SAFETY: the only way these javascript functions get called is from inside a
+        // `with_query_context()`
+        let ctx = unsafe { &*get_context()? };
 
+        promise!({
             let object = ReadFile(path.0)
                 .query(ctx)
                 .await
@@ -392,9 +397,6 @@ impl rquickjs::loader::Loader for MemoizedScriptLoader {
     }
 }
 
-static RUNTIME: tokio::sync::OnceCell<rquickjs::AsyncRuntime> = tokio::sync::OnceCell::const_new();
-static CONTEXT: tokio::sync::OnceCell<rquickjs::AsyncContext> = tokio::sync::OnceCell::const_new();
-
 tokio::task_local! {
     // The current Ctx object that we are executing in, if any. Use with_js_ctx() to re-entrantly
     // access this.
@@ -414,34 +416,31 @@ where
             callback(ctx).await
         }
         Err(_) => {
-            let runtime = RUNTIME
-                .get_or_init(async || {
-                    let resolver = (
-                        BuiltinResolver::default().with_module("driver"),
-                        FileResolver::default(),
-                    );
-                    let loader = (
-                        ModuleLoader::default().with_module("driver", js_driver),
-                        MemoizedScriptLoader::new(rt),
-                    );
+            // Realistically, there will be just one `with_js_ctx` at the top-level, so it's OK to
+            // make another
+            tracing::info!("creating new js ctx");
+            let runtime = {
+                let resolver = (
+                    BuiltinResolver::default().with_module("driver"),
+                    FileResolver::default(),
+                );
+                let loader = (
+                    ModuleLoader::default().with_module("driver", js_driver),
+                    MemoizedScriptLoader::new(rt),
+                );
 
-                    let runtime = rquickjs::AsyncRuntime::new().expect("not enough memory?");
-                    runtime.set_loader(resolver, loader).await;
-                    runtime
-                })
-                .await;
-
-            let context = CONTEXT
-                .get_or_init(async || {
-                    // TODO: it seems rquickjs isn't happy if it doesn't have the full set of features. Not
-                    // that there's any IO features in here besides those we allow it, but ah well
-                    rquickjs::AsyncContext::full(runtime)
-                        .await
-                        .expect("context failed to build")
-                })
-                .await;
+                let runtime = rquickjs::AsyncRuntime::new().expect("not enough memory?");
+                runtime.set_loader(resolver, loader).await;
+                runtime
+            };
+            // TODO: it seems rquickjs isn't happy if it doesn't have the full set of features. Not
+            // that there's any IO features in here besides those we allow it, but ah well
+            let context = rquickjs::AsyncContext::full(&runtime)
+                .await
+                .expect("context failed to build");
 
             rquickjs::async_with!(context => |ctx| {
+                // TODO: async_with for every with_js_ctx, only save the runtime.
                 callback(ctx).await
             })
             .await
