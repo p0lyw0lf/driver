@@ -1,7 +1,7 @@
 use std::{cell::RefCell, path::PathBuf, sync::Arc};
 
 use rquickjs::{
-    Ctx, FromJs, IntoJs, Value,
+    FromJs, IntoJs, Value,
     loader::{BuiltinResolver, FileResolver, ModuleLoader},
 };
 use serde::Deserialize;
@@ -21,6 +21,7 @@ use crate::{
 
 mod image;
 mod object;
+mod path;
 mod value;
 
 #[cfg(test)]
@@ -74,16 +75,6 @@ fn get_context() -> rquickjs::Result<*const QueryContext> {
         .map_err(error_message)
 }
 
-// SHOULD be called from a Javascript callback
-fn get_current_file(js_ctx: &Ctx<'_>) -> rquickjs::Result<PathBuf> {
-    Ok(PathBuf::from(
-        js_ctx
-            .script_or_module_name(0)
-            .ok_or(error_message("not running in a module"))?
-            .to_string()?,
-    ))
-}
-
 /// SAFETY: only safe to call when running inside `with_query_context()`
 async unsafe fn run_task(file: PathBuf, args: Option<JsValue>) -> rquickjs::Result<JsValue> {
     let ctx = unsafe { &*get_context()? };
@@ -118,94 +109,61 @@ mod driver {
     use std::path::{Component, PathBuf};
 
     use either::Either;
-    use relative_path::RelativePath;
-    use relative_path::RelativePathBuf;
     use rquickjs::Ctx;
-    use rquickjs::prelude::Promised;
     use url::Url;
 
-    use super::{WriteOutput, error_message, get_context, get_current_file};
+    use super::{WriteOutput, error_message, get_context};
 
-    use crate::js::{object::JsObject, value::JsValue};
+    use crate::js::{image::JsImage, object::JsObject, path::JsPath, value::JsValue};
     use crate::query::{
         context::Producer,
         files::{ListDirectory, ReadFile},
         html::{MarkdownToHtml, MinifyHtml},
+        image::{ConvertImage, ParseImage},
         remote::GetUrl,
     };
 
-    /// Helper function that formats a path relative to the current file
-    /// NOTE: this is only safe to call **BEFORE** the promise starts to execute. This is why we
-    /// have to do such crazy type signature things below.
-    fn to_relative_path(js_ctx: &Ctx<'_>, path: String) -> rquickjs::Result<PathBuf> {
-        let base_file = get_current_file(js_ctx)?;
-        let base_directory = base_file
-            .parent()
-            .ok_or(error_message("no parent directory?"))?;
-        Ok(RelativePathBuf::from_path(base_directory)
-            .map_err(|e| {
-                rquickjs::Error::new_from_js_message("String", "RelativePath", e.to_string())
-            })?
-            .join_normalized(RelativePath::new(&path))
-            .to_path("."))
-    }
-
     #[rquickjs::function]
-    pub fn read_file(
-        js_ctx: Ctx<'_>,
-        filename: String,
-    ) -> rquickjs::Result<Promised<impl Future<Output = rquickjs::Result<JsObject>>>> {
+    pub async fn read_file(path: JsPath) -> rquickjs::Result<JsObject> {
         // SAFETY: the only way these javascript functions get called is from inside a
         // `with_query_context()`
         let ctx = unsafe { &*get_context()? };
-        let path = to_relative_path(&js_ctx, filename)?;
 
-        Ok(Promised(async move {
-            let object = ReadFile(path)
-                .query(ctx)
-                .await
-                .map_err(|e| error_message(format!("read_file: {e}")))?;
-            Ok(JsObject { object })
-        }))
+        let object = ReadFile(path.0)
+            .query(ctx)
+            .await
+            .map_err(|e| error_message(format!("read_file: {e}")))?;
+        Ok(JsObject { object })
     }
 
     #[rquickjs::function]
-    pub fn list_directory(
-        js_ctx: Ctx<'_>,
-        dirname: String,
-    ) -> rquickjs::Result<Promised<impl Future<Output = rquickjs::Result<Vec<String>>>>> {
+    pub async fn list_directory(dirname: JsPath) -> rquickjs::Result<Vec<String>> {
         // SAFETY: the only way these javascript functions get called is from inside a
         // `with_query_context()`
         let ctx = unsafe { &*get_context()? };
-        let dirname = to_relative_path(&js_ctx, dirname)?;
-        Ok(Promised(async move {
-            let contents = ListDirectory(dirname)
-                .query(ctx)
-                .await
-                .map_err(|e| error_message(format!("list_directory: {e}")))?
-                .into_iter()
-                .map(|entry| entry.display().to_string())
-                .collect();
-            Ok(contents)
-        }))
+        let contents = ListDirectory(dirname.0)
+            .query(ctx)
+            .await
+            .map_err(|e| error_message(format!("list_directory: {e}")))?
+            .into_iter()
+            .map(|entry| entry.display().to_string())
+            .collect();
+        Ok(contents)
     }
 
     #[rquickjs::function]
-    pub fn run_task(
+    pub async fn run_task(
         js_ctx: Ctx<'_>,
-        filename: String,
+        filename: JsPath,
         args: Option<JsValue>,
-    ) -> rquickjs::Result<Promised<impl Future<Output = rquickjs::Result<JsValue>>>> {
-        let file = to_relative_path(&js_ctx, filename)?;
-        Ok(Promised(async move {
-            super::CTX
-                .scope(js_ctx.as_raw(), async {
-                    // SAFETY: the only way these javascript functions get called is from inside a
-                    // `with_query_context()`
-                    unsafe { super::run_task(file, args) }.await
-                })
-                .await
-        }))
+    ) -> rquickjs::Result<JsValue> {
+        super::CTX
+            .scope(js_ctx.as_raw(), async {
+                // SAFETY: the only way these javascript functions get called is from inside a
+                // `with_query_context()`
+                unsafe { super::run_task(filename.0, args) }.await
+            })
+            .await
     }
 
     #[rquickjs::function]
@@ -274,13 +232,50 @@ mod driver {
     }
 
     #[rquickjs::function]
-    pub async fn parse_image() -> rquickjs::Result<()> {
-        todo!();
+    pub async fn parse_image(object: JsObject) -> rquickjs::Result<JsImage> {
+        // SAFETY: we are in a javascript context
+        let ctx = unsafe { &*get_context()? };
+        let image = ParseImage(object.object)
+            .query(ctx)
+            .await
+            .map_err(|e| error_message(format!("parse_image: {e}")))?;
+        Ok(JsImage { image })
     }
 
     #[rquickjs::function]
-    pub async fn convert_image() -> rquickjs::Result<()> {
-        todo!();
+    pub async fn convert_image<'js>(
+        image: JsImage,
+        opts: rquickjs::Object<'js>,
+    ) -> rquickjs::Result<JsImage> {
+        // SAFETY: we are in a javascript context
+        let ctx = unsafe { &*get_context()? };
+        let format = if opts.contains_key("format")? {
+            Some(opts.get("format")?)
+        } else {
+            None
+        };
+        let size = if opts.contains_key("size")? {
+            Some(opts.get("size")?)
+        } else {
+            None
+        };
+        let fit = if opts.contains_key("fit")? {
+            Some(opts.get("fit")?)
+        } else {
+            None
+        };
+
+        let image = ConvertImage {
+            input: image.image,
+            format,
+            size,
+            fit,
+        }
+        .query(ctx)
+        .await
+        .map_err(|e| error_message(format!("convert_image: {e}")))?;
+
+        Ok(JsImage { image })
     }
 
     #[rquickjs::function]
