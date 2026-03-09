@@ -1,17 +1,12 @@
 use std::fmt::Display;
 
-use serde::Deserialize;
-use serde::Serialize;
-
+use serde::{Deserialize, Serialize};
 use sha2::Digest;
-use zune_core::bytestream::ZCursor;
-use zune_core::options::DecoderOptions;
-use zune_image::codecs::jpeg::JpegDecoder;
-use zune_image::codecs::jpeg_xl::JxlDecoder;
-use zune_image::codecs::png::PngDecoder;
-use zune_image::codecs::webp::ZuneWebpDecoder;
-use zune_image::traits::DecoderTrait;
-use zune_image::traits::OperationsTrait;
+use zune_core::{bytestream::ZCursor, options::DecoderOptions};
+use zune_image::codecs::{
+    jpeg::JpegDecoder, jpeg_xl::JxlDecoder, png::PngDecoder, webp::ZuneWebpDecoder,
+};
+use zune_image::traits::{DecoderTrait, OperationsTrait};
 
 use crate::to_hash::ToHash;
 use crate::{

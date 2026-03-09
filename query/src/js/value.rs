@@ -1,4 +1,6 @@
-use rquickjs::{FromJs, IntoJs, Value};
+use boa_engine::JsNativeError;
+use boa_engine::value::TryIntoJs;
+use boa_engine::{Context, JsResult, value::TryFromJs};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
@@ -18,86 +20,53 @@ pub enum JsValue {
     Store(JsObject),
 }
 
-impl<'js> FromJs<'js> for JsValue {
-    fn from_js(ctx: &rquickjs::Ctx<'js>, value: rquickjs::Value<'js>) -> rquickjs::Result<Self> {
-        match value.type_of() {
-            rquickjs::Type::Uninitialized => Err(rquickjs::Error::Unknown),
-            rquickjs::Type::Undefined => Ok(JsValue::Undefined),
-            rquickjs::Type::Null => Ok(JsValue::Null),
-            rquickjs::Type::Bool => Ok(JsValue::Bool(value.as_bool().unwrap())),
-            rquickjs::Type::Int => Ok(JsValue::Int(value.as_int().unwrap())),
-            rquickjs::Type::Float => Err(rquickjs::Error::FromJs {
-                from: "Float",
-                to: "RustValue",
-                message: None,
-            }),
-            rquickjs::Type::String => Ok(JsValue::String(value.as_string().unwrap().to_string()?)),
-            rquickjs::Type::Symbol => Ok(JsValue::String(
-                value.as_symbol().unwrap().as_atom().to_string()?,
-            )),
-            rquickjs::Type::Array => Ok(JsValue::Array(Vec::from_js(ctx, value)?)),
-            rquickjs::Type::Constructor => Err(rquickjs::Error::FromJs {
-                from: "Constructor",
-                to: "RustValue",
-                message: None,
-            }),
-            rquickjs::Type::Function => Err(rquickjs::Error::FromJs {
-                from: "Function",
-                to: "RustValue",
-                message: None,
-            }),
-            rquickjs::Type::Promise => Err(rquickjs::Error::FromJs {
-                from: "Promise",
-                to: "RustValue",
-                message: None,
-            }),
-            rquickjs::Type::Exception => Err(rquickjs::Error::FromJs {
-                from: "Exception",
-                to: "RustValue",
-                message: None,
-            }),
-            rquickjs::Type::Proxy => Err(rquickjs::Error::FromJs {
-                from: "Proxy",
-                to: "RustValue",
-                message: None,
-            }),
-            rquickjs::Type::Object => {
-                let object = value.as_object().unwrap();
-                if let Some(cls) = object.as_class::<JsObject>() {
-                    Ok(JsValue::Store(cls.borrow().clone()))
+impl TryFromJs for JsValue {
+    fn try_from_js(value: &boa_engine::JsValue, context: &mut Context) -> JsResult<Self> {
+        match value.variant() {
+            boa_engine::JsVariant::Null => Ok(Self::Null),
+            boa_engine::JsVariant::Undefined => Ok(Self::Undefined),
+            boa_engine::JsVariant::Boolean(b) => Ok(Self::Bool(b)),
+            boa_engine::JsVariant::String(js_string) => {
+                Ok(Self::String(js_string.to_std_string()?))
+            }
+            boa_engine::JsVariant::Float64(_) => {
+                Err(JsNativeError::typ().with_message("cannot serialize float"))
+            }
+            boa_engine::JsVariant::Integer32(i) => Ok(Self::Int(i)),
+            boa_engine::JsVariant::BigInt(js_big_int) => {
+                Err(JsNativeError::typ().with_message("cannot serialize BigInt"))
+            }
+            boa_engine::JsVariant::Object(js_object) => {
+                if js_object.is_array() {
+                    Ok(Self::Array(Vec::<JsValue>::try_from_js(
+                        js_object, context,
+                    )?))
                 } else {
-                    Err(rquickjs::Error::FromJs {
-                        from: "Object",
-                        to: "RustValue",
-                        message: None,
-                    })
+                    Err(JsNativeError::typ().with_message("cannot serialize object"))
                 }
             }
-            rquickjs::Type::Module => Err(rquickjs::Error::FromJs {
-                from: "Module",
-                to: "RustValue",
-                message: None,
-            }),
-            rquickjs::Type::BigInt => Err(rquickjs::Error::FromJs {
-                from: "BigInt",
-                to: "RustValue",
-                message: None,
-            }),
-            rquickjs::Type::Unknown => Err(rquickjs::Error::Unknown),
+            boa_engine::JsVariant::Symbol(js_symbol) => Ok(Self::String(
+                js_symbol
+                    .description()
+                    .ok_or_else(|| {
+                        JsNativeError::typ().with_message("cannot serialize blank symbol")
+                    })?
+                    .to_std_string()?,
+            )),
         }
     }
 }
 
-impl<'js> IntoJs<'js> for JsValue {
-    fn into_js(self, ctx: &rquickjs::Ctx<'js>) -> rquickjs::Result<rquickjs::Value<'js>> {
+impl TryIntoJs for JsValue {
+    fn try_into_js(&self, context: &mut Context) -> JsResult<boa_engine::JsValue> {
         match self {
-            JsValue::Undefined => Ok(Value::new_uninitialized(ctx.clone())),
-            JsValue::Null => Ok(Value::new_null(ctx.clone())),
-            JsValue::Bool(b) => b.into_js(ctx),
-            JsValue::Int(i) => i.into_js(ctx),
-            JsValue::String(s) => s.into_js(ctx),
-            JsValue::Array(values) => values.into_js(ctx),
-            JsValue::Store(store_object) => store_object.into_js(ctx),
+            JsValue::Undefined => Ok(boa_engine::JsValue::undefined()),
+            JsValue::Null => Ok(boa_engine::JsValue::null()),
+            JsValue::Bool(b) => b.try_into_js(context),
+            JsValue::Int(i) => i.try_into_js(context),
+            JsValue::String(s) => s.try_into_js(context),
+            JsValue::Array(values) => values.try_into_js(context),
+            JsValue::Store(store_object) => store_object.try_into_js(context),
         }
     }
 }

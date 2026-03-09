@@ -5,6 +5,8 @@ edition = "2024"
 
 [dependencies]
 async-fs = "2.2"
+boa_engine = { version = "0.21", default-features = false, features = ["either"] }
+boa_gc = { version = "0.21", features = ["boa_string", "either"] }
 comrak = { version = "0.50", features = ["syntect"] }
 dyn-clone = "1.0"
 either = "1.15"
@@ -32,18 +34,6 @@ features = [
   "gzip",
   "http2",
   "zstd",
-]
-
-[dependencies.rquickjs]
-version = "0.11"
-features = [
-  "either",
-  "futures",
-  "loader",
-  "macro",
-  "parallel",
-  "phf",
-  "rust-alloc",
 ]
 
 [dependencies.zune-image]

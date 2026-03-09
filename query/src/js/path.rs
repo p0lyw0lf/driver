@@ -1,39 +1,35 @@
 use std::path::PathBuf;
 
+use boa_engine::{JsError, JsNativeError};
+use boa_engine::{JsResult, value::TryFromJs};
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
-use rquickjs::Ctx;
-use rquickjs::FromJs;
 
 // SHOULD be called from a Javascript callback
-fn get_current_file(js_ctx: &Ctx<'_>) -> rquickjs::Result<PathBuf> {
-    Ok(PathBuf::from(
-        js_ctx
-            .script_or_module_name(0)
-            .ok_or(super::error_message("not running in a module"))?
-            .to_string()?,
-    ))
+fn get_current_file() -> JsResult<PathBuf> {
+    todo!("need to add the current filename to the overall QUERY_CONTEXT");
 }
 
 /// Helper struct that parses a path relative to the current file itno a path relative to the cwd.
 pub struct JsPath(pub PathBuf);
 
-impl<'js> FromJs<'js> for JsPath {
-    fn from_js(js_ctx: &Ctx<'js>, value: rquickjs::Value<'js>) -> rquickjs::Result<Self> {
+impl TryFromJs for JsPath {
+    fn try_from_js(
+        value: &boa_engine::JsValue,
+        context: &mut boa_engine::Context,
+    ) -> JsResult<Self> {
         let path = value
             .as_string()
-            .ok_or_else(|| rquickjs::Error::new_from_js(value.type_name(), "PathBuf"))?
+            .ok_or_else(|| JsNativeError::typ().with_message("path must be string"))?
             .to_string()?;
-        let base_file = get_current_file(js_ctx)?;
+        let base_file = get_current_file()?;
         let base_directory = base_file
             .parent()
-            .ok_or(super::error_message("no parent directory?"))?;
+            .ok_or_else(|| JsNativeError::eval().with_message("no parent directory??"))?;
 
         Ok(JsPath(
             RelativePathBuf::from_path(base_directory)
-                .map_err(|e| {
-                    rquickjs::Error::new_from_js_message("String", "RelativePath", e.to_string())
-                })?
+                .map_err(JsError::from_rust)?
                 .join_normalized(RelativePath::new(&path))
                 .to_path("."),
         ))

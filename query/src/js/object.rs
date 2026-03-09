@@ -1,50 +1,59 @@
-use rquickjs::{Ctx, JsLifetime, atom::PredefinedAtom, class::Trace};
+use boa_engine::object::builtins::JsUint8Array;
+use boa_engine::value::TryIntoJs;
+use boa_engine::{Context, JsData, JsNativeError, JsResult, JsValue};
+use boa_gc::{Finalize, Trace};
 use serde::{Deserialize, Serialize};
 
 use crate::db::object::Object;
 use crate::js::get_context;
 
 #[derive(
-    Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Trace, JsLifetime, Serialize, Deserialize,
+    Debug,
+    Clone,
+    Hash,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Trace,
+    Finalize,
+    JsData,
+    Serialize,
+    Deserialize,
 )]
-#[rquickjs::class]
 pub struct JsObject {
-    #[qjs(skip_trace)]
+    #[unsafe_ignore_trace]
     pub object: Object,
 }
 
 impl JsObject {
     /// SAFETY: only safe to call when in a javascript context
-    pub unsafe fn contents_as_bytes(self) -> rquickjs::Result<Vec<u8>> {
+    pub unsafe fn contents_as_bytes(self) -> JsResult<Vec<u8>> {
         let ctx = unsafe { &*get_context()? };
         self.object.contents_as_bytes(ctx)
     }
 
     /// SAFETY: only safe to call when in a javascript context
-    pub unsafe fn contents_as_string(self) -> rquickjs::Result<String> {
+    pub unsafe fn contents_as_string(self) -> JsResult<String> {
         let ctx = unsafe { &*get_context()? };
         self.object.contents_as_string(ctx)
     }
 }
 
-#[rquickjs::methods(rename_all = "camelCase")]
-impl JsObject {
-    #[qjs(get)]
-    fn data<'js>(&self, js_ctx: Ctx<'js>) -> rquickjs::Result<rquickjs::TypedArray<'js, u8>> {
-        // SAFETY: we are in a javascript context
-        let src = unsafe { self.clone().contents_as_bytes()? };
-        rquickjs::TypedArray::new(js_ctx, src)
-    }
-
-    #[qjs(get)]
-    fn hash(&self) -> String {
-        self.object.to_string()
-    }
-
-    #[allow(clippy::inherent_to_string)]
-    #[qjs(rename = PredefinedAtom::ToString)]
-    fn to_string(&self) -> rquickjs::Result<String> {
-        // SAFETY: we are in a javascript context
-        unsafe { self.clone().contents_as_string() }
-    }
-}
+crate::class_wrap!(class JsObject {
+    length 0,
+    methods {
+        data: (0) |this, _args, js_ctx| {
+            // SAFETY: we are in a javascript context
+            let src = unsafe { this.clone().contents_as_bytes()? };
+            JsUint8Array::from_iter(src, js_ctx)
+        },
+        hash: (0) |this, _args, _js_ctx| {
+            this.object.to_string()
+        },
+        toString: (0) |this, _args, _js_ctx| {
+            // SAFETY: we are in a javascript context
+            unsafe { this.clone().contents_as_string() }
+        },
+    },
+});

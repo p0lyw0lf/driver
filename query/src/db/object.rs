@@ -1,5 +1,6 @@
 use std::fmt::Display;
 
+use boa_engine::{JsResult, error::JsError};
 use scc::hash_map::HashMap;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
@@ -24,25 +25,19 @@ impl Object {
         Self(hash)
     }
 
-    pub fn contents_as_bytes(&self, ctx: &QueryContext) -> rquickjs::Result<Vec<u8>> {
+    pub fn contents_as_bytes(&self, ctx: &QueryContext) -> JsResult<Vec<u8>> {
         ctx.db.objects.with(self, |obj| {
             Ok(obj
-                .ok_or(rquickjs::Error::new_into_js_message(
-                    "StoreObject",
-                    "TypedArray",
-                    format!("object {} not found", self),
-                ))?
+                .ok_or(JsError::from_rust(format!("object {} not found", self)))?
                 .iter()
                 .map(Clone::clone)
                 .collect::<Vec<u8>>())
         })
     }
 
-    pub fn contents_as_string(&self, ctx: &QueryContext) -> rquickjs::Result<String> {
+    pub fn contents_as_string(&self, ctx: &QueryContext) -> JsResult<String> {
         let bytes = self.contents_as_bytes(ctx)?;
-        String::from_utf8(bytes).map_err(|err| {
-            rquickjs::Error::new_into_js_message("StoreObject", "String", err.to_string())
-        })
+        String::from_utf8(bytes).map_err(JsError::from_rust)
     }
 }
 

@@ -19,6 +19,7 @@ use crate::{
     to_hash::ToHash,
 };
 
+mod class_wrap;
 mod image;
 mod object;
 mod path;
@@ -66,7 +67,7 @@ async fn with_query_context<T, F: Future<Output = crate::Result<T>>>(
 }
 
 /// Only safe to dereference the returned pointer if running inside a call to `with_context()`.
-fn get_context() -> rquickjs::Result<*const QueryContext> {
+fn get_context() -> JsResult<*const QueryContext> {
     QUERY_CONTEXT
         .try_with(|ctx| ctx.borrow().curr)
         .map_err(|e| error_message(format!("get_context: {e}")))
@@ -79,8 +80,8 @@ fn error_message(
 }
 
 /// SAFETY: only safe to call when running inside `with_query_context()`
-unsafe fn push_outputs(outputs: impl IntoIterator<Item = WriteOutput>) -> rquickjs::Result<()> {
-    QUERY_CONTEXT.with(|ctx| -> rquickjs::Result<_> {
+unsafe fn push_outputs(outputs: impl IntoIterator<Item = WriteOutput>) -> JsResult<()> {
+    QUERY_CONTEXT.with(|ctx| -> JsResult<_> {
         ctx.try_borrow_mut()
             .map_err(error_message)?
             .output_queue
@@ -153,7 +154,7 @@ mod driver {
     };
 
     #[rquickjs::function]
-    pub async fn read_file(path: JsPath) -> rquickjs::Result<JsObject> {
+    pub async fn read_file(path: JsPath) -> JsResult<JsObject> {
         let ctx = unsafe { &*get_context()? };
 
         let object = ReadFile(path.0)
@@ -165,7 +166,7 @@ mod driver {
     }
 
     #[rquickjs::function]
-    pub async fn list_directory(dirname: JsPath) -> rquickjs::Result<Vec<String>> {
+    pub async fn list_directory(dirname: JsPath) -> JsResult<Vec<String>> {
         let ctx = unsafe { &*get_context()? };
 
         let contents = ListDirectory(dirname.0)
@@ -180,7 +181,7 @@ mod driver {
     }
 
     #[rquickjs::function]
-    pub async fn run_task(filename: JsPath, args: Option<JsValue>) -> rquickjs::Result<JsValue> {
+    pub async fn run_task(filename: JsPath, args: Option<JsValue>) -> JsResult<JsValue> {
         let ctx = unsafe { &*get_context()? };
 
         let filename = filename.0;
@@ -200,7 +201,7 @@ mod driver {
     }
 
     #[rquickjs::function]
-    pub fn file_type(entry_name: String) -> rquickjs::Result<String> {
+    pub fn file_type(entry_name: String) -> JsResult<String> {
         let metadata = std::fs::metadata(PathBuf::from(entry_name))?;
 
         Ok(if metadata.is_file() {
@@ -216,9 +217,7 @@ mod driver {
     }
 
     #[rquickjs::function]
-    pub fn store<'js>(
-        value: Either<String, rquickjs::TypedArray<'js, u8>>,
-    ) -> rquickjs::Result<JsObject> {
+    pub fn store<'js>(value: Either<String, rquickjs::TypedArray<'js, u8>>) -> JsResult<JsObject> {
         let ctx = unsafe { &*get_context()? };
 
         let contents = match value {
@@ -231,7 +230,7 @@ mod driver {
     }
 
     #[rquickjs::function]
-    pub async fn get_url(url: String) -> rquickjs::Result<JsObject> {
+    pub async fn get_url(url: String) -> JsResult<JsObject> {
         let ctx = unsafe { &*get_context()? };
         let url = Url::parse(&url).map_err(|e| error_message(format!("parsing url: {e}")))?;
 
@@ -243,7 +242,7 @@ mod driver {
     }
 
     #[rquickjs::function]
-    pub async fn markdown_to_html(contents: JsObject) -> rquickjs::Result<JsObject> {
+    pub async fn markdown_to_html(contents: JsObject) -> JsResult<JsObject> {
         let ctx = unsafe { &*get_context()? };
 
         let object = MarkdownToHtml(contents.object)
@@ -254,7 +253,7 @@ mod driver {
     }
 
     #[rquickjs::function]
-    pub async fn minify_html(contents: JsObject) -> rquickjs::Result<JsObject> {
+    pub async fn minify_html(contents: JsObject) -> JsResult<JsObject> {
         let ctx = unsafe { &*get_context()? };
 
         let object = MinifyHtml(contents.object)
@@ -265,7 +264,7 @@ mod driver {
     }
 
     #[rquickjs::function]
-    pub async fn parse_image(object: JsObject) -> rquickjs::Result<JsImage> {
+    pub async fn parse_image(object: JsObject) -> JsResult<JsImage> {
         let ctx = unsafe { &*get_context()? };
 
         let image = ParseImage(object.object)
@@ -279,7 +278,7 @@ mod driver {
     pub async fn convert_image<'js>(
         image: JsImage,
         opts: rquickjs::Object<'js>,
-    ) -> rquickjs::Result<JsImage> {
+    ) -> JsResult<JsImage> {
         let ctx = unsafe { &*get_context()? };
 
         let format = if opts.contains_key("format")? {
@@ -311,7 +310,7 @@ mod driver {
     }
 
     #[rquickjs::function]
-    pub fn write_output(name: String, contents: JsObject) -> rquickjs::Result<()> {
+    pub fn write_output(name: String, contents: JsObject) -> JsResult<()> {
         let path = PathBuf::from(name);
         if !path
             .components()
@@ -371,7 +370,7 @@ impl rquickjs::loader::Loader for MemoizedScriptLoader {
         &mut self,
         js_ctx: &rquickjs::Ctx<'js>,
         name: &str,
-    ) -> rquickjs::Result<rquickjs::Module<'js>> {
+    ) -> JsResult<rquickjs::Module<'js>> {
         let path = PathBuf::from(name);
         if !path
             .extension()

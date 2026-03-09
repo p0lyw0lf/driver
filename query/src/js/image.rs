@@ -1,21 +1,24 @@
-use rquickjs::{Ctx, JsLifetime, class::Trace};
-use rquickjs::{FromJs, IntoJs};
+use boa_engine::{
+    Context, JsData, JsNativeError, JsResult, JsValue, js_object,
+    value::{TryFromJs, TryIntoJs},
+};
+use boa_gc::{Finalize, Trace};
 use serde::{Deserialize, Serialize};
 
 use crate::js::JsObject;
 use crate::query::image::{ImageFit, ImageFormat, ImageObject, ImageSize};
 
-impl<'js> IntoJs<'js> for ImageFormat {
-    fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<rquickjs::Value<'js>> {
-        self.to_string().into_js(ctx)
+impl TryIntoJs for ImageFormat {
+    fn try_into_js(&self, context: &mut Context) -> JsResult<JsValue> {
+        self.to_string().try_into_js(context)
     }
 }
 
-impl<'js> FromJs<'js> for ImageFormat {
-    fn from_js(_ctx: &Ctx<'js>, value: rquickjs::Value<'js>) -> rquickjs::Result<Self> {
+impl TryFromJs for ImageFormat {
+    fn try_from_js(value: &JsValue, context: &mut Context) -> JsResult<Self> {
         match value
             .as_string()
-            .ok_or_else(|| rquickjs::Error::new_from_js(value.type_name(), "ImageFormat"))?
+            .ok_or_else(|| JsNativeError::typ().with_message("ImageFormat must be string"))?
             .to_string()?
             .as_str()
         {
@@ -25,76 +28,82 @@ impl<'js> FromJs<'js> for ImageFormat {
             "jpeg_xl" => Ok(ImageFormat::Jxl),
             "png" => Ok(ImageFormat::Png),
             "webp" => Ok(ImageFormat::Webp),
-            _ => Err(rquickjs::Error::new_from_js(
-                "invalid string",
-                "ImageFormat",
-            )),
+            _ => Err(JsNativeError::typ()
+                .with_message("Invalid ImageFormat")
+                .into()),
         }
     }
 }
 
-impl<'js> IntoJs<'js> for ImageSize {
-    fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<rquickjs::Value<'js>> {
-        let obj = rquickjs::Object::new(ctx.clone())?;
-        obj.prop("width", self.width)?;
-        obj.prop("height", self.height)?;
-        Ok(obj.into_value())
+impl TryIntoJs for ImageSize {
+    fn try_into_js(&self, context: &mut Context) -> JsResult<JsValue> {
+        Ok(js_object!({
+            "width": self.width,
+            "height": self.height,
+        }, context))
     }
 }
 
-impl<'js> FromJs<'js> for ImageSize {
-    fn from_js(_ctx: &Ctx<'js>, value: rquickjs::Value<'js>) -> rquickjs::Result<Self> {
+impl TryFromJs for ImageSize {
+    fn try_from_js(value: &JsValue, context: &mut Context) -> JsResult<Self> {
         let obj = value
             .as_object()
-            .ok_or_else(|| rquickjs::Error::new_from_js(value.type_name(), "ImageSize"))?;
+            .ok_or_else(|| JsNativeError::typ().with_message("ImageSize must be object"))?;
 
-        let width = obj.get("width")?;
-        let height = obj.get("height")?;
+        let width = usize::try_from_js(obj.get("width", context)?, context)?;
+        let height = usize::try_from_js(obj.get("height", context)?, context)?;
 
         Ok(ImageSize { width, height })
     }
 }
 
-impl<'js> FromJs<'js> for ImageFit {
-    fn from_js(_ctx: &Ctx<'js>, value: rquickjs::Value<'js>) -> rquickjs::Result<Self> {
+impl TryFromJs for ImageFit {
+    fn try_from_js(value: &JsValue, context: &mut Context) -> JsResult<Self> {
         match value
             .as_string()
-            .ok_or_else(|| rquickjs::Error::new_from_js(value.type_name(), "ImageFit"))?
+            .ok_or_else(|| JsNativeError::typ().with_message("ImageFit must be string"))?
             .to_string()?
             .as_str()
         {
             "fill" => Ok(ImageFit::Fill),
             "contain" => Ok(ImageFit::Contain),
             "cover" => Ok(ImageFit::Cover),
-            _ => Err(rquickjs::Error::new_from_js("invalid string", "ImageFit")),
+            _ => Err(JsNativeError::typ().with_message("Invalid ImageFit").into()),
         }
     }
 }
 
 #[derive(
-    Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Trace, JsLifetime, Serialize, Deserialize,
+    Debug,
+    Clone,
+    Hash,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    JsData,
+    Finalize,
+    Trace,
+    Serialize,
+    Deserialize,
 )]
-#[rquickjs::class]
 pub struct JsImage {
-    #[qjs(skip_trace)]
+    #[unsafe_ignore_trace]
     pub image: ImageObject,
 }
 
-#[rquickjs::methods(rename_all = "camelCase")]
-impl JsImage {
-    #[qjs(get)]
-    fn object(&self) -> JsObject {
-        let object = self.image.object.clone();
-        JsObject { object }
-    }
-
-    #[qjs(get)]
-    fn format<'js>(&self, js_ctx: Ctx<'js>) -> rquickjs::Result<rquickjs::Value<'js>> {
-        self.image.format.into_js(&js_ctx)
-    }
-
-    #[qjs(get)]
-    fn size<'js>(&self, js_ctx: Ctx<'js>) -> rquickjs::Result<rquickjs::Value<'js>> {
-        self.image.size.into_js(&js_ctx)
-    }
-}
+crate::class_wrap!(class JsImage {
+    length 0,
+    methods {
+        object: (0) |this, _args, _js_ctx| {
+            let object = this.image.object.clone();
+            Ok(JsObject { object })
+        },
+        format: (0) |this, _args, js_ctx| {
+            this.image.format.try_into_js(js_ctx)
+        },
+        size: (0) |this, _args, js_ctx| {
+            this.image.size.try_into_js(js_ctx)
+        },
+    },
+});
