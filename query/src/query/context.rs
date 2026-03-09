@@ -64,7 +64,7 @@ pub trait Producer {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct QueryContext {
     pub(crate) rt: Arc<tokio::runtime::Runtime>,
     parent: Option<QueryKey>,

@@ -15,14 +15,14 @@ pub struct JsObject {
 
 impl JsObject {
     /// SAFETY: only safe to call when in a javascript context
-    pub unsafe fn contents_as_bytes(self, js_ctx: &Ctx<'_>) -> rquickjs::Result<Vec<u8>> {
-        let ctx = &get_context(js_ctx)?;
+    pub unsafe fn contents_as_bytes(self) -> rquickjs::Result<Vec<u8>> {
+        let ctx = unsafe { &*get_context()? };
         self.object.contents_as_bytes(ctx)
     }
 
     /// SAFETY: only safe to call when in a javascript context
-    pub unsafe fn contents_as_string(self, js_ctx: &Ctx<'_>) -> rquickjs::Result<String> {
-        let ctx = &get_context(js_ctx)?;
+    pub unsafe fn contents_as_string(self) -> rquickjs::Result<String> {
+        let ctx = unsafe { &*get_context()? };
         self.object.contents_as_string(ctx)
     }
 }
@@ -32,7 +32,7 @@ impl JsObject {
     #[qjs(get)]
     fn data<'js>(&self, js_ctx: Ctx<'js>) -> rquickjs::Result<rquickjs::TypedArray<'js, u8>> {
         // SAFETY: we are in a javascript context
-        let src = unsafe { self.clone().contents_as_bytes(&js_ctx)? };
+        let src = unsafe { self.clone().contents_as_bytes()? };
         rquickjs::TypedArray::new(js_ctx, src)
     }
 
@@ -43,8 +43,8 @@ impl JsObject {
 
     #[allow(clippy::inherent_to_string)]
     #[qjs(rename = PredefinedAtom::ToString)]
-    fn to_string(&self, js_ctx: Ctx<'_>) -> rquickjs::Result<String> {
+    fn to_string(&self) -> rquickjs::Result<String> {
         // SAFETY: we are in a javascript context
-        unsafe { self.clone().contents_as_string(&js_ctx) }
+        unsafe { self.clone().contents_as_string() }
     }
 }
