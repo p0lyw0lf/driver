@@ -44,10 +44,13 @@ macro_rules! query_key {
 
         impl $crate::Producer for $key {
             type Output = $crate::query::context::AnyOutput;
-            async fn produce(&self, ctx: &$crate::query::context::QueryContext) -> Self::Output {
-                match self { $(
-                    Self::$type(v) => $crate::query::context::AnyOutput::new(v.produce(ctx).await),
-                )* }
+            fn produce(&self, ctx: &$crate::query::context::QueryContext) -> impl Future<Output = Self::Output> + Send {
+                let this = self.clone();
+                async move {
+                    match this { $(
+                        Self::$type(v) => $crate::query::context::AnyOutput::new(v.produce(ctx).await),
+                    )* }
+                }
             }
         }
     }

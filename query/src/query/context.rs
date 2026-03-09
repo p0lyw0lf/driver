@@ -51,7 +51,7 @@ pub trait Producer {
     // is easily clone-able. This will eventually require string interning somewhere, not quite
     // sure where yet.
     type Output: Output + Sized + 'static;
-    async fn produce(&self, ctx: &QueryContext) -> Self::Output;
+    fn produce(&self, ctx: &QueryContext) -> impl Future<Output = Self::Output> + Send;
     async fn query(self, ctx: &QueryContext) -> Self::Output
     where
         Self: Sized,
@@ -136,12 +136,18 @@ impl QueryContext {
         self.db.remove_all_dependencies(&key).await;
         trace!("removed");
 
-        let value = Box::pin(key.produce(&QueryContext {
-            rt: self.rt.clone(),
-            parent: Some(key.clone()),
-            db: self.db.clone(),
-        }))
-        .await;
+        let rt = self.rt.clone();
+        let db = self.db.clone();
+        let value = tokio::spawn(async move {
+            key.produce(&QueryContext {
+                rt,
+                parent: Some(key.clone()),
+                db,
+            })
+            .await
+        })
+        .await
+        .expect("joining task");
         trace!("produced value");
 
         entry.insert(revision, value.clone());
