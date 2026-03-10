@@ -16,12 +16,13 @@ pub struct JsPath(pub PathBuf);
 impl TryFromJs for JsPath {
     fn try_from_js(
         value: &boa_engine::JsValue,
-        context: &mut boa_engine::Context,
+        _js_ctx: &mut boa_engine::Context,
     ) -> JsResult<Self> {
         let path = value
             .as_string()
             .ok_or_else(|| JsNativeError::typ().with_message("path must be string"))?
-            .to_string()?;
+            .to_std_string()
+            .map_err(JsError::from_rust)?;
         let base_file = get_current_file()?;
         let base_directory = base_file
             .parent()

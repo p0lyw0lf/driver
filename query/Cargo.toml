@@ -10,6 +10,8 @@ boa_gc = { version = "0.21", features = ["boa_string", "either"] }
 comrak = { version = "0.50", features = ["syntect"] }
 dyn-clone = "1.0"
 either = "1.15"
+futures-concurrency = "7.7"
+futures-lite = "2.6"
 generic-array = { version = "0.14", features = ["serde"] }
 hex = "0.4"
 ignore = "0.4"

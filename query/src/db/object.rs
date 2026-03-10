@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use boa_engine::{JsResult, error::JsError};
+use boa_engine::{JsNativeError, JsResult, error::JsError};
 use scc::hash_map::HashMap;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
@@ -28,7 +28,9 @@ impl Object {
     pub fn contents_as_bytes(&self, ctx: &QueryContext) -> JsResult<Vec<u8>> {
         ctx.db.objects.with(self, |obj| {
             Ok(obj
-                .ok_or(JsError::from_rust(format!("object {} not found", self)))?
+                .ok_or_else(|| {
+                    JsNativeError::typ().with_message(format!("object {} not found", self))
+                })?
                 .iter()
                 .map(Clone::clone)
                 .collect::<Vec<u8>>())

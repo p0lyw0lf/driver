@@ -1,6 +1,6 @@
-use boa_engine::JsNativeError;
 use boa_engine::value::TryIntoJs;
 use boa_engine::{Context, JsResult, value::TryFromJs};
+use boa_engine::{JsError, JsNativeError};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
@@ -26,23 +26,26 @@ impl TryFromJs for JsValue {
             boa_engine::JsVariant::Null => Ok(Self::Null),
             boa_engine::JsVariant::Undefined => Ok(Self::Undefined),
             boa_engine::JsVariant::Boolean(b) => Ok(Self::Bool(b)),
-            boa_engine::JsVariant::String(js_string) => {
-                Ok(Self::String(js_string.to_std_string()?))
-            }
-            boa_engine::JsVariant::Float64(_) => {
-                Err(JsNativeError::typ().with_message("cannot serialize float"))
-            }
+            boa_engine::JsVariant::String(js_string) => Ok(Self::String(
+                js_string.to_std_string().map_err(JsError::from_rust)?,
+            )),
+            boa_engine::JsVariant::Float64(_) => Err(JsNativeError::typ()
+                .with_message("cannot serialize float")
+                .into()),
             boa_engine::JsVariant::Integer32(i) => Ok(Self::Int(i)),
-            boa_engine::JsVariant::BigInt(js_big_int) => {
-                Err(JsNativeError::typ().with_message("cannot serialize BigInt"))
-            }
+            boa_engine::JsVariant::BigInt(_) => Err(JsNativeError::typ()
+                .with_message("cannot serialize BigInt")
+                .into()),
             boa_engine::JsVariant::Object(js_object) => {
                 if js_object.is_array() {
                     Ok(Self::Array(Vec::<JsValue>::try_from_js(
-                        js_object, context,
+                        &js_object.into(),
+                        context,
                     )?))
                 } else {
-                    Err(JsNativeError::typ().with_message("cannot serialize object"))
+                    Err(JsNativeError::typ()
+                        .with_message("cannot serialize object")
+                        .into())
                 }
             }
             boa_engine::JsVariant::Symbol(js_symbol) => Ok(Self::String(
@@ -51,7 +54,8 @@ impl TryFromJs for JsValue {
                     .ok_or_else(|| {
                         JsNativeError::typ().with_message("cannot serialize blank symbol")
                     })?
-                    .to_std_string()?,
+                    .to_std_string()
+                    .map_err(JsError::from_rust)?,
             )),
         }
     }
