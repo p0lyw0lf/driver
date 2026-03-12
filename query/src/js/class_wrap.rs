@@ -8,7 +8,7 @@ macro_rules! class_fn_wrap {
                 && let Some(this) = this.downcast_ref::<$class>()
             {
                 let out = ($f)(this, args, &mut context)?;
-                out.try_into_js(context)
+                boa_engine::value::TryIntoJs::try_into_js(&out, context)
             } else {
                 Err(boa_engine::JsNativeError::typ()
                     .with_message("'this' is not a JsObject")
@@ -27,6 +27,20 @@ macro_rules! class_wrap {
             $method_name:ident: ($method_count:literal) $method_fn:expr,
         )*},)?
     }) => {
+        impl boa_engine::value::TryFromJs for $class {
+            fn try_from_js(value: &boa_engine::value::JsValue, _js_ctx: &mut boa_engine::context::Context) -> boa_engine::JsResult<Self> {
+                let object = value.as_object().ok_or_else(||
+                    boa_engine::error::JsNativeError::typ()
+                        .with_message(concat!(stringify!($class), " must be object"))
+                )?;
+                let this = object.downcast_ref::<$class>().ok_or_else(||
+                    boa_engine::error::JsNativeError::typ()
+                        .with_message(concat!("object is not ", stringify!($class)))
+                )?;
+                Ok(this.clone())
+            }
+        }
+
         impl boa_engine::class::Class for $class {
             const NAME: &'static str = stringify!($ident);
             const LENGTH: usize = $length;

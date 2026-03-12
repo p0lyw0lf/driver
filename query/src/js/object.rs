@@ -1,5 +1,4 @@
 use boa_engine::object::builtins::JsUint8Array;
-use boa_engine::value::TryIntoJs;
 use boa_engine::{JsData, JsResult};
 use boa_gc::{Finalize, GcRef, Trace};
 use serde::{Deserialize, Serialize};

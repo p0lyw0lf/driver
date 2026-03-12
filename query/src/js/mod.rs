@@ -21,7 +21,7 @@ use scc::HashMap;
 use serde::Deserialize;
 use serde::Serialize;
 use sha2::Digest;
-use tokio::task;
+use tokio::{sync::oneshot, task};
 use tracing::trace;
 
 use crate::{
@@ -40,9 +40,9 @@ mod object;
 mod path;
 mod value;
 
+use self::{image::JsImage, path::JsPath};
 #[cfg(test)]
 pub use self::{object::JsObject, value::JsValue};
-
 #[cfg(not(test))]
 use self::{object::JsObject, value::JsValue};
 
@@ -239,7 +239,7 @@ impl MemoizedModuleLoader {
     }
 
     fn set_driver_module(&self, module: Module) {
-        self.driver_module.borrow_mut().insert(module);
+        let _ = self.driver_module.borrow_mut().insert(module);
     }
 }
 
@@ -283,40 +283,144 @@ impl ModuleLoader for MemoizedModuleLoader {
                     .with_cause(err)
             })?;
 
-        self.module_map.insert_async(path, module.clone()).await;
+        let _ = self.module_map.insert_async(path, module.clone()).await;
         Ok(module)
     }
 }
 
 async fn with_js_ctx<T, F>(ctx: QueryContext, f: F) -> crate::Result<T>
 where
-    F: (AsyncFnOnce(&mut Context) -> crate::Result<T>),
+    F: (AsyncFnOnce(&mut Context) -> crate::Result<T>) + Send + 'static,
+    T: Send + 'static,
 {
-    // I wish I could only have one runtime, but unfortunately not, the ctx stuff just doesn't work
-    // out... Startup costs are a real thing we have to pay unfortunately. Hopefully multithreaded
-    // pays off some of that!!
-    let executor = Rc::new(Executor::new());
-    let loader = Rc::new(MemoizedModuleLoader::new(ctx));
+    let rt = ctx.rt.clone();
+    let (send, recv) = oneshot::channel();
+    std::thread::spawn(move || {
+        send.send((|| -> crate::Result<T> {
+            // I wish I could only have one runtime, but unfortunately not, the ctx stuff just doesn't work
+            // out... Startup costs are a real thing we have to pay unfortunately. Hopefully multithreaded
+            // pays off some of that!!
+            let executor = Rc::new(Executor::new());
+            let loader = Rc::new(MemoizedModuleLoader::new(ctx));
 
-    let js_ctx = &mut ContextBuilder::new()
-        .job_executor(executor.clone())
-        .module_loader(loader.clone())
-        .build()?;
+            let js_ctx = &mut ContextBuilder::new()
+                .job_executor(executor.clone())
+                .module_loader(loader.clone())
+                .build()?;
 
-    let driver_module = make_driver_module(js_ctx)?;
-    loader.set_driver_module(driver_module);
+            let driver_module = make_driver_module(js_ctx)?;
+            loader.set_driver_module(driver_module);
 
-    let local_set = &mut tokio::task::LocalSet::default();
-    local_set
-        .run_until(async { crate::Result::Ok(f(js_ctx).await?) })
-        .await
+            let local_set = &mut tokio::task::LocalSet::default();
+            rt.block_on(async { local_set.run_until(async { f(js_ctx).await }).await })
+        })())
+    });
+
+    recv.await.expect("channel error")
 }
 
 fn make_driver_module(js_ctx: &mut Context) -> JsResult<Module> {
-    todo!()
+    // From https://danielkeep.github.io/tlborm/book/blk-counting.html#slice-length
+    macro_rules! replace_expr {
+        ($i:ident, $sub:expr) => {
+            $sub
+        };
+    }
+    macro_rules! count_args {
+        ($($arg:ident),*) => { <[()]>::len(&[$(replace_expr!($arg, ())),*]) };
+    }
+    macro_rules! async_fn_body {
+        ($fn:ident ($(
+            $arg:ident : $ty:ty
+        ),* $(,
+            [$ctx:ident]
+        )?) -> $ret:ty) => {
+            async |_this, _args, js_ctx| {
+                let _i = 0;
+                $(
+                    let $arg: $ty = boa_engine::value::TryFromJs::try_from_js(
+                        boa_engine::JsArgs::get_or_undefined(_args, _i),
+                        &mut *js_ctx.borrow_mut(),
+                    )?;
+                    let _i = _i + 1;
+                )*
+                let out = {
+                    $fn($($arg),* $(, {
+                        let $ctx = js_ctx;
+                        $ctx
+                    })?)
+                }.await?;
+                boa_engine::value::TryIntoJs::try_into_js(&out, &mut *js_ctx.borrow_mut())
+            }
+        };
+    }
+    macro_rules! async_fn_obj {
+        ($fn:ident ($(
+            $arg:ident : $ty:ty
+        ),* $(,
+            [$ctx:ident : &mut Context]
+        )? $(,)?) -> $ret:ty) => {
+            boa_engine::object::FunctionObjectBuilder::new(
+                js_ctx.realm(),
+                boa_engine::native_function::NativeFunction::from_async_fn(
+                    async_fn_body!($fn($($arg: $ty),* $(, [$ctx])?) -> $ret)
+                ),
+            )
+            .length(count_args!($($arg),*))
+            .name(stringify!($fn))
+            .build()
+        };
+    }
+    macro_rules! module {
+        ($(async fn $fn:ident ($($tts:tt)*) -> JsResult<$ret:ty>;)*) => {
+            {
+            $(let $fn = async_fn_obj!($fn($($tts)*) -> $ret);)*
+            boa_engine::module::Module::synthetic(
+                &[$(boa_engine::js_string!(stringify!($fn)),)*],
+                boa_engine::module::SyntheticModuleInitializer::from_copy_closure_with_captures(
+                    |module, fns, _| {
+                        let ($($fn),*) = fns;
+                        $(
+                            module.set_export(
+                                &boa_engine::js_string!(stringify!($fn)),
+                                $fn.clone().into(),
+                            )?;
+                        )*
+                        Ok(())
+                    },
+                    ($($fn),*),
+                ),
+                None,
+                None,
+                js_ctx,
+            )
+            }
+        }
+    }
+
+    use driver_module::*;
+    Ok(module!(
+        // fn file_type(entry_name: String) -> JsResult<String>
+        // fn store(value: Either<String, JsUint8Array>, js_ctx: &mut Context) -> JsResult<JsObject>
+        // fn write_output(name: String, contents: JsObject) -> JsResult<()>
+        async fn read_file(path: JsPath) -> JsResult<JsObject>;
+        async fn list_directory(dirname: JsPath) -> JsResult<Vec<String>>;
+        async fn run_task(filename: JsPath, args: Option<JsValue>) -> JsResult<JsValue>;
+        async fn get_url(url: String) -> JsResult<JsObject>;
+        async fn markdown_to_html(contents: JsObject) -> JsResult<JsObject>;
+        async fn minify_html(contents: JsObject) -> JsResult<JsObject>;
+        async fn parse_image(object: JsObject) -> JsResult<JsImage>;
+        async fn convert_image(
+            image: JsImage,
+            opts: boa_engine::JsObject,
+            [js_ctx: &mut Context],
+        ) -> JsResult<JsImage>;
+    ))
 }
 
 mod driver_module {
+    use std::cell::RefCell;
+    use std::ops::DerefMut;
     use std::path::{Component, PathBuf};
 
     use boa_engine::value::TryFromJs;
@@ -373,8 +477,8 @@ mod driver_module {
         let FileOutput { value, outputs } = task.query(ctx).await.map_err(|e| {
             JsNativeError::eval().with_message(format!(
                 "error running {}: {}",
-                filename.display().to_string(),
-                e.to_string()
+                filename.display(),
+                e
             ))
         })?;
 
@@ -399,12 +503,15 @@ mod driver_module {
         .to_string())
     }
 
-    pub fn store(value: Either<String, JsUint8Array>, js_ctx: &mut Context) -> JsResult<JsObject> {
+    pub fn store(
+        value: Either<String, JsUint8Array>,
+        js_ctx: &RefCell<&mut Context>,
+    ) -> JsResult<JsObject> {
         let ctx = &get_context()?;
 
         let contents = match value {
             Either::Left(s) => s.into_bytes(),
-            Either::Right(arr) => arr.iter(js_ctx).collect(),
+            Either::Right(arr) => arr.iter(js_ctx.borrow_mut().deref_mut()).collect(),
         };
 
         let object = ctx.db.objects.store(contents);
@@ -456,44 +563,50 @@ mod driver_module {
     pub async fn convert_image(
         image: JsImage,
         opts: boa_engine::JsObject,
-        js_ctx: &mut Context,
+        js_ctx: &RefCell<&mut Context>,
     ) -> JsResult<JsImage> {
         let ctx = &get_context()?;
 
-        let format = if opts.has_property(js_str!("format"), js_ctx)? {
-            Some(TryFromJs::try_from_js(
-                &opts.get(js_str!("format"), js_ctx)?,
-                js_ctx,
-            )?)
-        } else {
-            None
-        };
-        let size = if opts.has_property(js_str!("size"), js_ctx)? {
-            Some(TryFromJs::try_from_js(
-                &opts.get(js_str!("size"), js_ctx)?,
-                js_ctx,
-            )?)
-        } else {
-            None
-        };
-        let fit = if opts.has_property(js_str!("fit"), js_ctx)? {
-            Some(TryFromJs::try_from_js(
-                &opts.get(js_str!("fit"), js_ctx)?,
-                js_ctx,
-            )?)
-        } else {
-            None
+        let convert_image = {
+            let mut js_ctx = js_ctx.borrow_mut();
+            let js_ctx = js_ctx.deref_mut();
+            let format = if opts.has_property(js_str!("format"), js_ctx)? {
+                Some(TryFromJs::try_from_js(
+                    &opts.get(js_str!("format"), js_ctx)?,
+                    js_ctx,
+                )?)
+            } else {
+                None
+            };
+            let size = if opts.has_property(js_str!("size"), js_ctx)? {
+                Some(TryFromJs::try_from_js(
+                    &opts.get(js_str!("size"), js_ctx)?,
+                    js_ctx,
+                )?)
+            } else {
+                None
+            };
+            let fit = if opts.has_property(js_str!("fit"), js_ctx)? {
+                Some(TryFromJs::try_from_js(
+                    &opts.get(js_str!("fit"), js_ctx)?,
+                    js_ctx,
+                )?)
+            } else {
+                None
+            };
+
+            ConvertImage {
+                input: image.image.clone(),
+                format,
+                size,
+                fit,
+            }
         };
 
-        let image = ConvertImage {
-            input: image.image.clone(),
-            format,
-            size,
-            fit,
-        }
-        .query(ctx)
-        .await
-        .map_err(|e| JsNativeError::eval().with_message(format!("convert_image: {e}")))?;
+        let image = convert_image
+            .query(ctx)
+            .await
+            .map_err(|e| JsNativeError::eval().with_message(format!("convert_image: {e}")))?;
         Ok(JsImage { image })
     }
 
@@ -549,7 +662,8 @@ impl Producer for RunFile {
 
     #[tracing::instrument(level = "debug", skip_all)]
     async fn produce(&self, ctx: &QueryContext) -> Self::Output {
-        let name = self.file.display().to_string();
+        let file = self.file.clone();
+        let name = file.display().to_string();
         let key = format!(
             "{}({})",
             name,
@@ -563,9 +677,9 @@ impl Producer for RunFile {
         let object = ReadFile(self.file.clone()).query(ctx).await?;
         let contents = object.contents_as_bytes(ctx)?;
 
-        let (value, outputs) = with_query_context(ctx.clone(), async || {
+        let (value, outputs) = with_query_context(ctx.clone(), async move || {
             trace!("with_query_context start");
-            let out = with_js_ctx(ctx.clone(), async |js_ctx| {
+            let out = with_js_ctx(ctx.clone(), async move |js_ctx| {
                 trace!("with_js_ctx start");
                 // TODO: set ARGS global variable
 
@@ -592,7 +706,7 @@ impl Producer for RunFile {
                 };
                 */
 
-                let source = boa_engine::Source::from_reader(&contents[..], Some(&self.file));
+                let source = boa_engine::Source::from_reader(&contents[..], Some(&file));
                 let module = boa_engine::Module::parse(source, None, js_ctx)?;
 
                 let promise = module.load_link_evaluate(js_ctx);
