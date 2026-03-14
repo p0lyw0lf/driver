@@ -5,8 +5,6 @@ edition = "2024"
 
 [dependencies]
 async-fs = "2.2"
-boa_engine = { version = "0.21", default-features = false, features = ["either"] }
-boa_gc = { version = "0.21", features = ["boa_string", "either"] }
 comrak = { version = "0.50", features = ["syntect"] }
 dyn-clone = "1.0"
 either = "1.15"
@@ -28,6 +26,20 @@ url = { version = "2.5", features = ["serde"] }
 zstd = "0.13"
 zune-core = "0.5"
 zune-imageprocs = "0.5"
+
+# This is necessary until I upstream my changes
+[dependencies.boa_engine]
+version = "0.21"
+git = "https://github.com/p0lyw0lf/boa.git"
+tag = "v0.21"
+default-features = false
+features = ["either"]
+
+[dependencies.boa_gc]
+version = "0.21"
+git = "https://github.com/p0lyw0lf/boa.git"
+tag = "v0.21"
+features = ["boa_string", "either"]
 
 [dependencies.reqwest]
 version = "0.13"
