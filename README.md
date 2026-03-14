@@ -10,9 +10,10 @@ framework-less Javascript files using [QuickJS](https://bellard.org/quickjs/).
 Features:
 + Full incremental rebuilds, including when build logic changes.
 + Remote inputs.
-+ Built-in Markdown ([comrak](https://github.com/kivikakk/comrak)),
-  HTML ([minify-html](https://github.com/wilsonzlin/minify-html)), and
-  Image (TODO) support.
++ Built-in support for handling:
+  + Markdown ([comrak](https://github.com/kivikakk/comrak))
+  + HTML ([minify-html](https://github.com/wilsonzlin/minify-html))
+  + Images ([zune-image](https://github.com/etemesi254/zune-image))
 
 ## Why?
 
