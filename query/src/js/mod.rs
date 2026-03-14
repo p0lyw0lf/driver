@@ -13,7 +13,8 @@ use boa_engine::{
     job::{GenericJob, Job, JobExecutor, NativeAsyncJob, PromiseJob, TimeoutJob},
     js_str,
     module::{ModuleLoader, resolve_module_specifier},
-    value::TryFromJs,
+    property::Attribute,
+    value::{TryFromJs, TryIntoJs},
 };
 use futures_concurrency::future::FutureGroup;
 use futures_lite::{StreamExt, future};
@@ -260,7 +261,7 @@ impl ModuleLoader for MemoizedModuleLoader {
                 .clone());
         }
 
-        // TODO: specify a base directory
+        // TODO: specify a base directory to sandbox the module imports
         let path =
             resolve_module_specifier(None, &specifier, referrer.path(), &mut js_ctx.borrow_mut())?;
 
@@ -288,7 +289,7 @@ impl ModuleLoader for MemoizedModuleLoader {
     }
 }
 
-async fn with_js_ctx<T, F>(ctx: QueryContext, f: F) -> crate::Result<T>
+async fn with_js_ctx<T, F>(ctx: QueryContext, arg: JsValue, f: F) -> crate::Result<T>
 where
     F: (AsyncFnOnce(&mut Context) -> crate::Result<T>) + Send + 'static,
     T: Send + 'static,
@@ -307,6 +308,13 @@ where
                 .job_executor(executor.clone())
                 .module_loader(loader.clone())
                 .build()?;
+
+            let arg = arg.try_into_js(js_ctx)?;
+            js_ctx.register_global_property(
+                js_str!("ARG"),
+                arg,
+                Attribute::ENUMERABLE | Attribute::READONLY,
+            )?;
 
             let driver_module = make_driver_module(js_ctx)?;
             loader.set_driver_module(driver_module);
@@ -465,13 +473,13 @@ mod driver_module {
         Ok(contents)
     }
 
-    pub async fn run_task(filename: JsPath, args: Option<JsValue>) -> JsResult<JsValue> {
+    pub async fn run_task(filename: JsPath, arg: Option<JsValue>) -> JsResult<JsValue> {
         let ctx = &get_context()?;
 
         let filename = filename.0;
         let task = RunFile {
             file: filename.clone(),
-            args,
+            arg,
         };
 
         let FileOutput { value, outputs } = task.query(ctx).await.map_err(|e| {
@@ -635,7 +643,7 @@ mod driver_module {
 
 query_key!(RunFile {
     pub file: PathBuf,
-    pub args: Option<JsValue>,
+    pub arg: Option<JsValue>,
 });
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -662,26 +670,27 @@ impl Producer for RunFile {
 
     #[tracing::instrument(level = "debug", skip_all)]
     async fn produce(&self, ctx: &QueryContext) -> Self::Output {
-        let file = self.file.clone();
-        let name = file.display().to_string();
+        let name = self.file.display().to_string();
         let key = format!(
             "{}({})",
             name,
-            self.args
+            self.arg
                 .as_ref()
                 .map(|args| args.to_string())
                 .unwrap_or_default()
         );
         println!("running {key}");
 
+        let file = self.file.clone();
+        let arg = self.arg.clone().unwrap_or_default();
+
         let object = ReadFile(self.file.clone()).query(ctx).await?;
         let contents = object.contents_as_bytes(ctx)?;
 
         let (value, outputs) = with_query_context(ctx.clone(), async move || {
             trace!("with_query_context start");
-            let out = with_js_ctx(ctx.clone(), async move |js_ctx| {
+            let out = with_js_ctx(ctx.clone(), arg, async move |js_ctx| {
                 trace!("with_js_ctx start");
-                // TODO: set ARGS global variable
 
                 // TODO: print stack traces
                 /*
@@ -734,17 +743,7 @@ impl Producer for RunFile {
             out
         })
         .await
-        .map_err(|e| {
-            crate::Error::new(&format!(
-                "error running {}({}):\n\t{}",
-                name,
-                self.args
-                    .as_ref()
-                    .map(|args| args.to_string())
-                    .unwrap_or_default(),
-                e
-            ))
-        })?;
+        .map_err(|e| crate::Error::new(&format!("error running {}:\n\t{}", key, e)))?;
         trace!("finished");
         Ok(FileOutput { value, outputs })
     }

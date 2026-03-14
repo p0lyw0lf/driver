@@ -330,7 +330,7 @@ mod test {
         let k5 = QueryKey::ReadFile(ReadFile(PathBuf::from("./file.js")));
         let k6 = QueryKey::RunFile(RunFile {
             file: PathBuf::from("./file.js"),
-            args: Some(crate::js::JsValue::Store(crate::js::JsObject {
+            arg: Some(crate::js::JsValue::Store(crate::js::JsObject {
                 object: obj(6),
             })),
         });

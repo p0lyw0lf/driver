@@ -116,7 +116,7 @@ impl Display for QueryKey {
                     "{}({})",
                     run_file.file.display(),
                     run_file
-                        .args
+                        .arg
                         .as_ref()
                         .map(|arg| arg.to_string())
                         .unwrap_or_default(),
