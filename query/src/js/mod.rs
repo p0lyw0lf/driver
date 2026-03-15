@@ -337,6 +337,32 @@ fn make_driver_module(js_ctx: &mut Context) -> JsResult<Module> {
     macro_rules! count_args {
         ($($arg:ident),*) => { <[()]>::len(&[$(replace_expr!($arg, ())),*]) };
     }
+
+    macro_rules! fn_body {
+        ($fn:ident ($(
+            $arg:ident : $ty:ty
+        ),* $(,
+            [$ctx:ident]
+        )?) -> $ret:ty) => {
+            |_this, _args, js_ctx| {
+                let _i = 0;
+                $(
+                    let $arg: $ty = boa_engine::value::TryFromJs::try_from_js(
+                        boa_engine::JsArgs::get_or_undefined(_args, _i),
+                        js_ctx,
+                    )?;
+                    let _i = _i + 1;
+                )*
+                let out = {
+                    $fn($($arg),* $(, {
+                        let $ctx = js_ctx;
+                        $ctx
+                    })?)
+                }?;
+                boa_engine::value::TryIntoJs::try_into_js(&out, js_ctx)
+            }
+        }
+    }
     macro_rules! async_fn_body {
         ($fn:ident ($(
             $arg:ident : $ty:ty
@@ -362,6 +388,24 @@ fn make_driver_module(js_ctx: &mut Context) -> JsResult<Module> {
             }
         };
     }
+
+    macro_rules! fn_obj {
+        ($fn:ident ($(
+            $arg:ident : $ty:ty
+        ),* $(,
+            [$ctx:ident : &mut Context]
+        )? $(,)?) -> $ret:ty) => {
+            boa_engine::object::FunctionObjectBuilder::new(
+                js_ctx.realm(),
+                boa_engine::native_function::NativeFunction::from_fn_ptr(
+                    fn_body!($fn($($arg: $ty),* $(, [$ctx])?) -> $ret)
+                ),
+            )
+            .length(count_args!($($arg),*))
+            .name(stringify!($fn))
+            .build()
+        };
+    }
     macro_rules! async_fn_obj {
         ($fn:ident ($(
             $arg:ident : $ty:ty
@@ -380,23 +424,43 @@ fn make_driver_module(js_ctx: &mut Context) -> JsResult<Module> {
         };
     }
     macro_rules! module {
-        ($(async fn $fn:ident ($($tts:tt)*) -> JsResult<$ret:ty>;)*) => {
+        ($(
+            $(fn $fn:ident ($($tts:tt)*) -> JsResult<$ret:ty>)?
+            $(async fn $async_fn:ident ($($async_tts:tt)*) -> JsResult<$async_ret:ty>)?
+            ;
+        )*) => {
             {
-            $(let $fn = async_fn_obj!($fn($($tts)*) -> $ret);)*
+            $(
+                $(let $fn = fn_obj!($fn($($tts)*) -> $ret);)?
+                $(let $async_fn = async_fn_obj!($async_fn($($async_tts)*) -> $async_ret);)?
+            )*
             boa_engine::module::Module::synthetic(
-                &[$(boa_engine::js_string!(stringify!($fn)),)*],
+                &[$(
+                    $(boa_engine::js_string!(stringify!($fn)),)?
+                    $(boa_engine::js_string!(stringify!($async_fn)),)?
+                )*],
                 boa_engine::module::SyntheticModuleInitializer::from_copy_closure_with_captures(
                     |module, fns, _| {
-                        let ($($fn),*) = fns;
+                        let ($(
+                                $($fn)?
+                                $($async_fn)?
+                            ),*) = fns;
                         $(
-                            module.set_export(
+                            $(module.set_export(
                                 &boa_engine::js_string!(stringify!($fn)),
                                 $fn.clone().into(),
-                            )?;
+                            )?;)?
+                            $(module.set_export(
+                                &boa_engine::js_string!(stringify!($async_fn)),
+                                $async_fn.clone().into(),
+                            )?;)?
                         )*
                         Ok(())
                     },
-                    ($($fn),*),
+                    ($(
+                        $($fn)?
+                        $($async_fn)?
+                    ),*),
                 ),
                 None,
                 None,
@@ -408,21 +472,26 @@ fn make_driver_module(js_ctx: &mut Context) -> JsResult<Module> {
 
     use driver_module::*;
     Ok(module!(
-        // fn file_type(entry_name: String) -> JsResult<String>
-        // fn store(value: Either<String, JsUint8Array>, js_ctx: &mut Context) -> JsResult<JsObject>
-        // fn write_output(name: String, contents: JsObject) -> JsResult<()>
+        fn store(value: String) -> JsResult<JsObject>;
+
         async fn read_file(path: JsPath) -> JsResult<JsObject>;
         async fn list_directory(dirname: JsPath) -> JsResult<Vec<String>>;
-        async fn run_task(filename: JsPath, args: Option<JsValue>) -> JsResult<JsValue>;
+        fn file_type(entry_name: String) -> JsResult<String>;
+
         async fn get_url(url: String) -> JsResult<JsObject>;
+
         async fn markdown_to_html(contents: JsObject) -> JsResult<JsObject>;
         async fn minify_html(contents: JsObject) -> JsResult<JsObject>;
+
         async fn parse_image(object: JsObject) -> JsResult<JsImage>;
         async fn convert_image(
             image: JsImage,
             opts: boa_engine::JsObject,
             [js_ctx: &mut Context],
         ) -> JsResult<JsImage>;
+
+        async fn run_task(filename: JsPath, args: Option<JsValue>) -> JsResult<JsValue>;
+        fn write_output(name: String, contents: JsObject) -> JsResult<()>;
     ))
 }
 
@@ -433,8 +502,7 @@ mod driver_module {
 
     use boa_engine::value::TryFromJs;
     use boa_engine::{Context, js_str};
-    use boa_engine::{JsError, JsNativeError, JsResult, object::builtins::JsUint8Array};
-    use either::Either;
+    use boa_engine::{JsError, JsNativeError, JsResult};
     use url::Url;
 
     use super::{FileOutput, RunFile, WriteOutput, get_context, push_outputs};
@@ -511,18 +579,12 @@ mod driver_module {
         .to_string())
     }
 
-    pub fn store(
-        value: Either<String, JsUint8Array>,
-        js_ctx: &RefCell<&mut Context>,
-    ) -> JsResult<JsObject> {
+    // TODO: eventually, I want this to be able to take in JsUint8Array. However, that has some
+    // weird lifetime implications w/ js_ctx, so I won't bother for now.
+    pub fn store(value: String) -> JsResult<JsObject> {
         let ctx = &get_context()?;
 
-        let contents = match value {
-            Either::Left(s) => s.into_bytes(),
-            Either::Right(arr) => arr.iter(js_ctx.borrow_mut().deref_mut()).collect(),
-        };
-
-        let object = ctx.db.objects.store(contents);
+        let object = ctx.db.objects.store(value.into_bytes());
         Ok(JsObject { object })
     }
 
