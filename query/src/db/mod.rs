@@ -7,11 +7,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
+use futures_lite::StreamExt;
 use scc::hash_map::HashMap;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::MutexGuard;
-use tracing::trace;
 
 use crate::QueryKey;
 use crate::db::object::Object;
@@ -217,40 +217,46 @@ pub async fn save_to_directory(dir: &Path, db: &Database) -> crate::Result<()> {
 
     async_fs::create_dir_all(dir).await?;
 
-    // TODO: make these writes async & concurrent
-    // {
-    //     let cache_file = std::fs::File::create(cache_filename)?;
-    //     postcard::to_io(&db.as_serialized().await, cache_file)?;
-    // }
-    {
-        let bytes = postcard::to_stdvec(&db.as_serialized().await)?;
-        std::fs::write(cache_filename, bytes)?;
-    }
-    {
-        let remote_file = std::fs::File::create(remote_filename)?;
-        postcard::to_io(&db.remotes, remote_file)?;
-    }
+    // TODO: how to handle errors here? I think "abort" is probably a fine thing, would be nice to
+    // automatically clean dir on error tho...
+    tokio::try_join!(
+        async {
+            let bytes = postcard::to_stdvec(&db.as_serialized().await)?;
+            async_fs::write(cache_filename, bytes).await?;
+            crate::Result::Ok(())
+        },
+        async {
+            let bytes = postcard::to_stdvec(&db.remotes)?;
+            async_fs::write(remote_filename, bytes).await?;
+            crate::Result::Ok(())
+        },
+        async {
+            // TODO: I'd like a better way of doing this. Should benchmark if linear like this is
+            // OK or if I really do need the overhead of copying the data into spawned threads to
+            // do this work.
+            db.objects.for_each(|hash, contents| {
+                let hash = hash.to_string();
+                let (prefix, rest) = hash.split_at(2);
+                let object_directory = objects_dirname.join(prefix);
+                let object_filename = object_directory.join(rest);
+                if std::fs::exists(&object_filename)? {
+                    // By the uniqueness of the hash, we're already done
+                    return Ok(());
+                }
 
-    db.objects.for_each(|hash, contents| -> crate::Result<_> {
-        let hash = hash.to_string();
-        let (prefix, rest) = hash.split_at(2);
-        let object_directory = objects_dirname.join(prefix);
-        let object_filename = object_directory.join(rest);
-        if std::fs::exists(&object_filename)? {
-            // By the uniqueness of the hash, we're already done
-            return Ok(());
+                // Otherwise, we have to write the object
+                std::fs::create_dir_all(object_directory)?;
+                // Compress with zstd so we don't have to read/write as much data to disk
+                // NOTE: this needs to be sync for zstd
+                let object_file = std::fs::File::create(&object_filename)?;
+                let mut encoder = zstd::stream::Encoder::new(object_file, 0)?.auto_finish();
+                encoder.write_all(contents)?;
+                encoder.flush()?;
+                crate::Result::Ok(())
+            })?;
+            crate::Result::Ok(())
         }
-
-        // Otherwise, we have to write the object
-        std::fs::create_dir_all(object_directory)?;
-        // Compress with zstd so we don't have to read/write as much data to disk
-        // Launch in worker so we can do other stuff in the meantime.
-        let object_file = std::fs::File::create(&object_filename)?;
-        let mut encoder = zstd::stream::Encoder::new(object_file, 0)?.auto_finish();
-        encoder.write_all(contents)?;
-        encoder.flush()?;
-        Ok(())
-    })?;
+    )?;
 
     Ok(())
 }
@@ -262,74 +268,81 @@ pub async fn restore_from_directory(dir: &Path) -> crate::Result<Database> {
         objects_dirname,
     } = get_filenames(dir);
 
-    // TODO: make these reads async & concurrent
+    let ((cache, dep_graph), remotes, objects) = tokio::try_join!(
+        async {
+            let cache_bytes = async_fs::read(cache_filename).await?;
+            let serialized_database: SerializedDatabase = postcard::from_bytes(&cache_bytes[..])?;
 
-    trace!("deserializing cache {}", cache_filename.display());
-    let cache_bytes = async_fs::read(cache_filename).await?;
-    trace!("read cache file");
-    let serialized_cache: SerializedDatabase = postcard::from_bytes(&cache_bytes[..])?;
+            // Everything loaded from the disk is green to start with; this will be busted by input
+            // queries changing for the next revision.
+            let cache = HashMap::with_capacity(serialized_database.len());
+            let dep_graph = HashMap::with_capacity(serialized_database.len());
 
-    // Everything loaded from the disk is green to start with; this will be busted by input queries
-    // changing for the next revision.
-    let cache = HashMap::with_capacity(serialized_cache.len());
-    let dep_graph = HashMap::with_capacity(serialized_cache.len());
-
-    trace!("reading cache into maps");
-    for (key, (value, dependencies)) in serialized_cache {
-        let _ = cache
-            .insert_async(
-                key.clone(),
-                Arc::new(SerializedMutex::new(Value {
-                    value,
-                    color: (Color::Green, 0),
-                })),
-            )
-            .await;
-        let _ = dep_graph.insert_async(key, dependencies).await;
-    }
-
-    trace!("deserializing remotes");
-    let remote_bytes = async_fs::read(remote_filename).await?;
-    let remotes: RemoteObjects = postcard::from_bytes(&remote_bytes[..])?;
-
-    trace!("deserializing objects");
-    let objects = object::Objects::default();
-    for prefix_entry in std::fs::read_dir(objects_dirname)? {
-        let prefix_entry = prefix_entry?;
-        let prefix = prefix_entry
-            .file_name()
-            .into_string()
-            .map_err(|_| crate::Error::new("couldn't convert object prefix to string"))?;
-        for object_entry in std::fs::read_dir(prefix_entry.path())? {
-            let object_entry = object_entry?;
-            let rest = object_entry
-                .file_name()
-                .into_string()
-                .map_err(|_| crate::Error::new("couldn't convert object suffix to string"))?;
-
-            let hash = format!("{}{}", prefix, rest);
-            let hash_bytes = hex::decode(&hash)?;
-            // TODO: remove this once sha2 updates off generic-array@0.14.9
-            #[allow(deprecated)]
-            let hash = Hash::from_exact_iter(hash_bytes)
-                .ok_or_else(|| crate::Error::new("couldn't convert object filename to hash"))?;
-            // SAFETY: we are restoring from disk here
-            let object = unsafe { Object::from_hash(hash) };
-
-            let file = std::fs::File::open(object_entry.path())?;
-            let mut decoder = zstd::stream::Decoder::new(file)?;
-            let contents = {
-                let mut contents = Vec::<u8>::new();
-                decoder.read_to_end(&mut contents)?;
-                contents
-            };
-
-            // SAFETY: the data on disk should be trustworthy, no need to re-do hash
-            unsafe {
-                objects.store_raw(object, contents);
+            for (key, (value, dependencies)) in serialized_database {
+                let _ = cache
+                    .insert_async(
+                        key.clone(),
+                        Arc::new(SerializedMutex::new(Value {
+                            value,
+                            color: (Color::Green, 0),
+                        })),
+                    )
+                    .await;
+                let _ = dep_graph.insert_async(key, dependencies).await;
             }
-        }
-    }
+
+            crate::Result::Ok((cache, dep_graph))
+        },
+        async {
+            let remote_bytes = async_fs::read(remote_filename).await?;
+            let remotes: RemoteObjects = postcard::from_bytes(&remote_bytes[..])?;
+            crate::Result::Ok(remotes)
+        },
+        async {
+            let objects = object::Objects::default();
+            for prefix_entry in std::fs::read_dir(objects_dirname)? {
+                let prefix_entry = prefix_entry?;
+                let prefix = prefix_entry
+                    .file_name()
+                    .into_string()
+                    .map_err(|_| crate::Error::new("couldn't convert object prefix to string"))?;
+
+                let mut entries = async_fs::read_dir(prefix_entry.path()).await?;
+                while let Some(object_entry) = entries.next().await {
+                    let object_entry = object_entry?;
+                    let rest = object_entry.file_name().into_string().map_err(|_| {
+                        crate::Error::new("couldn't convert object suffix to string")
+                    })?;
+
+                    let hash = format!("{}{}", prefix, rest);
+                    let hash_bytes = hex::decode(&hash)?;
+                    // TODO: remove this once sha2 updates off generic-array@0.14.9
+                    #[allow(deprecated)]
+                    let hash = Hash::from_exact_iter(hash_bytes).ok_or_else(|| {
+                        crate::Error::new("couldn't convert object filename to hash")
+                    })?;
+                    // SAFETY: we are restoring from disk here
+                    let object = unsafe { Object::from_hash(hash) };
+
+                    // NOTE: this needs to be sync for zstd
+                    let file = std::fs::File::open(object_entry.path())?;
+                    let mut decoder = zstd::stream::Decoder::new(file)?;
+                    let contents = {
+                        let mut contents = Vec::<u8>::new();
+                        decoder.read_to_end(&mut contents)?;
+                        contents
+                    };
+
+                    // SAFETY: the data on disk should be trustworthy, no need to re-do hash
+                    unsafe {
+                        objects.store_raw(object, contents);
+                    }
+                }
+            }
+
+            crate::Result::Ok(objects)
+        },
+    )?;
 
     Ok(Database {
         // Bust cache immediately
