@@ -113,12 +113,39 @@ impl ToHash for WriteOutput {
     }
 }
 
+/// Sets the path inside js_ctx so that, whenever you call into a Rust native function, you have
+/// have access to it from js_ctx.realm().host_defined(). This is required because this sort of
+/// data isn't tracked into the job by default :pensive:
+fn with_js_path<T>(path: PathBuf, js_ctx: &mut Context, f: impl FnOnce(&mut Context) -> T) -> T {
+    let prev = js_ctx.realm().host_defined_mut().insert(path);
+    let out = f(js_ctx);
+    let _ = match prev {
+        Some(prev) => js_ctx.realm().host_defined_mut().insert(*prev),
+        None => js_ctx.realm().host_defined_mut().remove::<PathBuf>(),
+    };
+    out
+}
+
+tokio::task_local! {
+    /// The above only works for js_ctx in a sync context. For async jobs, we need this:
+    static JS_PATH: PathBuf;
+}
+
+fn get_current_file(js_ctx: &mut Context) -> PathBuf {
+    let realm_path = js_ctx.realm().host_defined().get::<PathBuf>().cloned();
+    if let Some(path) = realm_path {
+        return path.clone();
+    }
+
+    JS_PATH.get()
+}
+
 /// An event loop using tokio to drive futures to completion.
 struct Executor {
-    async_jobs: RefCell<VecDeque<NativeAsyncJob>>,
-    promise_jobs: RefCell<VecDeque<PromiseJob>>,
-    timeout_jobs: RefCell<BTreeMap<JsInstant, TimeoutJob>>,
-    generic_jobs: RefCell<VecDeque<GenericJob>>,
+    async_jobs: RefCell<VecDeque<(NativeAsyncJob, PathBuf)>>,
+    promise_jobs: RefCell<VecDeque<(PromiseJob, PathBuf)>>,
+    timeout_jobs: RefCell<BTreeMap<JsInstant, (TimeoutJob, PathBuf)>>,
+    generic_jobs: RefCell<VecDeque<(GenericJob, PathBuf)>>,
 }
 
 impl Executor {
@@ -137,12 +164,12 @@ impl Executor {
         let jobs_to_run = {
             let mut timeout_jobs = self.timeout_jobs.borrow_mut();
             let mut jobs_to_keep = timeout_jobs.split_off(&now);
-            jobs_to_keep.retain(|_, job| !job.is_cancelled());
+            jobs_to_keep.retain(|_, (job, _)| !job.is_cancelled());
             std::mem::replace(timeout_jobs.deref_mut(), jobs_to_keep)
         };
 
-        for job in jobs_to_run.into_values() {
-            if let Err(e) = job.call(js_ctx) {
+        for (job, path) in jobs_to_run.into_values() {
+            if let Err(e) = with_js_path(path, js_ctx, |js_ctx| job.call(js_ctx)) {
                 eprintln!("Uncaught {e}");
             }
         }
@@ -152,15 +179,15 @@ impl Executor {
         // Run the timeout jobs first.
         self.drain_timeout_jobs(js_ctx);
 
-        if let Some(generic) = self.generic_jobs.borrow_mut().pop_front()
-            && let Err(err) = generic.call(js_ctx)
+        if let Some((generic, path)) = self.generic_jobs.borrow_mut().pop_front()
+            && let Err(err) = with_js_path(path, js_ctx, |js_ctx| generic.call(js_ctx))
         {
             eprintln!("Uncaught {err}");
         }
 
         let jobs = std::mem::take(self.promise_jobs.borrow_mut().deref_mut());
-        for job in jobs {
-            if let Err(e) = job.call(js_ctx) {
+        for (job, path) in jobs {
+            if let Err(e) = with_js_path(path, js_ctx, |js_ctx| job.call(js_ctx)) {
                 eprintln!("Uncaught {e}");
             }
         }
@@ -171,18 +198,26 @@ impl Executor {
 
 impl JobExecutor for Executor {
     fn enqueue_job(self: Rc<Self>, job: Job, js_ctx: &mut Context) {
+        let path = get_current_file(js_ctx);
         match job {
-            Job::PromiseJob(promise_job) => self.promise_jobs.borrow_mut().push_back(promise_job),
-            Job::AsyncJob(native_async_job) => {
-                self.async_jobs.borrow_mut().push_back(native_async_job)
-            }
+            Job::PromiseJob(promise_job) => self
+                .promise_jobs
+                .borrow_mut()
+                .push_back((promise_job, path)),
+            Job::AsyncJob(native_async_job) => self
+                .async_jobs
+                .borrow_mut()
+                .push_back((native_async_job, path)),
             Job::TimeoutJob(timeout_job) => {
                 let now = js_ctx.clock().now();
                 self.timeout_jobs
                     .borrow_mut()
-                    .insert(now + timeout_job.timeout(), timeout_job);
+                    .insert(now + timeout_job.timeout(), (timeout_job, path));
             }
-            Job::GenericJob(generic_job) => self.generic_jobs.borrow_mut().push_back(generic_job),
+            Job::GenericJob(generic_job) => self
+                .generic_jobs
+                .borrow_mut()
+                .push_back((generic_job, path)),
             _ => panic!("Unsupported job type"),
         }
     }
@@ -200,8 +235,8 @@ impl JobExecutor for Executor {
     async fn run_jobs_async(self: Rc<Self>, js_ctx: &RefCell<&mut Context>) -> JsResult<()> {
         let mut group = FutureGroup::new();
         loop {
-            for job in std::mem::take(self.async_jobs.borrow_mut().deref_mut()) {
-                group.insert(job.call(js_ctx));
+            for (job, path) in std::mem::take(self.async_jobs.borrow_mut().deref_mut()) {
+                group.insert(JS_PATH.scope(path, async { job.call(js_ctx).await }));
             }
 
             if group.is_empty()
@@ -226,21 +261,21 @@ impl JobExecutor for Executor {
 /// Custom loader that will track dependencies via ReadFile
 struct MemoizedModuleLoader {
     ctx: QueryContext,
-    driver_module: RefCell<Option<Module>>,
-    module_map: HashMap<PathBuf, Module>,
+    builtin_module_map: HashMap<String, Module>,
+    js_module_map: HashMap<PathBuf, Module>,
 }
 
 impl MemoizedModuleLoader {
     fn new(ctx: QueryContext) -> Self {
         Self {
             ctx,
-            driver_module: RefCell::new(None),
-            module_map: Default::default(),
+            builtin_module_map: Default::default(),
+            js_module_map: Default::default(),
         }
     }
 
-    fn set_driver_module(&self, module: Module) {
-        let _ = self.driver_module.borrow_mut().insert(module);
+    fn set_builtin_module(&self, name: String, module: Module) {
+        let _ = self.builtin_module_map.upsert_sync(name, module);
     }
 }
 
@@ -252,13 +287,8 @@ impl ModuleLoader for MemoizedModuleLoader {
         js_ctx: &RefCell<&mut Context>,
     ) -> JsResult<Module> {
         let short_path = specifier.to_std_string_escaped();
-        if &short_path == "driver" {
-            return Ok(self
-                .driver_module
-                .borrow()
-                .as_ref()
-                .expect("MUST call initialize_driver first")
-                .clone());
+        if let Some(module) = self.builtin_module_map.get_async(&short_path).await {
+            return Ok(module.clone());
         }
 
         // TODO: specify a base directory to sandbox the module imports
@@ -267,7 +297,7 @@ impl ModuleLoader for MemoizedModuleLoader {
 
         // Shortcutting here is OK because we create a new loader for each file we execute, so we
         // do exactly one ReadFile for each import dependency we have.
-        if let Some(module) = self.module_map.get_async(&path).await {
+        if let Some(module) = self.js_module_map.get_async(&path).await {
             return Ok(module.get().clone());
         }
 
@@ -277,14 +307,14 @@ impl ModuleLoader for MemoizedModuleLoader {
             .map_err(|e| JsNativeError::eval().with_message(e.to_string()))?
             .contents_as_bytes(&self.ctx)?;
         let source = boa_engine::Source::from_bytes(&source_bytes);
-        let module =
-            boa_engine::Module::parse(source, None, &mut js_ctx.borrow_mut()).map_err(|err| {
+        let module = with_js_path(path.clone(), &mut js_ctx.borrow_mut(), |js_ctx| {
+            boa_engine::Module::parse(source, None, js_ctx).map_err(|err| {
                 JsNativeError::syntax()
                     .with_message(format!("could not parse module `{short_path}'"))
                     .with_cause(err)
-            })?;
-
-        let _ = self.module_map.insert_async(path, module.clone()).await;
+            })
+        })?;
+        let _ = self.js_module_map.insert_async(path, module.clone()).await;
         Ok(module)
     }
 }
@@ -317,7 +347,7 @@ where
             )?;
 
             let driver_module = make_driver_module(js_ctx)?;
-            loader.set_driver_module(driver_module);
+            loader.set_builtin_module("driver".to_string(), driver_module);
 
             let local_set = &mut tokio::task::LocalSet::default();
             rt.block_on(async { local_set.run_until(async { f(js_ctx).await }).await })
@@ -753,7 +783,6 @@ impl Producer for RunFile {
             trace!("with_query_context start");
             let out = with_js_ctx(ctx.clone(), arg, async move |js_ctx| {
                 trace!("with_js_ctx start");
-
                 // TODO: print stack traces
                 /*
                 let catch = |err: rquickjs::Error| -> crate::Error {
@@ -778,9 +807,11 @@ impl Producer for RunFile {
                 */
 
                 let source = boa_engine::Source::from_reader(&contents[..], Some(&file));
-                let module = boa_engine::Module::parse(source, None, js_ctx)?;
-
-                let promise = module.load_link_evaluate(js_ctx);
+                let (module, promise) = with_js_path(file.clone(), js_ctx, |js_ctx| {
+                    let module = boa_engine::Module::parse(source, None, js_ctx)?;
+                    let promise = module.load_link_evaluate(js_ctx);
+                    crate::Result::Ok((module, promise))
+                })?;
                 let executor = js_ctx.downcast_job_executor::<Executor>().unwrap();
                 executor.run_jobs_async(&RefCell::new(js_ctx)).await?;
 
