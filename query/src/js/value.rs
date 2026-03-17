@@ -42,6 +42,9 @@ impl TryFromJs for JsValue {
                         &js_object.into(),
                         context,
                     )?))
+                } else if let Ok(object) = js_object.downcast::<JsObject>() {
+                    let object = object.borrow().data().clone();
+                    Ok(Self::Store(object))
                 } else {
                     Err(JsNativeError::typ()
                         .with_message("cannot serialize object")

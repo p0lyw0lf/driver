@@ -7,7 +7,7 @@ use std::{
 };
 
 use boa_engine::{
-    Context, JsError, JsNativeError, JsResult, JsString, Module,
+    Context, JsError, JsNativeError, JsResult, JsString, Module, NativeFunction,
     builtins::promise::PromiseState,
     context::{ContextBuilder, time::JsInstant},
     job::{GenericJob, Job, JobExecutor, NativeAsyncJob, PromiseJob, TimeoutJob},
@@ -269,13 +269,17 @@ impl ModuleLoader for MemoizedModuleLoader {
         let source_bytes = ReadFile(path.clone())
             .query(&self.ctx)
             .await
-            .map_err(|e| JsNativeError::eval().with_message(e.to_string()))?
+            .map_err(|e| {
+                JsNativeError::eval()
+                    .with_message(format!("reading imported module '{}': {}", short_path, e))
+            })?
             .contents_as_bytes(&self.ctx)?;
-        let source = boa_engine::Source::from_bytes(&source_bytes);
+        let source = boa_engine::Source::from_bytes(&source_bytes).with_path(&path);
         let module =
             boa_engine::Module::parse(source, None, &mut js_ctx.borrow_mut()).map_err(|err| {
+                eprintln!("error in module {err}");
                 JsNativeError::syntax()
-                    .with_message(format!("could not parse module `{short_path}'"))
+                    .with_message(format!("could not parse module '{short_path}'"))
                     .with_cause(err)
             })?;
         let _ = self.js_module_map.insert_async(path, module.clone()).await;
@@ -304,11 +308,25 @@ where
                 .build()?;
 
             let arg = arg.try_into_js(js_ctx)?;
-            js_ctx.register_global_property(
-                js_str!("ARG"),
-                arg,
-                Attribute::ENUMERABLE | Attribute::READONLY,
+            js_ctx.register_global_property(js_str!("ARG"), arg, Attribute::READONLY)?;
+            js_ctx.register_global_builtin_callable(
+                js_str!("print").into(),
+                1,
+                NativeFunction::from_fn_ptr(|_this, args, js_ctx| {
+                    let mut s = String::new();
+                    for (i, arg) in args.iter().enumerate() {
+                        if i != 0 {
+                            s.push(' ');
+                        }
+                        s.push_str(&arg.to_string(js_ctx)?.to_std_string_lossy());
+                    }
+                    println!("{}", s);
+                    Ok(boa_engine::JsValue::undefined())
+                }),
             )?;
+
+            js_ctx.register_global_class::<JsImage>()?;
+            js_ctx.register_global_class::<JsObject>()?;
 
             let driver_module = make_driver_module(js_ctx)?;
             loader.set_builtin_module("driver".to_string(), driver_module);
@@ -541,13 +559,14 @@ mod driver_module {
         let filename = filename.0;
         let task = RunFile {
             file: filename.clone(),
-            arg,
+            arg: arg.clone(),
         };
 
         let FileOutput { value, outputs } = task.query(ctx).await.map_err(|e| {
             JsNativeError::eval().with_message(format!(
-                "error running {}: {}",
+                "error running {}({}):\n\t{}",
                 filename.display(),
+                arg.as_ref().map(JsValue::to_string).unwrap_or_default(),
                 e
             ))
         })?;
@@ -726,16 +745,14 @@ impl Producer for RunFile {
 
     #[tracing::instrument(level = "debug", skip_all)]
     async fn produce(&self, ctx: &QueryContext) -> Self::Output {
-        let name = self.file.display().to_string();
-        let key = format!(
-            "{}({})",
-            name,
+        println!(
+            "running {}({})",
+            self.file.display(),
             self.arg
                 .as_ref()
-                .map(|args| args.to_string())
+                .map(JsValue::to_string)
                 .unwrap_or_default()
         );
-        println!("running {key}");
 
         let file = self.file.clone();
         let arg = self.arg.clone().unwrap_or_default();
@@ -743,10 +760,11 @@ impl Producer for RunFile {
         let object = ReadFile(self.file.clone()).query(ctx).await?;
         let contents = object.contents_as_bytes(ctx)?;
 
-        let (value, outputs) = with_query_context(ctx.clone(), async move || {
-            trace!("with_query_context start");
-            let out = with_js_ctx(ctx.clone(), arg, async move |js_ctx| {
-                trace!("with_js_ctx start");
+        let ctx = ctx.clone();
+        let (value, outputs) = with_js_ctx(ctx.clone(), arg, async move |js_ctx| {
+            trace!("with_js_ctx start");
+            let out = with_query_context(ctx, async move || {
+                trace!("with_query_context start");
                 // TODO: print stack traces
                 /*
                 let catch = |err: rquickjs::Error| -> crate::Error {
@@ -770,7 +788,7 @@ impl Producer for RunFile {
                 };
                 */
 
-                let source = boa_engine::Source::from_reader(&contents[..], Some(&file));
+                let source = boa_engine::Source::from_bytes(&contents).with_path(&file);
                 let module = boa_engine::Module::parse(source, None, js_ctx)?;
                 let promise = module.load_link_evaluate(js_ctx);
                 let executor = js_ctx.downcast_job_executor::<Executor>().unwrap();
@@ -788,17 +806,14 @@ impl Producer for RunFile {
 
                 let value = module.namespace(js_ctx).get(js_str!("default"), js_ctx)?;
                 let value = JsValue::try_from_js(&value, js_ctx)?;
-                trace!("with_js_ctx end");
                 Ok(value)
             })
             .await;
 
-            trace!("with_query_context end");
+            trace!("with_js_ctx end");
             out
         })
-        .await
-        .map_err(|e| crate::Error::new(&format!("error running {}:\n\t{}", key, e)))?;
-        trace!("finished");
+        .await?;
         Ok(FileOutput { value, outputs })
     }
 }
