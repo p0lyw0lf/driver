@@ -113,39 +113,12 @@ impl ToHash for WriteOutput {
     }
 }
 
-/// Sets the path inside js_ctx so that, whenever you call into a Rust native function, you have
-/// have access to it from js_ctx.realm().host_defined(). This is required because this sort of
-/// data isn't tracked into the job by default :pensive:
-fn with_js_path<T>(path: PathBuf, js_ctx: &mut Context, f: impl FnOnce(&mut Context) -> T) -> T {
-    let prev = js_ctx.realm().host_defined_mut().insert(path);
-    let out = f(js_ctx);
-    let _ = match prev {
-        Some(prev) => js_ctx.realm().host_defined_mut().insert(*prev),
-        None => js_ctx.realm().host_defined_mut().remove::<PathBuf>(),
-    };
-    out
-}
-
-tokio::task_local! {
-    /// The above only works for js_ctx in a sync context. For async jobs, we need this:
-    static JS_PATH: PathBuf;
-}
-
-fn get_current_file(js_ctx: &mut Context) -> PathBuf {
-    let realm_path = js_ctx.realm().host_defined().get::<PathBuf>().cloned();
-    if let Some(path) = realm_path {
-        return path.clone();
-    }
-
-    JS_PATH.get()
-}
-
 /// An event loop using tokio to drive futures to completion.
 struct Executor {
-    async_jobs: RefCell<VecDeque<(NativeAsyncJob, PathBuf)>>,
-    promise_jobs: RefCell<VecDeque<(PromiseJob, PathBuf)>>,
-    timeout_jobs: RefCell<BTreeMap<JsInstant, (TimeoutJob, PathBuf)>>,
-    generic_jobs: RefCell<VecDeque<(GenericJob, PathBuf)>>,
+    async_jobs: RefCell<VecDeque<NativeAsyncJob>>,
+    promise_jobs: RefCell<VecDeque<PromiseJob>>,
+    timeout_jobs: RefCell<BTreeMap<JsInstant, TimeoutJob>>,
+    generic_jobs: RefCell<VecDeque<GenericJob>>,
 }
 
 impl Executor {
@@ -161,15 +134,15 @@ impl Executor {
     fn drain_timeout_jobs(&self, js_ctx: &mut Context) {
         let now = js_ctx.clock().now();
 
-        let jobs_to_run = {
+        let timed_out_jobs = {
             let mut timeout_jobs = self.timeout_jobs.borrow_mut();
             let mut jobs_to_keep = timeout_jobs.split_off(&now);
-            jobs_to_keep.retain(|_, (job, _)| !job.is_cancelled());
+            jobs_to_keep.retain(|_, job| !job.is_cancelled());
             std::mem::replace(timeout_jobs.deref_mut(), jobs_to_keep)
         };
 
-        for (job, path) in jobs_to_run.into_values() {
-            if let Err(e) = with_js_path(path, js_ctx, |js_ctx| job.call(js_ctx)) {
+        for timeout_job in timed_out_jobs.into_values() {
+            if let Err(e) = timeout_job.call(js_ctx) {
                 eprintln!("Uncaught {e}");
             }
         }
@@ -179,15 +152,15 @@ impl Executor {
         // Run the timeout jobs first.
         self.drain_timeout_jobs(js_ctx);
 
-        if let Some((generic, path)) = self.generic_jobs.borrow_mut().pop_front()
-            && let Err(err) = with_js_path(path, js_ctx, |js_ctx| generic.call(js_ctx))
+        if let Some(generic_job) = self.generic_jobs.borrow_mut().pop_front()
+            && let Err(err) = generic_job.call(js_ctx)
         {
             eprintln!("Uncaught {err}");
         }
 
-        let jobs = std::mem::take(self.promise_jobs.borrow_mut().deref_mut());
-        for (job, path) in jobs {
-            if let Err(e) = with_js_path(path, js_ctx, |js_ctx| job.call(js_ctx)) {
+        let promise_jobs = std::mem::take(self.promise_jobs.borrow_mut().deref_mut());
+        for promise_job in promise_jobs {
+            if let Err(e) = promise_job.call(js_ctx) {
                 eprintln!("Uncaught {e}");
             }
         }
@@ -198,26 +171,18 @@ impl Executor {
 
 impl JobExecutor for Executor {
     fn enqueue_job(self: Rc<Self>, job: Job, js_ctx: &mut Context) {
-        let path = get_current_file(js_ctx);
         match job {
-            Job::PromiseJob(promise_job) => self
-                .promise_jobs
-                .borrow_mut()
-                .push_back((promise_job, path)),
-            Job::AsyncJob(native_async_job) => self
-                .async_jobs
-                .borrow_mut()
-                .push_back((native_async_job, path)),
+            Job::PromiseJob(promise_job) => self.promise_jobs.borrow_mut().push_back(promise_job),
+            Job::AsyncJob(native_async_job) => {
+                self.async_jobs.borrow_mut().push_back(native_async_job)
+            }
             Job::TimeoutJob(timeout_job) => {
                 let now = js_ctx.clock().now();
                 self.timeout_jobs
                     .borrow_mut()
-                    .insert(now + timeout_job.timeout(), (timeout_job, path));
+                    .insert(now + timeout_job.timeout(), timeout_job);
             }
-            Job::GenericJob(generic_job) => self
-                .generic_jobs
-                .borrow_mut()
-                .push_back((generic_job, path)),
+            Job::GenericJob(generic_job) => self.generic_jobs.borrow_mut().push_back(generic_job),
             _ => panic!("Unsupported job type"),
         }
     }
@@ -235,8 +200,8 @@ impl JobExecutor for Executor {
     async fn run_jobs_async(self: Rc<Self>, js_ctx: &RefCell<&mut Context>) -> JsResult<()> {
         let mut group = FutureGroup::new();
         loop {
-            for (job, path) in std::mem::take(self.async_jobs.borrow_mut().deref_mut()) {
-                group.insert(JS_PATH.scope(path, async { job.call(js_ctx).await }));
+            for async_job in std::mem::take(self.async_jobs.borrow_mut().deref_mut()) {
+                group.insert(async_job.call(js_ctx));
             }
 
             if group.is_empty()
@@ -307,13 +272,12 @@ impl ModuleLoader for MemoizedModuleLoader {
             .map_err(|e| JsNativeError::eval().with_message(e.to_string()))?
             .contents_as_bytes(&self.ctx)?;
         let source = boa_engine::Source::from_bytes(&source_bytes);
-        let module = with_js_path(path.clone(), &mut js_ctx.borrow_mut(), |js_ctx| {
-            boa_engine::Module::parse(source, None, js_ctx).map_err(|err| {
+        let module =
+            boa_engine::Module::parse(source, None, &mut js_ctx.borrow_mut()).map_err(|err| {
                 JsNativeError::syntax()
                     .with_message(format!("could not parse module `{short_path}'"))
                     .with_cause(err)
-            })
-        })?;
+            })?;
         let _ = self.js_module_map.insert_async(path, module.clone()).await;
         Ok(module)
     }
@@ -807,11 +771,8 @@ impl Producer for RunFile {
                 */
 
                 let source = boa_engine::Source::from_reader(&contents[..], Some(&file));
-                let (module, promise) = with_js_path(file.clone(), js_ctx, |js_ctx| {
-                    let module = boa_engine::Module::parse(source, None, js_ctx)?;
-                    let promise = module.load_link_evaluate(js_ctx);
-                    crate::Result::Ok((module, promise))
-                })?;
+                let module = boa_engine::Module::parse(source, None, js_ctx)?;
+                let promise = module.load_link_evaluate(js_ctx);
                 let executor = js_ctx.downcast_job_executor::<Executor>().unwrap();
                 executor.run_jobs_async(&RefCell::new(js_ctx)).await?;
 
