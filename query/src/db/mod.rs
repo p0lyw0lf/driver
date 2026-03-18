@@ -7,7 +7,6 @@ use std::sync::{Arc, atomic::AtomicUsize};
 use futures_lite::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{MutexGuard, RwLock};
-use tracing::trace;
 
 use crate::QueryKey;
 use crate::db::object::Object;
@@ -47,14 +46,16 @@ pub struct Database {
 
 impl Database {
     pub async fn get_color(&self, key: &QueryKey) -> Option<(Color, usize)> {
-        trace!("read locking {key}");
-        let cache = self.cache.read().await;
-        trace!("read locked {key}");
-        trace!("bucked locking {key}");
-        let value = cache.get(key)?.lock().await;
-        trace!("bucked locked {key}");
-        trace!("bucked unlocked {key}");
-        trace!("read unlocked {key}");
+        let value = {
+            // NOTE: we have to be very careful to NOT overlap the scope of the HashMap lock with
+            // the scope of the bucket lock; we don't want "blocking on a bucket" to mean "blocking
+            // on the table", that's the whole reason we do per-bucket things in the first place.
+            let cache = self.cache.read().await;
+            // Cloning the value out is safe because once a bucket is filled, we only ever modify
+            // the value at that bucket, never replace it. This means there is no TOCTTOU risk.
+            cache.get(key).cloned()
+        }?;
+        let value = value.lock().await;
         Some(value.color)
     }
 
@@ -87,10 +88,8 @@ impl Database {
         f: impl for<'a> AsyncFnOnce(Entry<'a>) -> T,
     ) -> T {
         let (value, occupied) = {
-            trace!("write locking {key}");
             let mut cache = self.cache.write().await;
-            trace!("write locked {key}");
-            let out = match cache.entry(key.clone()) {
+            match cache.entry(key.clone()) {
                 hash_map::Entry::Occupied(entry) => {
                     let value = entry.get().clone();
                     (value, true)
@@ -106,14 +105,10 @@ impl Database {
                     let value = entry.get().clone();
                     (value, false)
                 }
-            };
-            trace!("write unlocked {key}");
-            out
+            }
         };
 
-        trace!("bucket locking {key}");
         let value = value.lock().await;
-        trace!("bucket locked {key}");
         f(Entry {
             key,
             value,
@@ -133,7 +128,6 @@ pub struct Entry<'a> {
 
 impl<'a> Drop for Entry<'a> {
     fn drop(&mut self) {
-        trace!("bucket unlocked {}", self.key);
         if !self.has_value {
             panic!("dropped entry for {} without inserting value", self.key);
         }
