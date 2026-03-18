@@ -47,10 +47,14 @@ pub struct Database {
 
 impl Database {
     pub async fn get_color(&self, key: &QueryKey) -> Option<(Color, usize)> {
-        trace!("read lock {key}");
+        trace!("read locking {key}");
         let cache = self.cache.read().await;
+        trace!("read locked {key}");
+        trace!("bucked locking {key}");
         let value = cache.get(key)?.lock().await;
-        trace!("read unlock {key}");
+        trace!("bucked locked {key}");
+        trace!("bucked unlocked {key}");
+        trace!("read unlocked {key}");
         Some(value.color)
     }
 
@@ -83,8 +87,9 @@ impl Database {
         f: impl for<'a> AsyncFnOnce(Entry<'a>) -> T,
     ) -> T {
         let (value, occupied) = {
-            trace!("write lock {key}");
+            trace!("write locking {key}");
             let mut cache = self.cache.write().await;
+            trace!("write locked {key}");
             let out = match cache.entry(key.clone()) {
                 hash_map::Entry::Occupied(entry) => {
                     let value = entry.get().clone();
@@ -102,12 +107,15 @@ impl Database {
                     (value, false)
                 }
             };
-            trace!("write unlock {key}");
+            trace!("write unlocked {key}");
             out
         };
 
+        trace!("bucket locking {key}");
         let value = value.lock().await;
+        trace!("bucket locked {key}");
         f(Entry {
+            key,
             value,
             has_value: occupied,
             has_color: false,
@@ -117,6 +125,7 @@ impl Database {
 }
 
 pub struct Entry<'a> {
+    key: QueryKey,
     value: MutexGuard<'a, Value>,
     has_value: bool,
     has_color: bool,
@@ -124,11 +133,12 @@ pub struct Entry<'a> {
 
 impl<'a> Drop for Entry<'a> {
     fn drop(&mut self) {
+        trace!("bucket unlocked {}", self.key);
         if !self.has_value {
-            panic!("dropped entry without inserting value");
+            panic!("dropped entry for {} without inserting value", self.key);
         }
         if !self.has_color {
-            panic!("dropped entry without updating color");
+            panic!("dropped entry for {} without updating color", self.key);
         }
     }
 }
