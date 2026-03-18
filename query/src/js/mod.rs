@@ -201,6 +201,7 @@ impl JobExecutor for Executor {
         let mut group = FutureGroup::new();
         loop {
             for async_job in std::mem::take(self.async_jobs.borrow_mut().deref_mut()) {
+                trace!("inserting another async job");
                 group.insert(async_job.call(js_ctx));
             }
 
@@ -792,6 +793,7 @@ impl Producer for RunFile {
                 let module = boa_engine::Module::parse(source, None, js_ctx)?;
                 let promise = module.load_link_evaluate(js_ctx);
                 let executor = js_ctx.downcast_job_executor::<Executor>().unwrap();
+                trace!("starting to run jobs");
                 executor.run_jobs_async(&RefCell::new(js_ctx)).await?;
 
                 match promise.state() {

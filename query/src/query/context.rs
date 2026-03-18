@@ -157,6 +157,7 @@ impl QueryContext {
     }
 
     /// Ok == Green, Err == Red
+    #[tracing::instrument(level = "trace", skip(self, entry), fields(key=%key))]
     async fn try_mark_green<'a>(
         &self,
         revision: usize,
@@ -164,12 +165,17 @@ impl QueryContext {
         entry: &mut Entry<'a>,
     ) -> Result<AnyOutput, ()> {
         // If we have no dependencies in the graph, assume we need to run the query.
+        trace!("trying to get dependencies");
         let Some(deps) = self.db.dependencies(&key).await else {
             debug!("no dependencies found");
             return Err(());
         };
+        trace!("got dependencies");
         for dep in deps {
-            match self.db.get_color(&dep).await {
+            trace!("trying to get color for {dep}");
+            let color = self.db.get_color(&dep).await;
+            trace!("got color for {dep}");
+            match color {
                 // Dependency is up-to-date in this revision, is ok
                 Some((Color::Green, rev)) if revision == rev => {
                     debug!("dependency {dep} green the first time");
@@ -192,11 +198,13 @@ impl QueryContext {
                             } else {
                                 // Dependencies that themselves have out-of-date dependencies need to be
                                 // recalculated.
+                                trace!("trying to mark dependency green {dep}");
                                 Box::pin(self.try_mark_green(revision, dep.clone(), dep_entry))
                                     .await
                                     .is_err()
                             };
                             if needs_recalculation {
+                                trace!("need to recalculate dependency {dep}");
                                 let _ = Box::pin(self.query_entry(dep.clone(), dep_entry)).await;
                                 // Because we just ran the query, we can be sure the revision is
                                 // up-to-date.
@@ -216,7 +224,8 @@ impl QueryContext {
                                 Ok(())
                             }
                         })
-                        .await?
+                        .await?;
+                    trace!("unlocked {dep}");
                 }
             }
         }

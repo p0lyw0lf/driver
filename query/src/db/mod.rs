@@ -1,17 +1,13 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, hash_map};
 use std::fmt::Display;
-use std::io::Read;
-use std::io::Write;
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, atomic::AtomicUsize};
 
 use futures_lite::StreamExt;
-use scc::hash_map::HashMap;
-use serde::Deserialize;
-use serde::Serialize;
-use tokio::sync::MutexGuard;
+use serde::{Deserialize, Serialize};
+use tokio::sync::{MutexGuard, RwLock};
+use tracing::trace;
 
 use crate::QueryKey;
 use crate::db::object::Object;
@@ -42,8 +38,8 @@ pub struct Value {
 pub struct Database {
     pub(crate) revision: AtomicUsize,
 
-    cache: HashMap<QueryKey, Arc<SerializedMutex<Value>>>,
-    dep_graph: HashMap<QueryKey, BTreeSet<QueryKey>>,
+    cache: RwLock<HashMap<QueryKey, Arc<SerializedMutex<Value>>>>,
+    dep_graph: scc::HashMap<QueryKey, BTreeSet<QueryKey>>,
 
     pub objects: object::Objects,
     pub remotes: remote::RemoteObjects,
@@ -51,8 +47,10 @@ pub struct Database {
 
 impl Database {
     pub async fn get_color(&self, key: &QueryKey) -> Option<(Color, usize)> {
-        let value = self.cache.get_async(key).await?;
-        let value = value.lock().await;
+        trace!("read lock {key}");
+        let cache = self.cache.read().await;
+        let value = cache.get(key)?.lock().await;
+        trace!("read unlock {key}");
         Some(value.color)
     }
 
@@ -84,21 +82,28 @@ impl Database {
         key: QueryKey,
         f: impl for<'a> AsyncFnOnce(Entry<'a>) -> T,
     ) -> T {
-        let (value, occupied) = match self.cache.entry_async(key.clone()).await {
-            scc::hash_map::Entry::Occupied(entry) => {
-                let value = entry.get().clone();
-                (value, true)
-            }
-            scc::hash_map::Entry::Vacant(entry) => {
-                let placeholder_value = Value {
-                    // PLACEHOLDER
-                    value: AnyOutput::new(()),
-                    color: (Color::Red, 0),
-                };
-                let entry = entry.insert_entry(Arc::new(SerializedMutex::new(placeholder_value)));
-                let value = entry.get().clone();
-                (value, false)
-            }
+        let (value, occupied) = {
+            trace!("write lock {key}");
+            let mut cache = self.cache.write().await;
+            let out = match cache.entry(key.clone()) {
+                hash_map::Entry::Occupied(entry) => {
+                    let value = entry.get().clone();
+                    (value, true)
+                }
+                hash_map::Entry::Vacant(entry) => {
+                    let placeholder_value = Value {
+                        // PLACEHOLDER
+                        value: AnyOutput::new(()),
+                        color: (Color::Red, 0),
+                    };
+                    let entry =
+                        entry.insert_entry(Arc::new(SerializedMutex::new(placeholder_value)));
+                    let value = entry.get().clone();
+                    (value, false)
+                }
+            };
+            trace!("write unlock {key}");
+            out
         };
 
         let value = value.lock().await;
@@ -189,19 +194,17 @@ type SerializedDatabase =
 
 impl Database {
     pub(crate) async fn as_serialized(&self) -> SerializedDatabase {
-        let mut out = std::collections::HashMap::with_capacity(self.cache.len());
+        let cache = self.cache.read().await;
+        let mut out = std::collections::HashMap::with_capacity(cache.len());
 
-        let mut entry = self.cache.begin_sync();
-        while let Some(e) = entry {
-            let key = e.key();
-            let value = e.get().lock().await.value.clone();
+        for (key, value) in cache.iter() {
+            let value = value.lock().await.value.clone();
             let dependencies = self
                 .dep_graph
                 .get_sync(key)
                 .map(|e| e.get().clone())
                 .unwrap_or_default();
             out.insert(key.clone(), (value, dependencies));
-            entry = e.next_sync();
         }
 
         out
@@ -275,19 +278,17 @@ pub async fn restore_from_directory(dir: &Path) -> crate::Result<Database> {
 
             // Everything loaded from the disk is green to start with; this will be busted by input
             // queries changing for the next revision.
-            let cache = HashMap::with_capacity(serialized_database.len());
-            let dep_graph = HashMap::with_capacity(serialized_database.len());
+            let mut cache = HashMap::with_capacity(serialized_database.len());
+            let dep_graph = scc::HashMap::with_capacity(serialized_database.len());
 
             for (key, (value, dependencies)) in serialized_database {
-                let _ = cache
-                    .insert_async(
-                        key.clone(),
-                        Arc::new(SerializedMutex::new(Value {
-                            value,
-                            color: (Color::Green, 0),
-                        })),
-                    )
-                    .await;
+                let _ = cache.insert(
+                    key.clone(),
+                    Arc::new(SerializedMutex::new(Value {
+                        value,
+                        color: (Color::Green, 0),
+                    })),
+                );
                 let _ = dep_graph.insert_async(key, dependencies).await;
             }
 
@@ -347,7 +348,7 @@ pub async fn restore_from_directory(dir: &Path) -> crate::Result<Database> {
     Ok(Database {
         // Bust cache immediately
         revision: AtomicUsize::new(1),
-        cache,
+        cache: RwLock::new(cache),
         dep_graph,
         remotes,
         objects,
@@ -356,7 +357,7 @@ pub async fn restore_from_directory(dir: &Path) -> crate::Result<Database> {
 
 impl Database {
     pub(crate) fn display_dep_graph(&self) -> impl Display + '_ {
-        struct GraphDisplayer<'a>(&'a HashMap<QueryKey, BTreeSet<QueryKey>>);
+        struct GraphDisplayer<'a>(&'a scc::HashMap<QueryKey, BTreeSet<QueryKey>>);
 
         impl<'a> Display for GraphDisplayer<'a> {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
