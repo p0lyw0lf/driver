@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -54,6 +55,21 @@ where
         hasher.update(b"Vec[");
         for a in self.iter() {
             a.run_hash(hasher);
+        }
+        hasher.update(b"]");
+    }
+}
+
+impl<K, V> ToHash for BTreeMap<K, V>
+where
+    K: ToHash,
+    V: ToHash,
+{
+    fn run_hash(&self, hasher: &mut sha2::Sha256) {
+        hasher.update(b"BTreeMap[");
+        for (k, v) in self.iter() {
+            k.run_hash(hasher);
+            v.run_hash(hasher);
         }
         hasher.update(b"]");
     }

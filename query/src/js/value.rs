@@ -1,3 +1,6 @@
+use std::collections::BTreeMap;
+use std::ops::Deref;
+
 use boa_engine::value::TryIntoJs;
 use boa_engine::{Context, JsResult, value::TryFromJs};
 use boa_engine::{JsError, JsNativeError};
@@ -17,6 +20,7 @@ pub enum JsValue {
     Int(i32),
     String(String),
     Array(Vec<JsValue>),
+    Object(BTreeMap<String, JsValue>),
     Store(JsObject),
 }
 
@@ -42,12 +46,20 @@ impl TryFromJs for JsValue {
                         &js_object.into(),
                         context,
                     )?))
-                } else if let Ok(object) = js_object.downcast::<JsObject>() {
-                    let object = object.borrow().data().clone();
+                } else if let Some(object) = js_object.downcast_ref::<JsObject>() {
+                    let object = object.clone();
                     Ok(Self::Store(object))
+                } else if js_object.is_ordinary() {
+                    let mut out = BTreeMap::new();
+                    for key in js_object.own_property_keys(context)? {
+                        let string_key = key.to_string();
+                        let value = js_object.get(key, context)?;
+                        let _ = out.insert(string_key, JsValue::try_from_js(&value, context)?);
+                    }
+                    Ok(Self::Object(out))
                 } else {
                     Err(JsNativeError::typ()
-                        .with_message("cannot serialize object")
+                        .with_message("cannot serialize unordinary object")
                         .into())
                 }
             }
@@ -74,6 +86,19 @@ impl TryIntoJs for JsValue {
             JsValue::String(s) => s.try_into_js(context),
             JsValue::Array(values) => values.try_into_js(context),
             JsValue::Store(store_object) => store_object.try_into_js(context),
+            JsValue::Object(btree_map) => {
+                let object = boa_engine::JsObject::with_null_proto();
+                for (key, value) in btree_map.iter() {
+                    let value = value.try_into_js(context)?;
+                    object.set(
+                        boa_engine::JsString::from(key.deref()),
+                        value,
+                        true,
+                        context,
+                    )?;
+                }
+                Ok(object.into())
+            }
         }
     }
 }
@@ -110,6 +135,11 @@ impl ToHash for JsValue {
                 store_object.object.run_hash(hasher);
                 hasher.update(b")");
             }
+            JsValue::Object(btree_map) => {
+                hasher.update(b"RustValue::Object(");
+                btree_map.run_hash(hasher);
+                hasher.update(b")");
+            }
         }
     }
 }
@@ -126,7 +156,7 @@ impl std::fmt::Display for JsValue {
                 write!(f, "[")?;
                 for (i, v) in vs.iter().enumerate() {
                     if i > 0 {
-                        write!(f, ",")?;
+                        write!(f, ", ")?;
                     }
                     write!(f, "{}", v)?;
                 }
@@ -134,6 +164,17 @@ impl std::fmt::Display for JsValue {
                 Ok(())
             }
             JsValue::Store(store_object) => write!(f, "objects/{}", store_object.object),
+            JsValue::Object(btree_map) => {
+                write!(f, "{{")?;
+                for (i, (k, v)) in btree_map.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "\"{}\": {}", k, v)?;
+                }
+                write!(f, "}}")?;
+                Ok(())
+            }
         }
     }
 }
