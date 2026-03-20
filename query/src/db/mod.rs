@@ -260,7 +260,7 @@ pub async fn save_to_directory(dir: &Path, db: Arc<Database>) -> crate::Result<(
             let object_file = tokio::fs::File::create(&object_filename).await?;
             let mut encoder = ZstdEncoder::new(object_file);
             encoder.write_all(&contents).await?;
-            encoder.flush().await?;
+            encoder.shutdown().await?;
 
             Ok(())
         });
