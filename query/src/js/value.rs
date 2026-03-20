@@ -25,7 +25,7 @@ pub enum JsValue {
 }
 
 impl TryFromJs for JsValue {
-    fn try_from_js(value: &boa_engine::JsValue, context: &mut Context) -> JsResult<Self> {
+    fn try_from_js(value: &boa_engine::JsValue, js_ctx: &mut Context) -> JsResult<Self> {
         match value.variant() {
             boa_engine::JsVariant::Null => Ok(Self::Null),
             boa_engine::JsVariant::Undefined => Ok(Self::Undefined),
@@ -44,17 +44,17 @@ impl TryFromJs for JsValue {
                 if js_object.is_array() {
                     Ok(Self::Array(Vec::<JsValue>::try_from_js(
                         &js_object.into(),
-                        context,
+                        js_ctx,
                     )?))
                 } else if let Some(object) = js_object.downcast_ref::<JsObject>() {
                     let object = object.clone();
                     Ok(Self::Store(object))
                 } else if js_object.is_ordinary() {
                     let mut out = BTreeMap::new();
-                    for key in js_object.own_property_keys(context)? {
+                    for key in js_object.own_property_keys(js_ctx)? {
                         let string_key = key.to_string();
-                        let value = js_object.get(key, context)?;
-                        let _ = out.insert(string_key, JsValue::try_from_js(&value, context)?);
+                        let value = js_object.get(key, js_ctx)?;
+                        let _ = out.insert(string_key, JsValue::try_from_js(&value, js_ctx)?);
                     }
                     Ok(Self::Object(out))
                 } else {
@@ -77,25 +77,20 @@ impl TryFromJs for JsValue {
 }
 
 impl TryIntoJs for JsValue {
-    fn try_into_js(&self, context: &mut Context) -> JsResult<boa_engine::JsValue> {
+    fn try_into_js(&self, js_ctx: &mut Context) -> JsResult<boa_engine::JsValue> {
         match self {
             JsValue::Undefined => Ok(boa_engine::JsValue::undefined()),
             JsValue::Null => Ok(boa_engine::JsValue::null()),
-            JsValue::Bool(b) => b.try_into_js(context),
-            JsValue::Int(i) => i.try_into_js(context),
-            JsValue::String(s) => s.try_into_js(context),
-            JsValue::Array(values) => values.try_into_js(context),
-            JsValue::Store(store_object) => store_object.try_into_js(context),
+            JsValue::Bool(b) => b.try_into_js(js_ctx),
+            JsValue::Int(i) => i.try_into_js(js_ctx),
+            JsValue::String(s) => s.try_into_js(js_ctx),
+            JsValue::Array(values) => values.try_into_js(js_ctx),
+            JsValue::Store(store_object) => store_object.try_into_js(js_ctx),
             JsValue::Object(btree_map) => {
-                let object = boa_engine::JsObject::with_null_proto();
+                let object = boa_engine::JsObject::with_object_proto(js_ctx.intrinsics());
                 for (key, value) in btree_map.iter() {
-                    let value = value.try_into_js(context)?;
-                    object.set(
-                        boa_engine::JsString::from(key.deref()),
-                        value,
-                        true,
-                        context,
-                    )?;
+                    let value = value.try_into_js(js_ctx)?;
+                    object.set(boa_engine::JsString::from(key.deref()), value, true, js_ctx)?;
                 }
                 Ok(object.into())
             }
