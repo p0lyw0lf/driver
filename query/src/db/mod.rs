@@ -1,11 +1,11 @@
 use std::collections::{BTreeSet, HashMap, hash_map};
 use std::fmt::Display;
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, atomic::AtomicUsize};
 
-use futures_lite::StreamExt;
+use async_compression::tokio::{bufread::ZstdDecoder, write::ZstdEncoder};
 use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{MutexGuard, RwLock};
 
 use crate::QueryKey;
@@ -215,55 +215,63 @@ impl Database {
     }
 }
 
-pub async fn save_to_directory(dir: &Path, db: &Database) -> crate::Result<()> {
+pub async fn save_to_directory(dir: &Path, db: Arc<Database>) -> crate::Result<()> {
     let Filenames {
         cache_filename,
         remote_filename,
         objects_dirname,
     } = get_filenames(dir);
 
-    async_fs::create_dir_all(dir).await?;
+    tokio::fs::create_dir_all(dir).await?;
 
-    // TODO: how to handle errors here? I think "abort" is probably a fine thing, would be nice to
-    // automatically clean dir on error tho...
-    tokio::try_join!(
-        async {
+    let mut js = tokio::task::JoinSet::new();
+    let _ = js.spawn({
+        let db = db.clone();
+        async move {
             let bytes = postcard::to_stdvec(&db.as_serialized().await)?;
-            async_fs::write(cache_filename, bytes).await?;
-            crate::Result::Ok(())
-        },
-        async {
-            let bytes = postcard::to_stdvec(&db.remotes)?;
-            async_fs::write(remote_filename, bytes).await?;
-            crate::Result::Ok(())
-        },
-        async {
-            // TODO: I'd like a better way of doing this. Should benchmark if linear like this is
-            // OK or if I really do need the overhead of copying the data into spawned threads to
-            // do this work.
-            db.objects.for_each(|hash, contents| {
-                let hash = hash.to_string();
-                let (prefix, rest) = hash.split_at(2);
-                let object_directory = objects_dirname.join(prefix);
-                let object_filename = object_directory.join(rest);
-                if std::fs::exists(&object_filename)? {
-                    // By the uniqueness of the hash, we're already done
-                    return Ok(());
-                }
-
-                // Otherwise, we have to write the object
-                std::fs::create_dir_all(object_directory)?;
-                // Compress with zstd so we don't have to read/write as much data to disk
-                // NOTE: this needs to be sync for zstd
-                let object_file = std::fs::File::create(&object_filename)?;
-                let mut encoder = zstd::stream::Encoder::new(object_file, 0)?.auto_finish();
-                encoder.write_all(contents)?;
-                encoder.flush()?;
-                crate::Result::Ok(())
-            })?;
+            tokio::fs::write(cache_filename, bytes).await?;
             crate::Result::Ok(())
         }
-    )?;
+    });
+    let _ = js.spawn({
+        let db = db.clone();
+        async move {
+            let bytes = postcard::to_stdvec(&db.remotes)?;
+            tokio::fs::write(remote_filename, bytes).await?;
+            crate::Result::Ok(())
+        }
+    });
+    db.objects.for_each(|hash, contents| {
+        let hash = hash.to_string();
+        let (prefix, rest) = hash.split_at(2);
+        let object_directory = objects_dirname.join(prefix);
+        let object_filename = object_directory.join(rest);
+        if std::fs::exists(&object_filename)? {
+            // By the uniqueness of the hash, we're already done
+            return Ok(());
+        }
+
+        let contents = contents.clone();
+        let _ = js.spawn(async move {
+            // Otherwise, we have to write the object
+            tokio::fs::create_dir_all(object_directory).await?;
+            // Compress with zstd so we don't have to read/write as much data to disk
+            // NOTE: this needs to be sync for zstd
+            let object_file = tokio::fs::File::create(&object_filename).await?;
+            let mut encoder = ZstdEncoder::new(object_file);
+            encoder.write_all(&contents).await?;
+            encoder.flush().await?;
+
+            Ok(())
+        });
+
+        crate::Result::Ok(())
+    })?;
+
+    js.join_all()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(())
 }
@@ -277,7 +285,7 @@ pub async fn restore_from_directory(dir: &Path) -> crate::Result<Database> {
 
     let ((cache, dep_graph), remotes, objects) = tokio::try_join!(
         async {
-            let cache_bytes = async_fs::read(cache_filename).await?;
+            let cache_bytes = tokio::fs::read(cache_filename).await?;
             let serialized_database: SerializedDatabase = postcard::from_bytes(&cache_bytes[..])?;
 
             // Everything loaded from the disk is green to start with; this will be busted by input
@@ -299,53 +307,66 @@ pub async fn restore_from_directory(dir: &Path) -> crate::Result<Database> {
             crate::Result::Ok((cache, dep_graph))
         },
         async {
-            let remote_bytes = async_fs::read(remote_filename).await?;
+            let remote_bytes = tokio::fs::read(remote_filename).await?;
             let remotes: RemoteObjects = postcard::from_bytes(&remote_bytes[..])?;
             crate::Result::Ok(remotes)
         },
         async {
-            let objects = object::Objects::default();
-            for prefix_entry in std::fs::read_dir(objects_dirname)? {
-                let prefix_entry = prefix_entry?;
+            let objects = Arc::new(object::Objects::default());
+            let mut prefix_dir = tokio::fs::read_dir(objects_dirname).await?;
+
+            // Use 1 layer of concurrency, spawning a task for each prefix
+            let mut js = tokio::task::JoinSet::new();
+
+            while let Some(prefix_entry) = prefix_dir.next_entry().await? {
                 let prefix = prefix_entry
                     .file_name()
                     .into_string()
                     .map_err(|_| crate::Error::new("couldn't convert object prefix to string"))?;
+                let objects = objects.clone();
+                let _ = js.spawn(async move {
+                    let mut object_dir = tokio::fs::read_dir(prefix_entry.path()).await?;
+                    while let Some(object_entry) = object_dir.next_entry().await? {
+                        let rest = object_entry.file_name().into_string().map_err(|_| {
+                            crate::Error::new("couldn't convert object suffix to string")
+                        })?;
 
-                let mut entries = async_fs::read_dir(prefix_entry.path()).await?;
-                while let Some(object_entry) = entries.next().await {
-                    let object_entry = object_entry?;
-                    let rest = object_entry.file_name().into_string().map_err(|_| {
-                        crate::Error::new("couldn't convert object suffix to string")
-                    })?;
+                        let hash = format!("{}{}", prefix, rest);
+                        let hash_bytes = hex::decode(&hash)?;
+                        // TODO: remove this once sha2 updates off generic-array@0.14.9
+                        #[allow(deprecated)]
+                        let hash = Hash::from_exact_iter(hash_bytes).ok_or_else(|| {
+                            crate::Error::new("couldn't convert object filename to hash")
+                        })?;
+                        // SAFETY: we are restoring from disk here
+                        let object = unsafe { Object::from_hash(hash) };
 
-                    let hash = format!("{}{}", prefix, rest);
-                    let hash_bytes = hex::decode(&hash)?;
-                    // TODO: remove this once sha2 updates off generic-array@0.14.9
-                    #[allow(deprecated)]
-                    let hash = Hash::from_exact_iter(hash_bytes).ok_or_else(|| {
-                        crate::Error::new("couldn't convert object filename to hash")
-                    })?;
-                    // SAFETY: we are restoring from disk here
-                    let object = unsafe { Object::from_hash(hash) };
+                        let file = tokio::fs::File::open(object_entry.path()).await?;
+                        let file = tokio::io::BufReader::new(file);
+                        let mut decoder = ZstdDecoder::new(file);
+                        let contents = {
+                            let mut contents = Vec::<u8>::new();
+                            decoder.read_to_end(&mut contents).await?;
+                            contents
+                        };
 
-                    // NOTE: this needs to be sync for zstd
-                    let file = std::fs::File::open(object_entry.path())?;
-                    let mut decoder = zstd::stream::Decoder::new(file)?;
-                    let contents = {
-                        let mut contents = Vec::<u8>::new();
-                        decoder.read_to_end(&mut contents)?;
-                        contents
-                    };
-
-                    // SAFETY: the data on disk should be trustworthy, no need to re-do hash
-                    unsafe {
-                        objects.store_raw(object, contents);
+                        // SAFETY: the data on disk should be trustworthy, no need to re-do hash
+                        unsafe {
+                            objects.store_raw(object, contents);
+                        }
                     }
-                }
+                    crate::Result::Ok(())
+                });
             }
 
-            crate::Result::Ok(objects)
+            js.join_all()
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()?;
+
+            crate::Result::Ok(
+                Arc::into_inner(objects).expect("all other holders should be finished"),
+            )
         },
     )?;
 

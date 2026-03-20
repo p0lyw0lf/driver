@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 use serde::Serialize;
-use tracing::trace;
 
 use crate::db::object::Object;
 use crate::query::context::Producer;
@@ -15,11 +14,8 @@ impl Producer for ReadFile {
     type Output = crate::Result<Object>;
     #[tracing::instrument(level = "debug", skip_all)]
     async fn produce(&self, ctx: &QueryContext) -> Self::Output {
-        trace!("start");
-        let content = async_fs::read(&self.0).await?;
-        trace!("read content from disk");
+        let content = tokio::fs::read(&self.0).await?;
         let object = ctx.db.objects.store(content);
-        trace!("stored object");
         Ok(object)
     }
 }

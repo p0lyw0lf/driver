@@ -237,7 +237,7 @@ impl QueryContext {
 
     pub async fn save(&self) -> crate::Result<()> {
         let cache_dir = OPTIONS.read().unwrap().cache_dir.clone();
-        crate::db::save_to_directory(&cache_dir, &self.db).await
+        crate::db::save_to_directory(&cache_dir, self.db.clone()).await
     }
 
     async fn restore(rt: Arc<tokio::runtime::Runtime>) -> crate::Result<Self> {

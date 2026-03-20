@@ -72,9 +72,9 @@ impl Objects {
         }
     }
 
-    pub fn for_each<E, F>(&self, f: F) -> Result<(), E>
+    pub fn for_each<E, F>(&self, mut f: F) -> Result<(), E>
     where
-        F: Fn(&Object, &Vec<u8>) -> Result<(), E>,
+        F: FnMut(&Object, &Vec<u8>) -> Result<(), E>,
     {
         let mut entry = self.0.begin_sync();
         while let Some(e) = entry {
