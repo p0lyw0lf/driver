@@ -149,9 +149,10 @@ impl<'a> Entry<'a> {
         };
         self.has_value = true;
 
-        // Only mark things if we're moving the revision forward
-        if self.value.color.1 < revision {
-            self.value.color = (if is_fresh { Color::Green } else { Color::Red }, revision);
+        if is_fresh {
+            self.value.color = (Color::Green, revision);
+        } else {
+            self.value.color = (Color::Red, revision);
         }
         self.has_color = true;
     }
@@ -165,10 +166,7 @@ impl<'a> Entry<'a> {
     }
 
     pub fn mark_green(&mut self, revision: usize) {
-        // Only mark things if we're moving the revision forward
-        if self.value.color.1 < revision {
-            self.value.color = (Color::Green, revision);
-        }
+        self.value.color = (Color::Green, revision);
         self.has_color = true;
     }
 
