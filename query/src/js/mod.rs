@@ -308,8 +308,9 @@ where
                 .module_loader(loader.clone())
                 .build()?;
 
-            let arg = arg.try_into_js(js_ctx)?;
-            js_ctx.register_global_property(js_str!("ARG"), arg, Attribute::READONLY)?;
+            js_ctx.register_global_class::<JsImage>()?;
+            js_ctx.register_global_class::<JsObject>()?;
+
             js_ctx.register_global_builtin_callable(
                 js_str!("print").into(),
                 1,
@@ -326,8 +327,8 @@ where
                 }),
             )?;
 
-            js_ctx.register_global_class::<JsImage>()?;
-            js_ctx.register_global_class::<JsObject>()?;
+            let arg = arg.try_into_js(js_ctx)?;
+            js_ctx.register_global_property(js_str!("ARG"), arg, Attribute::READONLY)?;
 
             let driver_module = make_driver_module(js_ctx)?;
             loader.set_builtin_module("driver".to_string(), driver_module);
@@ -744,7 +745,7 @@ impl ToHash for FileOutput {
 impl Producer for RunFile {
     type Output = crate::Result<FileOutput>;
 
-    #[tracing::instrument(level = "debug", skip_all)]
+    #[tracing::instrument(level = "debug", skip(ctx))]
     async fn produce(&self, ctx: &QueryContext) -> Self::Output {
         println!(
             "running {}({})",
@@ -762,10 +763,10 @@ impl Producer for RunFile {
         let contents = object.contents_as_bytes(ctx)?;
 
         let ctx = ctx.clone();
-        let (value, outputs) = with_js_ctx(ctx.clone(), arg, async move |js_ctx| {
+        let (value, outputs) = with_js_ctx(ctx.clone(), arg.clone(), async move |js_ctx| {
             trace!("with_js_ctx start");
             let out = with_query_context(ctx, async move || {
-                trace!("with_query_context start");
+                trace!("with_query_context start {}({})", file.display(), arg);
                 // TODO: print stack traces
                 /*
                 let catch = |err: rquickjs::Error| -> crate::Error {
@@ -808,6 +809,12 @@ impl Producer for RunFile {
 
                 let value = module.namespace(js_ctx).get(js_str!("default"), js_ctx)?;
                 let value = JsValue::try_from_js(&value, js_ctx)?;
+                trace!(
+                    "with_query_context end {}({}) = {}",
+                    file.display(),
+                    arg,
+                    value
+                );
                 Ok(value)
             })
             .await;

@@ -42,7 +42,7 @@ macro_rules! class_wrap {
         }
 
         impl boa_engine::class::Class for $class {
-            const NAME: &'static str = stringify!($ident);
+            const NAME: &'static str = stringify!($class);
             const LENGTH: usize = $length;
 
             fn data_constructor(
