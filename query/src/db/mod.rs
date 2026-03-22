@@ -1,12 +1,13 @@
 use std::collections::{BTreeSet, HashMap, hash_map};
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 use std::sync::{Arc, atomic::AtomicUsize};
 
 use async_compression::tokio::{bufread::ZstdDecoder, write::ZstdEncoder};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{MutexGuard, RwLock};
+use tokio::sync::MutexGuard;
 
 use crate::QueryKey;
 use crate::db::object::Object;
@@ -50,7 +51,7 @@ impl Database {
             // NOTE: we have to be very careful to NOT overlap the scope of the HashMap lock with
             // the scope of the bucket lock; we don't want "blocking on a bucket" to mean "blocking
             // on the table", that's the whole reason we do per-bucket things in the first place.
-            let cache = self.cache.read().await;
+            let cache = self.cache.read().unwrap();
             // Cloning the value out is safe because once a bucket is filled, we only ever modify
             // the value at that bucket, never replace it. This means there is no TOCTTOU risk.
             cache.get(key).cloned()
@@ -88,7 +89,7 @@ impl Database {
         f: impl for<'a> AsyncFnOnce(Entry<'a>) -> T,
     ) -> T {
         let (value, occupied) = {
-            let mut cache = self.cache.write().await;
+            let mut cache = self.cache.write().unwrap();
             match cache.entry(key.clone()) {
                 hash_map::Entry::Occupied(entry) => {
                     let value = entry.get().clone();
@@ -199,8 +200,9 @@ type SerializedDatabase =
     std::collections::HashMap<QueryKey, (AnyOutput, std::collections::BTreeSet<QueryKey>)>;
 
 impl Database {
+    // SAFETY: MUST be run when we have no contention on the `cache` field.
     pub(crate) async fn as_serialized(&self) -> SerializedDatabase {
-        let cache = self.cache.read().await;
+        let cache = { self.cache.read().unwrap().clone() };
         let mut out = std::collections::HashMap::with_capacity(cache.len());
 
         for (key, value) in cache.iter() {
