@@ -7,6 +7,8 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer, fmt};
 
 fn main() -> query::Result<()> {
+    let start = std::time::SystemTime::now();
+
     let console_layer = console_subscriber::Builder::default()
         .with_default_env()
         .spawn();
@@ -26,12 +28,18 @@ fn main() -> query::Result<()> {
         .arg(arg!([script] "The file to run"))
         .get_matches();
 
+    println!("parsed cli args: {:?}", start.elapsed()?);
+
     // Don't need multithreading since things will be mostly limited by I/O & javascript single
     // thread anyways. Just need concurrency.
-    let rt = Arc::new(tokio::runtime::Builder::new_current_thread().build()?);
+    let rt = Arc::new(tokio::runtime::Builder::new_multi_thread().build()?);
+
+    println!("created runtime: {:?}", start.elapsed()?);
 
     rt.block_on(async {
         let ctx = query::QueryContext::restore_or_default(rt.clone()).await;
+
+        println!("restored database: {:?}", start.elapsed()?);
 
         if let Some(filename) = matches.get_one::<String>("script")
             && let Err(e) = query::run(filename.into(), &ctx).await
@@ -39,11 +47,16 @@ fn main() -> query::Result<()> {
             eprintln!("{e}");
         }
 
+        println!("ran query: {:?}", start.elapsed()?);
+
         if matches.get_flag("print_graph") {
             println!("{}", ctx.display_dep_graph());
         }
 
-        ctx.save().await?;
+        ctx.save(rt.clone()).await?;
+
+        println!("saved database: {:?}", start.elapsed()?);
+
         Ok(())
     })
 }

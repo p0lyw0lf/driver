@@ -21,7 +21,7 @@ pub async fn run(file: PathBuf, ctx: &QueryContext) -> crate::Result<()> {
     let output = js::RunFile { file, arg: None }.query(ctx).await?;
     // TODO: eventually I'd like to have some sort of diffing algorithm to make this more
     // efficient. But for now a "wipe and re-write" is probably good enough.
-    let root = &OPTIONS.read().unwrap().output_dir;
+    let root = &OPTIONS.read().unwrap().output_path;
     if std::fs::exists(root)? {
         std::fs::remove_dir_all(root)?;
     }

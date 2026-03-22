@@ -1,19 +1,20 @@
 use std::fmt::Display;
 
 use boa_engine::{JsNativeError, JsResult, error::JsError};
-use scc::hash_map::HashMap;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
 use crate::{
     QueryContext,
+    serde::SerializedMap,
     to_hash::{Hash, ToHash},
 };
 
 /// A store for all strings that would otherwise be too large to persist to disk multiple times.
 /// Uniquely keyed by the hashes of the strings it stores.
-#[derive(Default, Debug)]
-pub struct Objects(HashMap<Object, Vec<u8>>);
+#[derive(Default, Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(PartialEq))]
+pub struct Objects(SerializedMap<Object, Vec<u8>>);
 
 /// Newtype for a hash that represents it's an object in the store.
 #[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
@@ -70,18 +71,6 @@ impl Objects {
             None => f(None),
             Some(s) => f(Some(&s.get()[..])),
         }
-    }
-
-    pub fn for_each<E, F>(&self, mut f: F) -> Result<(), E>
-    where
-        F: FnMut(&Object, &Vec<u8>) -> Result<(), E>,
-    {
-        let mut entry = self.0.begin_sync();
-        while let Some(e) = entry {
-            f(e.key(), e.get())?;
-            entry = e.next_sync();
-        }
-        Ok(())
     }
 }
 

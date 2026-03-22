@@ -239,14 +239,14 @@ impl QueryContext {
         entry.value().cloned().ok_or(())
     }
 
-    pub async fn save(&self) -> crate::Result<()> {
-        let cache_dir = OPTIONS.read().unwrap().cache_dir.clone();
-        crate::db::save_to_directory(&cache_dir, self.db.clone()).await
+    pub async fn save(&self, rt: Arc<tokio::runtime::Runtime>) -> crate::Result<()> {
+        let cache_path = OPTIONS.read().unwrap().cache_path.clone();
+        Database::save_to_file(self.db.clone(), rt, &cache_path).await
     }
 
     async fn restore(rt: Arc<tokio::runtime::Runtime>) -> crate::Result<Self> {
-        let cache_dir = OPTIONS.read().unwrap().cache_dir.clone();
-        let db = crate::db::restore_from_directory(&cache_dir).await?;
+        let cache_path = OPTIONS.read().unwrap().cache_path.clone();
+        let db = Database::restore_from_file(&cache_path).await?;
         Ok(Self {
             rt,
             parent: None,
@@ -258,7 +258,7 @@ impl QueryContext {
         match Self::restore(rt.clone()).await {
             Ok(ctx) => ctx,
             Err(e) => {
-                tracing::warn!("error restoring context: {e}");
+                eprintln!("error restoring database: {e}");
                 Self {
                     rt,
                     parent: None,
