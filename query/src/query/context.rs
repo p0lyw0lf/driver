@@ -92,7 +92,7 @@ impl QueryContext {
             .await
     }
 
-    #[tracing::instrument(level = "trace", skip(self, entry), fields(key=%key))]
+    #[tracing::instrument(level = "debug", skip(self, entry), fields(key=%key))]
     async fn query_entry<'a>(&self, key: QueryKey, entry: &mut Entry<'a>) -> AnyOutput {
         trace!("starting query");
         if let Some(parent) = &self.parent {
@@ -124,7 +124,7 @@ impl QueryContext {
         }
     }
 
-    #[tracing::instrument(level = "trace", skip(self, entry), fields(key=%key))]
+    #[tracing::instrument(level = "debug", skip(self, entry), fields(key=%key))]
     async fn update_value<'a>(
         &self,
         revision: usize,
@@ -157,18 +157,22 @@ impl QueryContext {
     }
 
     /// Ok == Green, Err == Red
-    #[tracing::instrument(level = "trace", skip(self, entry), fields(key=%key))]
+    #[tracing::instrument(level = "debug", skip(self, entry), fields(key=%key))]
     async fn try_mark_green<'a>(
         &self,
         revision: usize,
         key: QueryKey,
         entry: &mut Entry<'a>,
     ) -> Result<AnyOutput, ()> {
-        // If we have no dependencies in the graph, assume we need to run the query.
+        // If we have no dependencies in the graph, assume it's an input query.
+        // If it's an input query, and we get here, it's already been calculated this revision, so
+        // we can safely mark it as "green" (won't change color because we've already set the color
+        // for this revision).
         trace!("trying to get dependencies");
         let Some(deps) = self.db.dependencies(&key).await else {
             debug!("no dependencies found");
-            return Err(());
+            entry.mark_green(revision);
+            return entry.value().cloned().ok_or(());
         };
         trace!("got dependencies");
         for dep in deps {
