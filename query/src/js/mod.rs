@@ -18,7 +18,6 @@ use boa_engine::{
 };
 use futures_concurrency::future::FutureGroup;
 use futures_lite::{StreamExt, future};
-use scc::HashMap;
 use serde::Deserialize;
 use serde::Serialize;
 use sha2::Digest;
@@ -47,9 +46,11 @@ pub use self::{object::JsObject, value::JsValue};
 #[cfg(not(test))]
 use self::{object::JsObject, value::JsValue};
 
+pub type WriteOutputs = BTreeMap<PathBuf, Object>;
+
 struct ContextFrame {
     ctx: QueryContext,
-    output_queue: Vec<WriteOutput>,
+    outputs: WriteOutputs,
 }
 
 // SAFETY: I'm pretty sure know what I'm doing
@@ -65,10 +66,10 @@ tokio::task_local! {
 async fn with_query_context<T, F: Future<Output = crate::Result<T>>>(
     ctx: QueryContext,
     f: impl FnOnce() -> F,
-) -> crate::Result<(T, Vec<WriteOutput>)> {
+) -> crate::Result<(T, WriteOutputs)> {
     let new_frame = ContextFrame {
         ctx,
-        output_queue: vec![],
+        outputs: Default::default(),
     };
     let fut = QUERY_CONTEXT.scope(RefCell::new(new_frame), async { f().await });
     tokio::pin!(fut);
@@ -78,7 +79,7 @@ async fn with_query_context<T, F: Future<Output = crate::Result<T>>>(
         .take_value()
         .expect("no context frame to pop")
         .into_inner();
-    Ok((out, popped_frame.output_queue))
+    Ok((out, popped_frame.outputs))
 }
 
 fn get_context() -> JsResult<QueryContext> {
@@ -88,29 +89,14 @@ fn get_context() -> JsResult<QueryContext> {
 }
 
 /// SAFETY: only safe to call when running inside `with_query_context()`
-unsafe fn push_outputs(outputs: impl IntoIterator<Item = WriteOutput>) -> JsResult<()> {
+unsafe fn push_outputs(outputs: impl IntoIterator<Item = (PathBuf, Object)>) -> JsResult<()> {
     QUERY_CONTEXT.with(|ctx| -> JsResult<_> {
         ctx.try_borrow_mut()
             .map_err(JsError::from_rust)?
-            .output_queue
+            .outputs
             .extend(outputs);
         Ok(())
     })
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WriteOutput {
-    pub path: PathBuf,
-    pub object: Object,
-}
-
-impl ToHash for WriteOutput {
-    fn run_hash(&self, hasher: &mut sha2::Sha256) {
-        hasher.update(b"WriteOutput(");
-        self.path.run_hash(hasher);
-        hasher.update("b)");
-        self.object.run_hash(hasher);
-    }
 }
 
 /// An event loop using tokio to drive futures to completion.
@@ -227,8 +213,8 @@ impl JobExecutor for Executor {
 /// Custom loader that will track dependencies via ReadFile
 struct MemoizedModuleLoader {
     ctx: QueryContext,
-    builtin_module_map: HashMap<String, Module>,
-    js_module_map: HashMap<PathBuf, Module>,
+    builtin_module_map: scc::HashMap<String, Module>,
+    js_module_map: scc::HashMap<PathBuf, Module>,
 }
 
 impl MemoizedModuleLoader {
@@ -519,7 +505,7 @@ mod driver_module {
     use boa_engine::{JsError, JsNativeError, JsResult};
     use url::Url;
 
-    use super::{FileOutput, RunFile, WriteOutput, get_context, push_outputs};
+    use super::{FileOutput, RunFile, get_context, push_outputs};
 
     use crate::js::{image::JsImage, object::JsObject, path::JsPath, value::JsValue};
     use crate::query::{
@@ -707,12 +693,12 @@ mod driver_module {
                 .into());
         }
         unsafe {
-            super::push_outputs([WriteOutput {
+            super::push_outputs([(
                 path,
                 // SAFETY: being provided a StoreObject always means we've put it in the store
                 // already
-                object: contents.object.clone(),
-            }])?
+                contents.object.clone(),
+            )])?
         };
         Ok(())
     }
@@ -729,7 +715,7 @@ pub struct FileOutput {
     pub value: JsValue,
     #[cfg(not(test))]
     value: JsValue,
-    pub outputs: Vec<WriteOutput>,
+    pub outputs: WriteOutputs,
 }
 
 impl ToHash for FileOutput {

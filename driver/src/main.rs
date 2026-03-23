@@ -41,13 +41,12 @@ fn main() -> query::Result<()> {
 
         println!("restored database: {:?}", start.elapsed()?);
 
-        if let Some(filename) = matches.get_one::<String>("script")
-            && let Err(e) = query::run(filename.into(), &ctx).await
-        {
-            eprintln!("{e}");
+        if let Some(filename) = matches.get_one::<String>("script") {
+            let output = query::run(filename.into(), &ctx).await?;
+            println!("ran query: {:?}", start.elapsed()?);
+            output.write(&ctx).await?;
+            println!("wrote output: {:?}", start.elapsed()?);
         }
-
-        println!("ran query: {:?}", start.elapsed()?);
 
         if matches.get_flag("print_graph") {
             println!("{}", ctx.display_dep_graph());

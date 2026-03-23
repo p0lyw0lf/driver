@@ -10,7 +10,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::MutexGuard;
 
 use crate::QueryKey;
-use crate::query::context::AnyOutput;
+use crate::query::context::{AnyOutput, Producer};
 use crate::serde::{SerializedMap, SerializedMutex};
 use crate::to_hash::ToHash;
 
@@ -146,6 +146,20 @@ impl Database {
             has_color: false,
         })
         .await
+    }
+
+    /// Gets the value associated with an entry. MUST ONLY be used to compute diffs between past
+    /// known values and queried values; MUST NOT be relied on as an accurate "this is up to date".
+    pub(crate) async unsafe fn get_value<K>(&self, key: K) -> Option<K::Output>
+    where
+        K: Into<QueryKey> + Producer,
+    {
+        let value = { self.cache.get_sync(&key.into())?.get().clone() };
+        let value = {
+            let value = value.lock().await;
+            value.value.clone()
+        };
+        value.downcast().map(|x| *x)
     }
 }
 

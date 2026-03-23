@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 mod db;
 mod error;
@@ -15,26 +15,74 @@ use query::key::QueryKey;
 pub use error::Error;
 pub use query::context::QueryContext;
 
+use crate::db::object::Object;
+use crate::js::WriteOutputs;
+
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub async fn run(file: PathBuf, ctx: &QueryContext) -> crate::Result<()> {
-    let output = js::RunFile { file, arg: None }.query(ctx).await?;
-    // TODO: eventually I'd like to have some sort of diffing algorithm to make this more
-    // efficient. But for now a "wipe and re-write" is probably good enough.
-    let root = &OPTIONS.read().unwrap().output_path;
-    if std::fs::exists(root)? {
-        std::fs::remove_dir_all(root)?;
+pub struct Output {
+    prev: Option<WriteOutputs>,
+    curr: WriteOutputs,
+}
+
+pub async fn run(file: PathBuf, ctx: &QueryContext) -> crate::Result<Output> {
+    let key = js::RunFile { file, arg: None };
+    // SAFETY: we are the one place this is supposed to be used
+    let prev = match unsafe { ctx.db.get_value(key.clone()).await } {
+        None => None,
+        Some(Ok(v)) => Some(v.outputs),
+        Some(Err(e)) => return Err(e),
+    };
+    let output = key.query(ctx).await?;
+    Ok(Output {
+        prev,
+        curr: output.outputs,
+    })
+}
+
+impl Output {
+    pub async fn write(self, ctx: &QueryContext) -> crate::Result<()> {
+        let root = &OPTIONS.read().unwrap().output_path.clone();
+        match self.prev {
+            None => write(ctx, root, self.curr.into_iter()).await,
+            Some(prev) => {
+                write(
+                    ctx,
+                    root,
+                    self.curr.into_iter().filter(|(path, object)| {
+                        prev.get(path)
+                            .is_none_or(|prev_object| prev_object != object)
+                    }),
+                )
+                .await
+            }
+        }
     }
-    for output in output.outputs {
-        let full_path = root.join(output.path);
-        std::fs::create_dir_all(full_path.parent().unwrap())?;
-        ctx.db
+}
+
+async fn write(
+    ctx: &QueryContext,
+    root: &Path,
+    iter: impl Iterator<Item = (PathBuf, Object)>,
+) -> crate::Result<()> {
+    let mut js = tokio::task::JoinSet::new();
+    for (path, object) in iter {
+        let full_path = root.join(path);
+        // TODO: is it even worth to clone here? Feels like the concurrency gains might not be
+        // worth it in general... Should benchmark eventually
+        let contents = ctx
+            .db
             .objects
-            .with(&output.object, |obj| -> std::io::Result<_> {
-                let content = obj.expect("missing object");
-                std::fs::write(full_path.clone(), content)?;
-                Ok(())
-            })?;
+            .with(&object, |obj| Vec::from(obj.expect("missing object")));
+        js.spawn(async move {
+            tokio::fs::create_dir_all(full_path.parent().unwrap()).await?;
+            tokio::fs::write(full_path, contents).await?;
+            Ok(())
+        });
     }
+    js.join_all()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>>>()?;
     Ok(())
 }
