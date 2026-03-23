@@ -246,6 +246,7 @@ impl<T> std::ops::DerefMut for SerializedMutex<T> {
 
 #[cfg(test)]
 mod test {
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
 
     use super::SerializedMap;
@@ -254,7 +255,6 @@ mod test {
     use crate::db::object::Object;
     use crate::js::FileOutput;
     use crate::js::RunFile;
-    use crate::js::WriteOutput;
     use crate::query::context::AnyOutput;
     use crate::query::files::ListDirectory;
     use crate::query::files::ReadFile;
@@ -380,10 +380,7 @@ mod test {
                     6,
                     AnyOutput::new(crate::Result::Ok(FileOutput {
                         value: crate::js::JsValue::Null,
-                        outputs: vec![WriteOutput {
-                            path: PathBuf::from("./index.html"),
-                            object: obj(6),
-                        }],
+                        outputs: BTreeMap::from([(PathBuf::from("./index.html"), obj(6))]),
                     })),
                 );
             })
@@ -393,27 +390,10 @@ mod test {
             db
         });
 
-        let bytes = postcard::to_stdvec(&db1.dep_graph).expect("dep_graph serialization");
-        let _dep_graph2: SerializedMap<QueryKey, std::collections::BTreeSet<QueryKey>> =
-            postcard::from_bytes(&bytes[..]).expect("dep_graph deserialization");
+        let bytes = postcard::to_stdvec(&db1).expect("serialization");
+        let _db2: Database = postcard::from_bytes(&bytes[..]).expect("deserialization");
 
-        let bytes = postcard::to_stdvec(&db1.objects).expect("objects serialization");
-        let _objects2: crate::db::object::Objects =
-            postcard::from_bytes(&bytes[..]).expect("objects deserialization");
-
-        let bytes = postcard::to_stdvec(&db1.remotes).expect("remotes serialization");
-        let _remotes2: crate::db::remote::RemoteObjects =
-            postcard::from_bytes(&bytes[..]).expect("remotes deserialization");
-
-        let bytes = postcard::to_stdvec(&db1.cache).expect("cache serialization");
-        let _cache2: SerializedMap<QueryKey, std::sync::Arc<SerializedMutex<crate::db::Value>>> =
-            postcard::from_bytes(&bytes[..]).expect("cache deserialization");
-
-        // This is more of a "can it serialize at all" test tbh, don't _really_ need to test these
-        // immediately.
-        // TODO: assert_eq!(db1.cache, db2.cache);
-        // TODO: assert_eq!(db1.dep_graph, db2.dep_graph);
-        assert_eq!(db1.objects, _objects2);
-        // TODO: assert_eq!(db1.remotes, db2.remotes);
+        // This is more of a "can it serialize at all" test tbh, don't _really_ need to test
+        // for equality right away.
     }
 }

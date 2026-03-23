@@ -6,10 +6,8 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use dyn_clone::DynClone;
-use tracing::debug;
-use tracing::trace;
+use tracing::{info, trace, warn};
 
-use crate::db::Color;
 use crate::db::Database;
 use crate::db::Entry;
 use crate::options::OPTIONS;
@@ -96,41 +94,30 @@ impl QueryContext {
     async fn query_entry<'a>(&self, key: QueryKey, entry: &mut Entry<'a>) -> AnyOutput {
         trace!("starting query");
         if let Some(parent) = &self.parent {
-            tracing::info!("adding edge {parent} -> {key}");
+            info!("adding edge {parent} -> {key}");
             self.db.add_dependency(parent.clone(), key.clone()).await;
             trace!("added");
         }
 
         let revision = self.db.revision.load(Ordering::SeqCst);
+        let verified_at = entry.revision().map(|rev| rev.verified_at);
 
-        let Some((_, rev)) = entry.color() else {
-            debug!("not found in colors db");
-            return self.update_value(revision, key, entry).await;
+        let is_changed = match verified_at {
+            // If we've never seen it before, it's always "changed"
+            None => true,
+            // If we have seen it before, check it again
+            Some(verified_at) => {
+                self.maybe_changed_after(verified_at, key.clone(), revision, entry)
+                    .await
+            }
         };
-        if key.is_input() && rev < revision {
-            debug!("key is input and revision outdated");
-            return self.update_value(revision, key, entry).await;
+        if !is_changed {
+            return entry
+                .value()
+                .unwrap_or_else(|| panic!("Verified query {key} missing value in cache"))
+                .clone();
         }
 
-        match self.try_mark_green(revision, key.clone(), entry).await {
-            Ok(value) => {
-                debug!("marked green after trying");
-                value
-            }
-            Err(()) => {
-                debug!("marked red after trying");
-                self.update_value(revision, key, entry).await
-            }
-        }
-    }
-
-    #[tracing::instrument(level = "debug", skip(self, entry), fields(key=%key))]
-    async fn update_value<'a>(
-        &self,
-        revision: usize,
-        key: QueryKey,
-        entry: &mut Entry<'a>,
-    ) -> AnyOutput {
         trace!("removing dependencies");
         // We're about to run the key again, so remove any dependencies it once had
         self.db.remove_all_dependencies(&key).await;
@@ -156,87 +143,55 @@ impl QueryContext {
         value
     }
 
-    /// Ok == Green, Err == Red
     #[tracing::instrument(level = "debug", skip(self, entry), fields(key=%key))]
-    async fn try_mark_green<'a>(
+    async fn maybe_changed_after<'a>(
         &self,
-        revision: usize,
+        verified_at: usize,
         key: QueryKey,
+        current_revision: usize,
         entry: &mut Entry<'a>,
-    ) -> Result<AnyOutput, ()> {
-        // If we have no dependencies in the graph, assume it's an input query.
-        // If it's an input query, and we get here, it's already been calculated this revision, so
-        // we can safely mark it as "green" (won't change color because we've already set the color
-        // for this revision).
+    ) -> bool {
+        let Some(rev) = entry.revision() else {
+            trace!("no revision, need to calculate");
+            return true;
+        };
+
+        if key.is_input() || rev.verified_at >= current_revision {
+            trace!("checking condition: {} > {}?", rev.changed_at, verified_at);
+            return rev.changed_at > verified_at;
+        }
+
         trace!("trying to get dependencies");
         let Some(deps) = self.db.dependencies(&key).await else {
-            debug!("no dependencies found");
-            entry.mark_green(revision);
-            return entry.value().cloned().ok_or(());
+            warn!("UNEXPECTED: no dependencies found");
+            // Input queries should be handled the above case
+            return true;
         };
+
         trace!("got dependencies");
         for dep in deps {
-            trace!("trying to get color for {dep}");
-            let color = self.db.get_color(&dep).await;
-            trace!("got color for {dep}");
-            match color {
-                // Dependency is up-to-date in this revision, is ok
-                Some((Color::Green, rev)) if revision == rev => {
-                    debug!("dependency {dep} green the first time");
-                    continue;
-                }
-                // Out-of-date dependency, we must also be out-of-date
-                Some((Color::Red, _)) => {
-                    debug!("dependency {dep} was outdated");
-                    return Err(());
-                }
-                _ => {
-                    trace!("locking {dep}");
-                    self.db
-                        .with_entry(dep.clone(), async |mut dep_entry| {
-                            trace!("locked {dep}");
-                            let dep_entry = &mut dep_entry;
-                            let needs_recalculation = if dep.is_input() {
-                                // Inputs always need to be recalculated.
-                                true
-                            } else {
-                                // Dependencies that themselves have out-of-date dependencies need to be
-                                // recalculated.
-                                trace!("trying to mark dependency green {dep}");
-                                Box::pin(self.try_mark_green(revision, dep.clone(), dep_entry))
-                                    .await
-                                    .is_err()
-                            };
-                            if needs_recalculation {
-                                trace!("need to recalculate dependency {dep}");
-                                let _ = Box::pin(self.query_entry(dep.clone(), dep_entry)).await;
-                                // Because we just ran the query, we can be sure the revision is
-                                // up-to-date.
-                                match dep_entry.color() {
-                                    Some((Color::Green, _)) => {
-                                        debug!("dependency {dep} green the second time");
-                                        Ok(())
-                                    }
-                                    Some((Color::Red, _)) => {
-                                        debug!("dependency {dep} was still outdated");
-                                        Err(())
-                                    }
-                                    None => unreachable!("we just ran the query"),
-                                }
-                            } else {
-                                debug!("successfully marked dependency {dep} green");
-                                Ok(())
-                            }
-                        })
-                        .await?;
-                    trace!("unlocked {dep}");
-                }
+            trace!("locking {dep}");
+            let dep_changed = self
+                .db
+                .with_entry(dep.clone(), async |mut dep_entry| {
+                    trace!("locked {dep}");
+                    Box::pin(self.maybe_changed_after(
+                        verified_at,
+                        dep,
+                        current_revision,
+                        &mut dep_entry,
+                    ))
+                    .await
+                })
+                .await;
+            if dep_changed {
+                return true;
             }
         }
 
         // If we marked all dependencies as green, mark this node green too.
-        entry.mark_green(revision);
-        entry.value().cloned().ok_or(())
+        entry.mark_verified(current_revision);
+        rev.changed_at > verified_at
     }
 
     pub async fn save(&self, rt: Arc<tokio::runtime::Runtime>) -> crate::Result<()> {
@@ -244,27 +199,22 @@ impl QueryContext {
         Database::save_to_file(self.db.clone(), rt, &cache_path).await
     }
 
-    async fn restore(rt: Arc<tokio::runtime::Runtime>) -> crate::Result<Self> {
+    pub async fn restore_or_default(rt: Arc<tokio::runtime::Runtime>) -> Self {
         let cache_path = OPTIONS.read().unwrap().cache_path.clone();
-        let db = Database::restore_from_file(&cache_path).await?;
-        Ok(Self {
+        let db = Database::restore_from_file(&cache_path)
+            .await
+            .unwrap_or_else(|err| {
+                eprintln!("error restoring database: {err}");
+                Default::default()
+            });
+
+        let out = Self {
             rt,
             parent: None,
             db: Arc::new(db),
-        })
-    }
-
-    pub async fn restore_or_default(rt: Arc<tokio::runtime::Runtime>) -> Self {
-        match Self::restore(rt.clone()).await {
-            Ok(ctx) => ctx,
-            Err(e) => {
-                eprintln!("error restoring database: {e}");
-                Self {
-                    rt,
-                    parent: None,
-                    db: Default::default(),
-                }
-            }
-        }
+        };
+        // Bust cache immediately, since it was just read from disk
+        out.new_revision();
+        out
     }
 }

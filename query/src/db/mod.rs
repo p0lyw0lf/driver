@@ -4,6 +4,7 @@ use std::path::Path;
 use std::sync::{Arc, atomic::AtomicUsize};
 
 use async_compression::tokio::{bufread::ZstdDecoder, write::ZstdEncoder};
+use pub_if::pub_if;
 use scc::hash_map;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -17,44 +18,25 @@ use crate::to_hash::ToHash;
 pub mod object;
 pub mod remote;
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
-pub enum Color {
-    Green,
-    Red,
-}
-
-impl Color {
-    /// neede for serde because it sucks
-    fn green() -> Self {
-        Color::Green
-    }
+/// Tracks the range [changed_at, verified_at], to confirm the value is corresponds to is the same
+/// for that entire range of revisions.
+#[derive(Copy, Clone, Default, Debug, Serialize, Deserialize)]
+pub struct Revision {
+    /// The revision at which we've executed a query and noticed that the value has changed.
+    pub(crate) changed_at: usize,
+    /// The revision at which we've verified a value has not changed since changed_at.
+    pub(crate) verified_at: usize,
 }
 
 /// Represents the current known state of a query. It is bundled together because it should all be
 /// operated on at once.
-#[cfg(not(test))]
+#[pub_if(test)]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Value {
     value: AnyOutput,
     #[serde(skip)]
-    #[serde(default = "Color::green")]
-    color: Color,
-    #[serde(skip)]
     #[serde(default)]
-    revision: usize,
-}
-
-// TODO: I should really use pub_if...
-#[cfg(test)]
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Value {
-    pub value: AnyOutput,
-    #[serde(skip)]
-    #[serde(default = "Color::green")]
-    pub color: Color,
-    #[serde(skip)]
-    #[serde(default)]
-    pub revision: usize,
+    revision: Revision,
 }
 
 #[derive(Default, Debug, Serialize, Deserialize)]
@@ -62,33 +44,14 @@ pub struct Database {
     #[serde(skip)]
     pub(crate) revision: AtomicUsize,
 
-    #[cfg(not(test))]
     cache: SerializedMap<QueryKey, Arc<SerializedMutex<Value>>>,
-    #[cfg(not(test))]
     dep_graph: SerializedMap<QueryKey, BTreeSet<QueryKey>>,
-    #[cfg(test)]
-    pub cache: SerializedMap<QueryKey, Arc<SerializedMutex<Value>>>,
-    #[cfg(test)]
-    pub dep_graph: SerializedMap<QueryKey, BTreeSet<QueryKey>>,
 
     pub objects: object::Objects,
     pub remotes: remote::RemoteObjects,
 }
 
 impl Database {
-    pub async fn get_color(&self, key: &QueryKey) -> Option<(Color, usize)> {
-        let value = {
-            // NOTE: we have to be very careful to NOT overlap the scope of the HashMap lock with
-            // the scope of the bucket lock; we don't want "blocking on a bucket" to mean "blocking
-            // on the table", that's the whole reason we do per-bucket things in the first place.
-            // Cloning the value out is safe because once a bucket is filled, we only ever modify
-            // the value at that bucket, never replace it. This means there is no TOCTTOU risk.
-            self.cache.get_sync(key).map(|entry| entry.get().clone())
-        }?;
-        let value = value.lock().await;
-        Some((value.color, value.revision))
-    }
-
     pub(crate) async fn add_dependency(&self, parent: QueryKey, child: QueryKey) {
         let entry = self.dep_graph.entry_async(parent).await;
         let mut child = BTreeSet::from([child]);
@@ -124,11 +87,10 @@ impl Database {
                     (value, true)
                 }
                 hash_map::Entry::Vacant(entry) => {
+                    // PLACEHOLDER, MEANS NOTHING, MUST NOT BE USED
                     let placeholder_value = Value {
-                        // PLACEHOLDER
                         value: AnyOutput::new(()),
-                        color: Color::Red,
-                        revision: 0,
+                        revision: Revision::default(),
                     };
                     let entry =
                         entry.insert_entry(Arc::new(SerializedMutex::new(placeholder_value)));
@@ -143,7 +105,6 @@ impl Database {
             key,
             value,
             has_value: occupied,
-            has_color: false,
         })
         .await
     }
@@ -167,16 +128,12 @@ pub struct Entry<'a> {
     key: QueryKey,
     value: MutexGuard<'a, Value>,
     has_value: bool,
-    has_color: bool,
 }
 
 impl<'a> Drop for Entry<'a> {
     fn drop(&mut self) {
         if !self.has_value {
             panic!("dropped entry for {} without inserting value", self.key);
-        }
-        if !self.has_color {
-            panic!("dropped entry for {} without updating color", self.key);
         }
     }
 }
@@ -185,37 +142,32 @@ impl<'a> Entry<'a> {
     pub fn insert(&mut self, revision: usize, value: AnyOutput) {
         let hash = value.to_hash();
         let old = std::mem::replace(&mut self.value.value, value);
-        let is_fresh = if self.has_value {
-            old.to_hash() == hash
-        } else {
-            // If there was no previous value, new one always fresh
-            true
-        };
         self.has_value = true;
 
-        // Only mark things if we're moving the revision forward
-        if self.value.revision < revision {
-            self.value.color = if is_fresh { Color::Green } else { Color::Red };
-            self.value.revision = revision;
+        let did_change = if self.has_value {
+            old.to_hash() != hash
+        } else {
+            // If there was no previous value, it's always a change
+            true
+        };
+        if did_change {
+            // Only move the revision forward
+            self.value.revision.changed_at =
+                std::cmp::max(self.value.revision.changed_at, revision);
         }
-        self.has_color = true;
     }
 
-    pub fn color(&self) -> Option<(Color, usize)> {
+    pub fn revision(&self) -> Option<Revision> {
         if self.has_value {
-            Some((self.value.color, self.value.revision))
+            Some(self.value.revision)
         } else {
             None
         }
     }
 
-    pub fn mark_green(&mut self, revision: usize) {
-        // Only mark things if we're moving the revision forward
-        if self.value.revision < revision {
-            self.value.color = Color::Green;
-            self.value.revision = revision;
-        }
-        self.has_color = true;
+    pub fn mark_verified(&mut self, revision: usize) {
+        // Only move the revision forward
+        self.value.revision.verified_at = std::cmp::max(self.value.revision.verified_at, revision);
     }
 
     pub fn value(&self) -> Option<&'_ AnyOutput> {
@@ -254,10 +206,7 @@ impl Database {
             decoder.read_to_end(&mut bytes).await?;
             bytes
         };
-        let mut db: Database = postcard::from_bytes(&bytes)?;
-
-        // Bust cache immediately. This works because the revisions always get restored as 0.
-        db.revision = AtomicUsize::new(1);
+        let db: Database = postcard::from_bytes(&bytes)?;
         Ok(db)
     }
 
