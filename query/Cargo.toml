@@ -30,15 +30,11 @@ zune-imageprocs = "0.5"
 # This is necessary until I upstream my changes
 [dependencies.boa_engine]
 version = "0.21"
-git = "https://github.com/p0lyw0lf/boa.git"
-tag = "v0.21"
 default-features = false
 features = ["either", "temporal"]
 
 [dependencies.boa_gc]
 version = "0.21"
-git = "https://github.com/p0lyw0lf/boa.git"
-tag = "v0.21"
 features = ["boa_string", "either"]
 
 [dependencies.reqwest]
