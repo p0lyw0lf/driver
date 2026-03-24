@@ -44,17 +44,39 @@ impl Output {
     pub async fn write(self, ctx: &QueryContext) -> crate::Result<()> {
         let root = &OPTIONS.read().unwrap().output_path.clone();
         match self.prev {
-            None => write(ctx, root, self.curr.into_iter()).await,
+            None => {
+                // Ignore errors removing directory; it's just a safety measure
+                tokio::fs::remove_dir_all(root).await.unwrap_or_default();
+                write(ctx, root, self.curr.iter()).await
+            }
             Some(prev) => {
-                write(
-                    ctx,
-                    root,
-                    self.curr.into_iter().filter(|(path, object)| {
-                        prev.get(path)
-                            .is_none_or(|prev_object| prev_object != object)
-                    }),
-                )
-                .await
+                let ((), ()) = tokio::try_join!(
+                    async {
+                        write(
+                            ctx,
+                            root,
+                            self.curr.iter().filter(|(path, object)| {
+                                prev.get(*path)
+                                    .is_none_or(|prev_object| &prev_object != object)
+                            }),
+                        )
+                        .await
+                    },
+                    async {
+                        remove(
+                            root,
+                            prev.iter().filter_map(|(path, _)| {
+                                if self.curr.contains_key(path) {
+                                    None
+                                } else {
+                                    Some(path)
+                                }
+                            }),
+                        )
+                        .await
+                    }
+                )?;
+                Ok(())
             }
         }
     }
@@ -63,7 +85,7 @@ impl Output {
 async fn write(
     ctx: &QueryContext,
     root: &Path,
-    iter: impl Iterator<Item = (PathBuf, Object)>,
+    iter: impl Iterator<Item = (&PathBuf, &Object)>,
 ) -> crate::Result<()> {
     let mut js = tokio::task::JoinSet::new();
     for (path, object) in iter {
@@ -73,10 +95,27 @@ async fn write(
         let contents = ctx
             .db
             .objects
-            .with(&object, |obj| Vec::from(obj.expect("missing object")));
+            .with(object, |obj| Vec::from(obj.expect("missing object")));
         js.spawn(async move {
             tokio::fs::create_dir_all(full_path.parent().unwrap()).await?;
             tokio::fs::write(full_path, contents).await?;
+            Ok(())
+        });
+    }
+    js.join_all()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>>>()?;
+    Ok(())
+}
+
+async fn remove(root: &Path, iter: impl Iterator<Item = &PathBuf>) -> crate::Result<()> {
+    let mut js = tokio::task::JoinSet::new();
+    for path in iter {
+        let full_path = root.join(path);
+        // TODO: should we be removing empty directories too? How?
+        js.spawn(async move {
+            tokio::fs::remove_file(&full_path).await?;
             Ok(())
         });
     }
