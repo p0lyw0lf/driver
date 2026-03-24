@@ -156,7 +156,15 @@ impl QueryContext {
             return true;
         };
 
-        if key.is_input() || rev.verified_at >= current_revision {
+        if key.is_input() {
+            trace!(
+                "checking input: {} > {}?",
+                current_revision, rev.verified_at
+            );
+            return current_revision > rev.verified_at;
+        }
+
+        if rev.verified_at >= current_revision {
             trace!("checking condition: {} > {}?", rev.changed_at, verified_at);
             return rev.changed_at > verified_at;
         }
@@ -174,20 +182,36 @@ impl QueryContext {
         trace!("got dependencies");
         for dep in deps {
             trace!("locking {dep}");
-            let dep_changed = self
+            if self
                 .db
                 .with_entry(dep.clone(), async |mut dep_entry| {
                     trace!("locked {dep}");
-                    Box::pin(self.maybe_changed_after(
+                    let dep_maybe_changed = Box::pin(self.maybe_changed_after(
                         verified_at,
-                        dep,
+                        dep.clone(),
                         current_revision,
                         &mut dep_entry,
                     ))
-                    .await
+                    .await;
+                    if !dep_maybe_changed {
+                        trace!("dep {dep} definitely hasn't changed");
+                        return false;
+                    }
+
+                    trace!("pre-querying dep {dep}");
+                    let _ = Box::pin(self.query_entry(dep, &mut dep_entry)).await;
+
+                    let dep_rev = dep_entry
+                        .revision()
+                        .expect("revision must be set after query");
+                    trace!(
+                        "checking dep condition: {} > {}?",
+                        dep_rev.changed_at, verified_at
+                    );
+                    dep_rev.changed_at > verified_at
                 })
-                .await;
-            if dep_changed {
+                .await
+            {
                 return true;
             }
         }
