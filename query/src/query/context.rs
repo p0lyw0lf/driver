@@ -102,7 +102,7 @@ impl QueryContext {
         let revision = self.db.revision.load(Ordering::SeqCst);
         let verified_at = entry.revision().map(|rev| rev.verified_at);
 
-        let is_changed = match verified_at {
+        let maybe_changed = match verified_at {
             // If we've never seen it before, it's always "changed"
             None => true,
             // If we have seen it before, check it again
@@ -111,7 +111,7 @@ impl QueryContext {
                     .await
             }
         };
-        if !is_changed {
+        if !maybe_changed {
             return entry
                 .value()
                 .unwrap_or_else(|| panic!("Verified query {key} missing value in cache"))
