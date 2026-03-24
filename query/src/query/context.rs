@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use dyn_clone::DynClone;
-use tracing::{info, trace, warn};
+use tracing::{info, trace};
 
 use crate::db::Database;
 use crate::db::Entry;
@@ -163,9 +163,12 @@ impl QueryContext {
 
         trace!("trying to get dependencies");
         let Some(deps) = self.db.dependencies(&key).await else {
-            warn!("UNEXPECTED: no dependencies found");
-            // Input queries should be handled the above case
-            return true;
+            trace!("no dependencies");
+            // Input queries should be handled the above case; these sorts of queries with no
+            // dependencies are deterministic ones entirely determined by their key, so we can mark
+            // them verified early
+            entry.mark_verified(current_revision);
+            return false;
         };
 
         trace!("got dependencies");
