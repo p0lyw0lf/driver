@@ -161,10 +161,10 @@ impl QueryContext {
 
         if key.is_input() {
             trace!(
-                "checking input: {} > {}?",
-                current_revision, rev.verified_at
+                "checking input: ({} > {}) || ({} > {})?",
+                current_revision, rev.verified_at, rev.changed_at, verified_at
             );
-            return current_revision > rev.verified_at;
+            return current_revision > rev.verified_at || rev.changed_at > verified_at;
         }
 
         if rev.verified_at >= current_revision {
