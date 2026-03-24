@@ -17,7 +17,7 @@ use boa_engine::{
     value::{TryFromJs, TryIntoJs},
 };
 use futures_concurrency::future::FutureGroup;
-use futures_lite::{StreamExt, future};
+use futures_lite::StreamExt;
 use serde::Deserialize;
 use serde::Serialize;
 use sha2::Digest;
@@ -200,7 +200,11 @@ impl JobExecutor for Executor {
                 return Ok(());
             }
 
-            if let Some(Err(err)) = future::poll_once(group.next()).await.flatten() {
+            // For perf, it really helps if we await these futures one at a time instead of
+            // poll_once-ing them. Also, it really does improve perf to keep them in a group
+            // instead of awaiting one at a time. Also also, it's an incorrect strategy to poll all
+            // the pending futures at once.
+            if let Some(Err(err)) = group.next().await {
                 eprintln!("Uncaught {err}");
             }
 
@@ -281,7 +285,7 @@ where
 {
     let rt = ctx.rt.clone();
     let (send, recv) = oneshot::channel();
-    std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         send.send((|| -> crate::Result<T> {
             // I wish I could only have one runtime, but unfortunately not, the ctx stuff just doesn't work
             // out... Startup costs are a real thing we have to pay unfortunately. Hopefully multithreaded
@@ -322,9 +326,13 @@ where
             let local_set = &mut tokio::task::LocalSet::default();
             rt.block_on(async { local_set.run_until(async { f(js_ctx).await }).await })
         })())
+        .unwrap_or_else(|_| panic!("failed to send"))
     });
+    // It's very important we drop this handle here actually! Improves performance by a lot to
+    // detatch the thread, for some reason.
+    drop(handle);
 
-    recv.await.expect("channel error")
+    recv.await.expect("failed to receive")
 }
 
 fn make_driver_module(js_ctx: &mut Context) -> JsResult<Module> {
