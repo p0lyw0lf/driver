@@ -150,6 +150,8 @@ impl<'a> Entry<'a> {
             // If there was no previous value, it's always a change
             true
         };
+
+        self.mark_verified(revision);
         if did_change {
             // Only move the revision forward
             self.value.revision.changed_at =

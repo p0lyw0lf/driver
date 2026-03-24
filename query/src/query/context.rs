@@ -104,7 +104,10 @@ impl QueryContext {
 
         let maybe_changed = match verified_at {
             // If we've never seen it before, it's always "changed"
-            None => true,
+            None => {
+                trace!("never seen this key in my life");
+                true
+            }
             // If we have seen it before, check it again
             Some(verified_at) => {
                 self.maybe_changed_after(verified_at, key.clone(), revision, entry)
