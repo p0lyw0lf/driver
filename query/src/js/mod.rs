@@ -34,8 +34,8 @@ use crate::{
     to_hash::ToHash,
 };
 
-mod class_wrap;
 mod image;
+mod macros;
 mod object;
 mod path;
 mod value;
@@ -336,150 +336,10 @@ where
 }
 
 fn make_driver_module(js_ctx: &mut Context) -> JsResult<Module> {
-    // From https://danielkeep.github.io/tlborm/book/blk-counting.html#slice-length
-    macro_rules! replace_expr {
-        ($i:ident, $sub:expr) => {
-            $sub
-        };
-    }
-    macro_rules! count_args {
-        ($($arg:ident),*) => { <[()]>::len(&[$(replace_expr!($arg, ())),*]) };
-    }
-
-    macro_rules! fn_body {
-        ($fn:ident ($(
-            $arg:ident : $ty:ty
-        ),* $(,
-            [$ctx:ident]
-        )?) -> $ret:ty) => {
-            |_this, _args, js_ctx| {
-                let _i = 0;
-                $(
-                    let $arg: $ty = boa_engine::value::TryFromJs::try_from_js(
-                        boa_engine::JsArgs::get_or_undefined(_args, _i),
-                        js_ctx,
-                    )?;
-                    let _i = _i + 1;
-                )*
-                let out = {
-                    $fn($($arg),* $(, {
-                        let $ctx = js_ctx;
-                        $ctx
-                    })?)
-                }?;
-                boa_engine::value::TryIntoJs::try_into_js(&out, js_ctx)
-            }
-        }
-    }
-    macro_rules! async_fn_body {
-        ($fn:ident ($(
-            $arg:ident : $ty:ty
-        ),* $(,
-            [$ctx:ident]
-        )?) -> $ret:ty) => {
-            async |_this, _args, js_ctx| {
-                let _i = 0;
-                $(
-                    let $arg: $ty = boa_engine::value::TryFromJs::try_from_js(
-                        boa_engine::JsArgs::get_or_undefined(_args, _i),
-                        &mut *js_ctx.borrow_mut(),
-                    )?;
-                    let _i = _i + 1;
-                )*
-                let out = {
-                    $fn($($arg),* $(, {
-                        let $ctx = js_ctx;
-                        $ctx
-                    })?)
-                }.await?;
-                boa_engine::value::TryIntoJs::try_into_js(&out, &mut *js_ctx.borrow_mut())
-            }
-        };
-    }
-
-    macro_rules! fn_obj {
-        ($fn:ident ($(
-            $arg:ident : $ty:ty
-        ),* $(,
-            [$ctx:ident : &mut Context]
-        )? $(,)?) -> $ret:ty) => {
-            boa_engine::object::FunctionObjectBuilder::new(
-                js_ctx.realm(),
-                boa_engine::native_function::NativeFunction::from_fn_ptr(
-                    fn_body!($fn($($arg: $ty),* $(, [$ctx])?) -> $ret)
-                ),
-            )
-            .length(count_args!($($arg),*))
-            .name(stringify!($fn))
-            .build()
-        };
-    }
-    macro_rules! async_fn_obj {
-        ($fn:ident ($(
-            $arg:ident : $ty:ty
-        ),* $(,
-            [$ctx:ident : &mut Context]
-        )? $(,)?) -> $ret:ty) => {
-            boa_engine::object::FunctionObjectBuilder::new(
-                js_ctx.realm(),
-                boa_engine::native_function::NativeFunction::from_async_fn(
-                    async_fn_body!($fn($($arg: $ty),* $(, [$ctx])?) -> $ret)
-                ),
-            )
-            .length(count_args!($($arg),*))
-            .name(stringify!($fn))
-            .build()
-        };
-    }
-    macro_rules! module {
-        ($(
-            $(fn $fn:ident ($($tts:tt)*) -> JsResult<$ret:ty>)?
-            $(async fn $async_fn:ident ($($async_tts:tt)*) -> JsResult<$async_ret:ty>)?
-            ;
-        )*) => {
-            {
-            $(
-                $(let $fn = fn_obj!($fn($($tts)*) -> $ret);)?
-                $(let $async_fn = async_fn_obj!($async_fn($($async_tts)*) -> $async_ret);)?
-            )*
-            boa_engine::module::Module::synthetic(
-                &[$(
-                    $(boa_engine::js_string!(stringify!($fn)),)?
-                    $(boa_engine::js_string!(stringify!($async_fn)),)?
-                )*],
-                boa_engine::module::SyntheticModuleInitializer::from_copy_closure_with_captures(
-                    |module, fns, _| {
-                        let ($(
-                                $($fn)?
-                                $($async_fn)?
-                            ),*) = fns;
-                        $(
-                            $(module.set_export(
-                                &boa_engine::js_string!(stringify!($fn)),
-                                $fn.clone().into(),
-                            )?;)?
-                            $(module.set_export(
-                                &boa_engine::js_string!(stringify!($async_fn)),
-                                $async_fn.clone().into(),
-                            )?;)?
-                        )*
-                        Ok(())
-                    },
-                    ($(
-                        $($fn)?
-                        $($async_fn)?
-                    ),*),
-                ),
-                None,
-                None,
-                js_ctx,
-            )
-            }
-        }
-    }
-
+    use crate::js::macros::module;
     use driver_module::*;
     Ok(module!(
+        use js_ctx;
         fn store(value: String) -> JsResult<JsObject>;
 
         async fn read_file(path: JsPath) -> JsResult<JsObject>;

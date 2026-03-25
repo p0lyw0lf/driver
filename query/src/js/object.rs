@@ -39,7 +39,7 @@ impl JsObject {
     }
 }
 
-crate::class_wrap!(class JsObject {
+crate::js::macros::class_wrap!(class JsObject {
     length 0,
     methods {
         data: (0) |this: GcRef<'_, JsObject>, _args, js_ctx| {

@@ -95,7 +95,7 @@ pub struct JsImage {
     pub image: ImageObject,
 }
 
-crate::class_wrap!(class JsImage {
+crate::js::macros::class_wrap!(class JsImage {
     length 0,
     methods {
         object: (0) |this: GcRef<'_, JsImage>, _args, _js_ctx| -> JsResult<_> {
