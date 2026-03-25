@@ -32,7 +32,12 @@ fn main() -> query::Result<()> {
 
     // Don't need multithreading since things will be mostly limited by I/O & javascript single
     // thread anyways. Just need concurrency.
-    let rt = Arc::new(tokio::runtime::Builder::new_multi_thread().build()?);
+    let rt = Arc::new(
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_io()
+            .enable_time()
+            .build()?,
+    );
 
     println!("created runtime: {:?}", start.elapsed()?);
 

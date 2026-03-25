@@ -190,12 +190,12 @@ impl Producer for ConvertImage {
                 let (dest_width, dest_height) = match fit {
                     ImageFit::Fill => (target_width, target_height),
                     ImageFit::Contain => (
-                        std::cmp::min(source_width, source_width * source_height / target_height),
-                        std::cmp::min(source_height, source_height * source_width / target_width),
+                        std::cmp::min(target_width, source_width * target_height / source_height),
+                        std::cmp::min(target_height, source_height * target_width / source_width),
                     ),
                     ImageFit::Cover => (
-                        std::cmp::max(source_width, source_width * source_height / target_height),
-                        std::cmp::max(source_height, source_height * source_width / target_width),
+                        std::cmp::max(target_width, source_width * target_height / source_height),
+                        std::cmp::max(target_height, source_height * target_width / source_width),
                     ),
                 };
 

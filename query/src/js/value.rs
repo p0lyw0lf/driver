@@ -161,22 +161,13 @@ impl std::fmt::Display for JsValue {
             JsValue::Store(store_object) => write!(f, "objects/{}", store_object.object),
             JsValue::Object(btree_map) => {
                 write!(f, "{{")?;
-                const ALLOWED_KEYS: &[&str] = &["slug"];
-                let mut i = 0;
-                for k in ALLOWED_KEYS {
-                    if let Some(v) = btree_map.get(*k) {
-                        if i > 0 {
-                            write!(f, ", ")?;
-                        }
-                        write!(f, "\"{}\": {}", k, v)?;
-                        i += 1;
+                for (i, (k, v)) in btree_map.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
                     }
+                    write!(f, "\"{}\": {}", k, v)?;
                 }
-                if btree_map.len() > i {
-                    write!(f, ", ...}}")?;
-                } else {
-                    write!(f, "}}")?;
-                }
+                write!(f, "}}")?;
                 Ok(())
             }
         }
