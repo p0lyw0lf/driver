@@ -30,19 +30,8 @@ fn main() -> query::Result<()> {
 
     println!("parsed cli args: {:?}", start.elapsed()?);
 
-    // Don't need multithreading since things will be mostly limited by I/O & javascript single
-    // thread anyways. Just need concurrency.
-    let rt = Arc::new(
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_io()
-            .enable_time()
-            .build()?,
-    );
-
-    println!("created runtime: {:?}", start.elapsed()?);
-
     rt.block_on(async {
-        let ctx = query::QueryContext::restore_or_default(rt.clone()).await;
+        let ctx = query::QueryContext::restore_or_default().await;
 
         println!("restored database: {:?}", start.elapsed()?);
 
@@ -57,7 +46,7 @@ fn main() -> query::Result<()> {
             println!("{}", ctx.display_dep_graph());
         }
 
-        ctx.save(rt.clone()).await?;
+        ctx.save().await?;
 
         println!("saved database: {:?}", start.elapsed()?);
 

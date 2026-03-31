@@ -4,10 +4,16 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-async-compression = { version = "0.4", features = ["zstd"] }
+async-channel = "2.3"
+async-executor = "1.14"
+async-fs = "2.2"
+async-task = "4.7"
+boa_engine = { version = "0.21", default-features = false, features = ["temporal"] }
+boa_gc = { version = "0.21", features = ["boa_string"] }
 comrak = { version = "0.50", features = ["syntect"] }
 dyn-clone = "1.0"
 either = "1.15"
+flume = "0.12"
 futures-concurrency = "7.7"
 futures-lite = "2.6"
 generic-array = { version = "0.14", features = ["serde"] }
@@ -15,36 +21,18 @@ hex = "0.4"
 ignore = "0.4"
 jiff = { version = "0.2", features = ["serde"] }
 minify-html = "0.18"
+num_cpus = "1.17"
 relative-path = "2.0"
+oneshot = "0.2"
 postcard = { version = "1.1", features = ["use-std"] }
 pub_if = "0.1.0"
 scc = "3.6"
 serde = { version = "1.0", features = ["derive"] }
 sha2 = "0.10"
-tokio = { version = "1.49", features = ["full"] }
 tracing = "0.1"
 url = { version = "2.5", features = ["serde"] }
 zune-core = "0.5"
 zune-imageprocs = "0.5"
-
-# This is necessary until I upstream my changes
-[dependencies.boa_engine]
-version = "0.21"
-default-features = false
-features = ["either", "temporal"]
-
-[dependencies.boa_gc]
-version = "0.21"
-features = ["boa_string", "either"]
-
-[dependencies.reqwest]
-version = "0.13"
-features = [
-  "blocking",
-  "gzip",
-  "http2",
-  "zstd",
-]
 
 [dependencies.zune-image]
 version = "0.5"

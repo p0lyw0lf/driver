@@ -3,12 +3,9 @@ use std::fmt::Display;
 use std::path::Path;
 use std::sync::{Arc, atomic::AtomicUsize};
 
-use async_compression::tokio::{bufread::ZstdDecoder, write::ZstdEncoder};
 use pub_if::pub_if;
 use scc::hash_map;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::MutexGuard;
 
 use crate::QueryKey;
 use crate::query::context::{AnyOutput, Producer};
@@ -182,11 +179,7 @@ impl<'a> Entry<'a> {
 }
 
 impl Database {
-    pub async fn save_to_file(
-        db: Arc<Database>,
-        rt: Arc<tokio::runtime::Runtime>,
-        file: &Path,
-    ) -> crate::Result<()> {
+    pub async fn save_to_file(db: Arc<Database>, file: &Path) -> crate::Result<()> {
         let bytes = rt
             .spawn_blocking(move || postcard::to_stdvec(&db))
             .await??;

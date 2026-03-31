@@ -64,7 +64,6 @@ pub trait Producer {
 
 #[derive(Debug, Clone)]
 pub struct QueryContext {
-    pub(crate) rt: Arc<tokio::runtime::Runtime>,
     parent: Option<QueryKey>,
     pub(crate) db: Arc<Database>,
 }
@@ -126,11 +125,9 @@ impl QueryContext {
         self.db.remove_all_dependencies(&key).await;
         trace!("removed");
 
-        let rt = self.rt.clone();
         let db = self.db.clone();
         let value = tokio::spawn(async move {
             key.produce(&QueryContext {
-                rt,
                 parent: Some(key.clone()),
                 db,
             })
@@ -224,12 +221,12 @@ impl QueryContext {
         rev.changed_at > verified_at
     }
 
-    pub async fn save(&self, rt: Arc<tokio::runtime::Runtime>) -> crate::Result<()> {
+    pub async fn save(&self) -> crate::Result<()> {
         let cache_path = OPTIONS.read().unwrap().cache_path.clone();
-        Database::save_to_file(self.db.clone(), rt, &cache_path).await
+        Database::save_to_file(self.db.clone(), &cache_path).await
     }
 
-    pub async fn restore_or_default(rt: Arc<tokio::runtime::Runtime>) -> Self {
+    pub async fn restore_or_default() -> Self {
         let cache_path = OPTIONS.read().unwrap().cache_path.clone();
         let db = Database::restore_from_file(&cache_path)
             .await
@@ -239,7 +236,6 @@ impl QueryContext {
             });
 
         let out = Self {
-            rt,
             parent: None,
             db: Arc::new(db),
         };

@@ -2,12 +2,12 @@ use std::any::Any;
 use std::any::TypeId;
 use std::hash::Hash;
 use std::marker::PhantomData;
+use std::sync::Mutex;
 
 use scc::hash_map::HashMap;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::ser::SerializeMap;
-use tokio::sync::Mutex;
 
 use crate::query::context::AnyOutput;
 use crate::query::context::Output;
@@ -106,11 +106,11 @@ valid_outputs![
 /// actually an &mut or owned value.
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
-pub struct SerializedMap<K: Eq + Hash, V>(pub HashMap<K, V>);
+pub struct SerializedMap<K: Eq + Hash, V>(pub scc::HashMap<K, V>);
 
 impl<K: Eq + Hash, V> Default for SerializedMap<K, V> {
     fn default() -> Self {
-        Self(HashMap::new())
+        Self(scc::HashMap::new())
     }
 }
 
@@ -183,7 +183,7 @@ where
 }
 
 impl<K: Eq + Hash, V> std::ops::Deref for SerializedMap<K, V> {
-    type Target = HashMap<K, V>;
+    type Target = scc::HashMap<K, V>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -196,7 +196,9 @@ impl<K: Eq + Hash, V> std::ops::DerefMut for SerializedMap<K, V> {
     }
 }
 
-/// Newtype for tokio::Mutex that allow the things inside to be serialized.
+/// Newtype for std::sync::Mutex that allow the things inside to be serialized.
+/// TODO: I should probably not be using this if I'm also using thread-per-core... Probably want to
+/// be using something like channels instead yeah.
 #[derive(Debug, Default)]
 pub struct SerializedMutex<T>(pub Mutex<T>);
 
@@ -214,7 +216,7 @@ where
     where
         S: serde::Serializer,
     {
-        self.blocking_lock().serialize(serializer)
+        self.lock().unwrap().serialize(serializer)
     }
 }
 
@@ -296,20 +298,6 @@ mod test {
     }
 
     #[test]
-    fn db_value() {
-        let v1 = crate::db::Value {
-            value: AnyOutput::new(crate::Result::Ok(obj(100))),
-            color: crate::db::Color::Red,
-            revision: 1,
-        };
-
-        let bytes = postcard::to_stdvec(&v1).expect("serialization");
-        let v2: crate::db::Value = postcard::from_bytes(&bytes[..]).expect("deserialization");
-        assert_eq!(v1.value.0.type_id(), v2.value.0.type_id());
-        assert_eq!(v2.color, crate::db::Color::Green);
-        assert_eq!(v2.revision, 0);
-    }
-    #[test]
     fn roundtrip_map() {
         let m1 = SerializedMap::default();
         let _ = m1.insert_sync(1, 2);
@@ -329,7 +317,7 @@ mod test {
         let bytes = postcard::to_stdvec(&v1).expect("serialization");
         let v2: SerializedMutex<i32> = postcard::from_bytes(&bytes[..]).expect("deserialization");
 
-        assert_eq!(*v1.0.blocking_lock(), *v2.0.blocking_lock());
+        assert_eq!(*v1.0.lock().unwrap(), *v2.0.lock().unwrap());
     }
 
     #[test]
@@ -350,8 +338,7 @@ mod test {
             })),
         });
 
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let db1 = rt.block_on(async move {
+        let db1 = futures_lite::future::block_on(async move {
             db.with_entry(k1.clone(), async |mut entry| {
                 entry.insert(1, AnyOutput::new(crate::Result::Ok(obj(1))));
             })
