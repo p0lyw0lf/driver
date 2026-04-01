@@ -1,9 +1,16 @@
+use std::{sync::Arc, thread::JoinHandle};
+
 use async_task::Runnable;
 use futures_lite::future;
 
-use crate::query::{
-    context::{AnyOutput, Producer, QueryContext},
-    key::QueryKey,
+use crate::{
+    db::Database,
+    options::Options,
+    query::{
+        any_output::AnyOutput,
+        context::{QueryContext, Queryable},
+        key::QueryKey,
+    },
 };
 
 /// The main struct that runs the futures. Uses a thread-per-core architecture to run things as
@@ -18,7 +25,16 @@ use crate::query::{
 ///
 /// Once a thread has pulled a query off the queue, it executes it to completion, pinned to the
 /// thread, and then sends the result back over a oneshot channel.
+///
+/// This is also the top-level
+#[derive(Debug)]
 pub struct Executor {
+    /// Options to customize the runtime behavior of the executor
+    options: Options,
+    /// Created on start, and saved on stop
+    pub(crate) db: Database,
+    /// All the threads in the threadpool.
+    threads: Vec<JoinHandle<()>>,
     /// The sending end of a channel that lets us spawn new queries onto the threadpool.
     send_work: flume::Sender<UnitOfWork>,
     /// A broadcast channel to let us stop the threadpool
@@ -35,34 +51,74 @@ struct UnitOfWork {
 }
 
 impl Executor {
-    pub fn start() -> Executor {
+    /// MUST NOT be run in an async context.
+    pub fn start(options: Options) -> Executor {
+        let db = Database::restore_from_file(&options.cache_path).unwrap_or_else(|err| {
+            eprintln!("error restoring database: {err}");
+            Default::default()
+        });
+        // Bust cache immediately
+        db.revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         let (send_work, recv_work) = flume::unbounded();
         let (send_stop, recv_stop) = async_broadcast::broadcast(1);
 
-        for _ in 0..num_cpus::get() {
-            let recv_work = recv_work.clone();
-            let recv_stop = recv_stop.clone();
-            std::thread::spawn(|| main_loop(recv_work, recv_stop));
-        }
+        let threads = (0..num_cpus::get())
+            .map(|_| {
+                let recv_work = recv_work.clone();
+                let recv_stop = recv_stop.clone();
+                std::thread::spawn(|| main_loop(recv_work, recv_stop))
+            })
+            .collect();
 
         Self {
+            options,
+            db,
+            threads,
             send_work,
             send_stop,
         }
     }
 
-    pub(crate) async fn execute(&self, key: QueryKey, ctx: QueryContext) -> AnyOutput {
-        let (send, recv) = oneshot::async_channel();
+    /// MUST NOT be run in an async context.
+    pub fn query<K: Queryable>(self: Arc<Self>, key: K) -> K::Output {
+        let value = future::block_on(self.query_internal(key.into(), None));
+        *value
+            .downcast()
+            .expect("query produced wrong value somehow")
+    }
+
+    pub(crate) async fn query_internal(
+        self: Arc<Self>,
+        key: QueryKey,
+        parent: Option<QueryKey>,
+    ) -> AnyOutput {
+        let (send, recv) = oneshot::channel();
+        let ctx = QueryContext {
+            parent,
+            executor: self.clone(),
+        };
         let query = UnitOfWork { key, ctx, send };
         self.send_work.send(query).expect("query send error");
         recv.await.expect("output receive error")
     }
 
-    pub fn stop(self) {
+    /// MUST NOT be run in an async context.
+    pub fn stop(self) -> crate::Result<()> {
+        // Tell all threads to stop running
         let _ = self
             .send_stop
             .broadcast_blocking(())
             .expect("stop send error");
+
+        // Wait for all threads to finish running
+        for thread in self.threads.into_iter() {
+            thread.join().expect("thread join error");
+        }
+
+        // Only then should we save the database
+        Database::save_to_file(self.db, &self.options.cache_path)
     }
 }
 
@@ -112,7 +168,7 @@ fn main_loop(recv_work: flume::Receiver<UnitOfWork>, mut recv_stop: async_broadc
                     // There is no pending task => add a new one
                     let send_runnable = send_runnable.clone();
                     let (runnable, _) = async_task::spawn_local(
-                        async move {
+                        async {
                             let UnitOfWork { key, ctx, send } = query;
                             let output = key.query(&ctx).await;
                             send.send(output).expect("output send error");

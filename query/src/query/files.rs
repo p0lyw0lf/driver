@@ -15,7 +15,7 @@ impl Producer for ReadFile {
     #[tracing::instrument(level = "debug", skip_all)]
     async fn produce(&self, ctx: &QueryContext) -> Self::Output {
         let content = tokio::fs::read(&self.0).await?;
-        let object = ctx.db.objects.store(content);
+        let object = ctx.db().objects.store(content);
         Ok(object)
     }
 }

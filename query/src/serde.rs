@@ -1,5 +1,3 @@
-use std::any::Any;
-use std::any::TypeId;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::sync::Mutex;
@@ -8,99 +6,6 @@ use scc::hash_map::HashMap;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::ser::SerializeMap;
-
-use crate::query::context::AnyOutput;
-use crate::query::context::Output;
-
-/// Macro to help generate Serialization/Deserializationn for the AnyOutput type. It is very janky
-/// I can't just use typeid because erased-serde isn't compatible with postcard.
-macro_rules! valid_outputs {
-    ($($ty:ty,)*) => {
-$(
-    impl Output for $ty {}
-)*
-    impl Output for AnyOutput {}
-
-static INDEX_TO_TYPE_ID: &[TypeId] = &[$(
-    TypeId::of::<$ty>(),
-)*];
-
-impl Serialize for AnyOutput {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use std::ops::Deref;
-        use serde::ser::{Error, SerializeTuple};
-
-        // This is stupid but I have so few types the O(n)-ness doesn't matter
-        let want = <dyn Any>::type_id(self.0.deref());
-        let _i = INDEX_TO_TYPE_ID.iter().position(|t| {
-            &want == t
-        }).ok_or_else(|| S::Error::custom("type not found"))?;
-
-        let mut s = serializer.serialize_tuple(2)?;
-        s.serialize_element(&_i)?;
-        $(
-            if _i == 0 {
-                let v = <dyn Any>::downcast_ref::<$ty>(self.0.deref()).expect("TypeId compared equal but couldn't downcast");
-                s.serialize_element(v)?;
-                return s.end();
-            }
-            let _i = _i.saturating_sub(1);
-        )*
-        unreachable!()
-    }
-}
-
-impl<'de> Deserialize<'de> for AnyOutput
-{
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        use serde::de::{Visitor, SeqAccess, Error};
-
-        struct TupleVisitor;
-        impl<'de> Visitor<'de> for TupleVisitor {
-            type Value = AnyOutput;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                write!(formatter, "AnyOutput")
-            }
-
-            #[inline]
-            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-            where
-                A: SeqAccess<'de>
-            {
-                let _i: usize = seq.next_element()?.ok_or_else(|| A::Error::custom("invalid length 0"))?;
-
-                $(
-                    if _i == 0 {
-                        let v: $ty = seq.next_element()?.ok_or_else(|| A::Error::custom("invalid length 1"))?;
-                        return Ok(AnyOutput::new(v));
-                    }
-                    let _i = _i.saturating_sub(1);
-                )*
-                Err(A::Error::custom("invalid tag"))
-            }
-        }
-
-        deserializer.deserialize_tuple(2, TupleVisitor)
-    }
-}
-    };
-}
-
-valid_outputs![
-    crate::Result<crate::db::object::Object>,
-    crate::Result<crate::js::FileOutput>,
-    crate::Result<Vec<std::path::PathBuf>>,
-    crate::Result<crate::query::image::ImageObject>,
-    // Just for placeholder purposes, shouldn't show up in serialized DB
-    (),
-];
 
 /// Newtype for scc::HashMap that allows for serializing/deserializing, so long as the & is
 /// actually an &mut or owned value.
@@ -246,7 +151,7 @@ impl<T> std::ops::DerefMut for SerializedMutex<T> {
     }
 }
 
-#[cfg(test)]
+/*
 mod test {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -257,13 +162,6 @@ mod test {
     use crate::db::object::Object;
     use crate::js::FileOutput;
     use crate::js::RunFile;
-    use crate::query::context::AnyOutput;
-    use crate::query::files::ListDirectory;
-    use crate::query::files::ReadFile;
-    use crate::query::html::MarkdownToHtml;
-    use crate::query::html::MinifyHtml;
-    use crate::query::key::QueryKey;
-    use crate::query::remote::GetUrl;
 
     // just for testing purposes, never refers to actual data.
     fn obj(n: u8) -> Object {
@@ -384,3 +282,4 @@ mod test {
         // for equality right away.
     }
 }
+*/

@@ -27,7 +27,7 @@ impl Object {
     }
 
     pub fn contents_as_bytes(&self, ctx: &QueryContext) -> JsResult<Vec<u8>> {
-        ctx.db.objects.with(self, |obj| {
+        ctx.db().objects.with(self, |obj| {
             Ok(obj
                 .ok_or_else(|| {
                     JsNativeError::typ().with_message(format!("object {} not found", self))

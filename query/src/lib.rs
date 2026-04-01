@@ -28,7 +28,7 @@ pub struct Output {
 pub async fn run(file: PathBuf, ctx: &QueryContext) -> crate::Result<Output> {
     let key = js::RunFile { file, arg: None };
     // SAFETY: we are the one place this is supposed to be used
-    let prev = match unsafe { ctx.db.get_value(key.clone()).await } {
+    let prev = match unsafe { ctx.db().get_value(key.clone()).await } {
         None => None,
         Some(Ok(v)) => Some(v.outputs),
         Some(Err(e)) => return Err(e),

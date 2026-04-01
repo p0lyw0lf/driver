@@ -221,7 +221,7 @@ impl Producer for ConvertImage {
             })
             .await??;
 
-        let object = ctx.db.objects.store(output);
+        let object = ctx.db().objects.store(output);
 
         Ok(ImageObject {
             object,

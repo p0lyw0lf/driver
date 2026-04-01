@@ -1,7 +1,5 @@
 use jiff::fmt::temporal::DateTimeParser;
 use jiff::{Span, Timestamp, ToSpan};
-use reqwest::Client;
-use reqwest::StatusCode;
 use reqwest::header::{ETAG, EXPIRES, HeaderMap, HeaderValue, IF_MODIFIED_SINCE, IF_NONE_MATCH};
 use reqwest::{Url, header::CACHE_CONTROL};
 use serde::{Deserialize, Serialize};
@@ -14,7 +12,7 @@ use crate::db::object::Objects;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RemoteObjects {
     #[serde(skip, default = "RemoteObjects::default_client")]
-    client: Client,
+    client: surf::Client,
     cache: crate::serde::SerializedMap<Url, RemoteObject>,
 }
 
@@ -55,17 +53,18 @@ impl RemoteObject {
 }
 
 impl RemoteObjects {
-    fn default_client() -> Client {
-        Client::builder()
-            .user_agent(format!(
-                "reqwest ({} {}) (+https://github.com/p0lyw0lf/driver)",
-                env!("CARGO_PKG_NAME"),
-                env!("CARGO_PKG_VERSION")
-            ))
-            .gzip(true)
-            .zstd(true)
-            .build()
-            .expect("could not build HTTP client")
+    fn default_client() -> surf::Client {
+        static USER_AGENT: &str = concat!(
+            "reqwest (",
+            env!("CARGO_PKG_NAME"),
+            " ",
+            env!("CARGO_PKG_VERSION"),
+            ") (+https://github.com/p0lyw0lf/driver)",
+        );
+        surf::client().with(|mut req, client, next| {
+            req.set_header("User-Agent", USER_AGENT);
+            next(req, client)
+        })
     }
 
     /// Fetches a remote URL and adds it to the local store if not present or too stale.

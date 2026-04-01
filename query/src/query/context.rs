@@ -1,61 +1,34 @@
-use std::any::Any;
-use std::any::TypeId;
 use std::fmt::Debug;
-use std::fmt::Display;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use dyn_clone::DynClone;
 use tracing::{info, trace};
 
 use crate::db::Database;
 use crate::db::Entry;
-use crate::options::OPTIONS;
-use crate::query::key::QueryKey;
-use crate::to_hash::ToHash;
+use crate::query::{
+    any_output::{AnyOutput, Output},
+    executor::Executor,
+    key::QueryKey,
+};
 
-/// NOTE: a newtype is needed to get around some associated type jank.
-#[derive(Clone, Debug)]
-pub struct AnyOutput(pub Box<dyn Output>);
-pub trait Output: ToHash + DynClone + Any + Debug + Send + Sync {}
-dyn_clone::clone_trait_object!(Output);
-
-impl ToHash for AnyOutput {
-    fn run_hash(&self, hasher: &mut sha2::Sha256) {
-        // no prefix because we _do_ want this to be treated as the underlying value.
-        self.0.run_hash(hasher);
-    }
-}
-impl AnyOutput {
-    pub fn new(t: impl Output) -> Self {
-        if t.type_id() == TypeId::of::<AnyOutput>() {
-            panic!("tried to put box inside of box");
-        }
-        Self(Box::new(t))
-    }
-    pub fn downcast<T: Output>(self) -> Option<Box<T>> {
-        (self.0 as Box<dyn Any>).downcast().ok()
-    }
-}
-
-impl PartialEq for AnyOutput {
-    fn eq(&self, other: &Self) -> bool {
-        self.to_hash() == other.to_hash()
-    }
-}
-
+/// The main trait for
 pub trait Producer {
-    // NOTE: in order to make the lifetimes work out, we really really want it such that the output
-    // is easily clone-able. This will eventually require string interning somewhere, not quite
-    // sure where yet.
     type Output: Output + Sized + 'static;
     fn produce(&self, ctx: &QueryContext) -> impl Future<Output = Self::Output> + Send;
-    async fn query(self, ctx: &QueryContext) -> Self::Output
-    where
-        Self: Sized,
-        QueryKey: From<Self>,
-    {
-        let value = ctx.query(self.into()).await;
+}
+
+pub(crate) trait Queryable: Producer + Into<QueryKey> + Sized {
+    async fn query(self, ctx: &QueryContext) -> Self::Output;
+}
+
+impl<T: Producer + Into<QueryKey> + Sized> Queryable for T {
+    async fn query(self, ctx: &QueryContext) -> Self::Output {
+        let value = ctx
+            .executor
+            .clone()
+            .query_internal(self.into(), ctx.parent.clone())
+            .await;
         *value
             .downcast()
             .expect("query produced wrong value somehow")
@@ -64,23 +37,20 @@ pub trait Producer {
 
 #[derive(Debug, Clone)]
 pub struct QueryContext {
-    parent: Option<QueryKey>,
-    pub(crate) db: Arc<Database>,
+    pub(crate) parent: Option<QueryKey>,
+    pub(crate) executor: Arc<Executor>,
 }
 
 impl QueryContext {
-    pub fn new_revision(&self) {
-        self.db.revision.fetch_add(1, Ordering::SeqCst);
-    }
-
-    pub fn display_dep_graph(&self) -> impl Display + '_ {
-        self.db.display_dep_graph()
+    /// Get the database associated with the context.
+    pub fn db(&self) -> &Database {
+        &self.executor.db
     }
 
     #[tracing::instrument(level = "debug", skip(self), fields(key=%key))]
-    pub(crate) async fn query(&self, key: QueryKey) -> AnyOutput {
+    async fn query(&self, key: QueryKey) -> AnyOutput {
         trace!("locking db entry");
-        self.db
+        self.db()
             .with_entry(key.clone(), async |mut entry| {
                 trace!("locked");
                 let entry = &mut entry;
@@ -94,11 +64,11 @@ impl QueryContext {
         trace!("starting query");
         if let Some(parent) = &self.parent {
             info!("adding edge {parent} -> {key}");
-            self.db.add_dependency(parent.clone(), key.clone()).await;
+            self.db().add_dependency(parent.clone(), key.clone()).await;
             trace!("added");
         }
 
-        let revision = self.db.revision.load(Ordering::SeqCst);
+        let revision = self.db().revision.load(Ordering::SeqCst);
         let verified_at = entry.revision().map(|rev| rev.verified_at);
 
         let maybe_changed = match verified_at {
@@ -122,19 +92,15 @@ impl QueryContext {
 
         trace!("removing dependencies");
         // We're about to run the key again, so remove any dependencies it once had
-        self.db.remove_all_dependencies(&key).await;
+        self.db().remove_all_dependencies(&key).await;
         trace!("removed");
 
-        let db = self.db.clone();
-        let value = tokio::spawn(async move {
-            key.produce(&QueryContext {
+        let value = key
+            .produce(&QueryContext {
                 parent: Some(key.clone()),
-                db,
+                executor: self.executor.clone(),
             })
-            .await
-        })
-        .await
-        .expect("joining task");
+            .await;
         trace!("produced value");
 
         entry.insert(revision, value.clone());
@@ -170,7 +136,7 @@ impl QueryContext {
         }
 
         trace!("trying to get dependencies");
-        let Some(deps) = self.db.dependencies(&key).await else {
+        let Some(deps) = self.db().dependencies(&key).await else {
             trace!("no dependencies");
             // Input queries should be handled the above case; these sorts of queries with no
             // dependencies are deterministic ones entirely determined by their key, so we can mark
@@ -183,7 +149,7 @@ impl QueryContext {
         for dep in deps {
             trace!("locking {dep}");
             if self
-                .db
+                .db()
                 .with_entry(dep.clone(), async |mut dep_entry| {
                     trace!("locked {dep}");
                     let dep_maybe_changed = Box::pin(self.maybe_changed_after(
@@ -219,28 +185,5 @@ impl QueryContext {
         // If we marked all dependencies as green, mark this node green too.
         entry.mark_verified(current_revision);
         rev.changed_at > verified_at
-    }
-
-    pub async fn save(&self) -> crate::Result<()> {
-        let cache_path = OPTIONS.read().unwrap().cache_path.clone();
-        Database::save_to_file(self.db.clone(), &cache_path).await
-    }
-
-    pub async fn restore_or_default() -> Self {
-        let cache_path = OPTIONS.read().unwrap().cache_path.clone();
-        let db = Database::restore_from_file(&cache_path)
-            .await
-            .unwrap_or_else(|err| {
-                eprintln!("error restoring database: {err}");
-                Default::default()
-            });
-
-        let out = Self {
-            parent: None,
-            db: Arc::new(db),
-        };
-        // Bust cache immediately, since it was just read from disk
-        out.new_revision();
-        out
     }
 }

@@ -15,9 +15,9 @@ impl Producer for GetUrl {
     #[tracing::instrument(level = "debug", skip_all)]
     async fn produce(&self, ctx: &QueryContext) -> Self::Output {
         Ok(ctx
-            .db
+            .db()
             .remotes
-            .fetch(&ctx.db.objects, self.0.clone())
+            .fetch(&ctx.db().objects, self.0.clone())
             .await?
             .object)
     }

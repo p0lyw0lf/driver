@@ -30,8 +30,10 @@ pub_if = "0.1.0"
 scc = "3.6"
 serde = { version = "1.0", features = ["derive"] }
 sha2 = "0.10"
+surf = "2.3"
 tracing = "0.1"
 url = { version = "2.5", features = ["serde"] }
+zstd = "0.13"
 zune-core = "0.5"
 zune-imageprocs = "0.5"
 

@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::fmt::Display;
+use std::io::Read;
 use std::path::Path;
 use std::sync::{Arc, atomic::AtomicUsize};
 
@@ -7,8 +8,7 @@ use pub_if::pub_if;
 use scc::hash_map;
 use serde::{Deserialize, Serialize};
 
-use crate::QueryKey;
-use crate::query::context::{AnyOutput, Producer};
+use crate::query::{AnyOutput, QueryKey, Queryable};
 use crate::serde::{SerializedMap, SerializedMutex};
 use crate::to_hash::ToHash;
 
@@ -110,7 +110,7 @@ impl Database {
     /// known values and queried values; MUST NOT be relied on as an accurate "this is up to date".
     pub(crate) async unsafe fn get_value<K>(&self, key: K) -> Option<K::Output>
     where
-        K: Into<QueryKey> + Producer,
+        K: Queryable,
     {
         let value = { self.cache.get_sync(&key.into())?.get().clone() };
         let value = {
@@ -179,28 +179,19 @@ impl<'a> Entry<'a> {
 }
 
 impl Database {
-    pub async fn save_to_file(db: Arc<Database>, file: &Path) -> crate::Result<()> {
-        let bytes = rt
-            .spawn_blocking(move || postcard::to_stdvec(&db))
-            .await??;
-        let file = tokio::fs::File::create(file).await?;
-        let mut encoder = ZstdEncoder::new(file);
-        encoder.write_all(&bytes).await?;
-        encoder.shutdown().await?;
-
+    pub(crate) fn save_to_file(db: Database, file: &Path) -> crate::Result<()> {
+        let file = std::fs::File::create(file)?;
+        let file = zstd::Encoder::new(file, 1)?;
+        let file = postcard::to_io(&db, file)?;
+        file.finish()?;
         Ok(())
     }
 
-    pub async fn restore_from_file(file: &Path) -> crate::Result<Database> {
-        let file = tokio::fs::File::open(file).await?;
-        let file = tokio::io::BufReader::new(file);
-        let mut decoder = ZstdDecoder::new(file);
-
-        let bytes = {
-            let mut bytes = Vec::<u8>::new();
-            decoder.read_to_end(&mut bytes).await?;
-            bytes
-        };
+    pub(crate) fn restore_from_file(file: &Path) -> crate::Result<Database> {
+        let file = std::fs::File::open(file)?;
+        let mut file = zstd::Decoder::new(file)?;
+        let mut bytes = Vec::<u8>::new();
+        file.read_to_end(&mut bytes)?;
         let db: Database = postcard::from_bytes(&bytes)?;
         Ok(db)
     }
