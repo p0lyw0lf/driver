@@ -10,8 +10,7 @@ use zune_image::traits::{DecoderTrait, OperationsTrait};
 
 use crate::to_hash::ToHash;
 use crate::{
-    db::object::Object,
-    query::context::{Producer, QueryContext},
+    engine::{Producer, QueryContext, db::Object},
     query_key,
 };
 
@@ -84,33 +83,29 @@ impl Producer for ParseImage {
         let contents = ZCursor::new(self.0.contents_as_bytes(ctx)?);
         let object = self.0.clone();
 
-        ctx.rt
-            .spawn_blocking(move || -> crate::Result<_> {
-                let metadata = zune_image::utils::decode_info(contents)
-                    .ok_or_else(|| crate::Error::new("could not parse image metadata"))?;
+        let metadata = zune_image::utils::decode_info(contents)
+            .ok_or_else(|| crate::Error::new("could not parse image metadata"))?;
 
-                let format = match metadata.image_format() {
-                    Some(zune_image::codecs::ImageFormat::JPEG) => ImageFormat::Jpeg,
-                    Some(zune_image::codecs::ImageFormat::JPEG_XL) => ImageFormat::Jxl,
-                    Some(zune_image::codecs::ImageFormat::PNG) => ImageFormat::Png,
-                    Some(zune_image::codecs::ImageFormat::WEBP) => ImageFormat::Webp,
-                    Some(other) => {
-                        return Err(crate::Error::new(&format!(
-                            "invalid image format {other:?}"
-                        )));
-                    }
-                    None => return Err(crate::Error::new("could not get image format")),
-                };
+        let format = match metadata.image_format() {
+            Some(zune_image::codecs::ImageFormat::JPEG) => ImageFormat::Jpeg,
+            Some(zune_image::codecs::ImageFormat::JPEG_XL) => ImageFormat::Jxl,
+            Some(zune_image::codecs::ImageFormat::PNG) => ImageFormat::Png,
+            Some(zune_image::codecs::ImageFormat::WEBP) => ImageFormat::Webp,
+            Some(other) => {
+                return Err(crate::Error::new(&format!(
+                    "invalid image format {other:?}"
+                )));
+            }
+            None => return Err(crate::Error::new("could not get image format")),
+        };
 
-                let (width, height) = metadata.dimensions();
+        let (width, height) = metadata.dimensions();
 
-                Ok(ImageObject {
-                    object,
-                    format,
-                    size: ImageSize { width, height },
-                })
-            })
-            .await?
+        Ok(ImageObject {
+            object,
+            format,
+            size: ImageSize { width, height },
+        })
     }
 }
 
@@ -159,74 +154,62 @@ impl Producer for ConvertImage {
         let fit = self.fit.unwrap_or_default();
         let format = self.format.unwrap_or_default();
 
-        let (output, format, size) = ctx
-            .rt
-            .spawn_blocking(move || -> crate::Result<_> {
-                let mut image =
-                    match input_format {
-                        ImageFormat::Jpeg => DecoderTrait::decode(
-                            &mut JpegDecoder::new_with_options(input_contents, decoder_options),
-                        )?,
-                        ImageFormat::Jxl => DecoderTrait::decode(&mut JxlDecoder::try_new(
-                            input_contents,
-                            decoder_options,
-                        )?)?,
-                        ImageFormat::Png => DecoderTrait::decode(
-                            &mut PngDecoder::new_with_options(input_contents, decoder_options),
-                        )?,
-                        ImageFormat::Webp => {
-                            DecoderTrait::decode(&mut ZuneWebpDecoder::new(input_contents)?)?
-                        }
-                    };
+        let mut image = match input_format {
+            ImageFormat::Jpeg => DecoderTrait::decode(&mut JpegDecoder::new_with_options(
+                input_contents,
+                decoder_options,
+            ))?,
+            ImageFormat::Jxl => {
+                DecoderTrait::decode(&mut JxlDecoder::try_new(input_contents, decoder_options)?)?
+            }
+            ImageFormat::Png => DecoderTrait::decode(&mut PngDecoder::new_with_options(
+                input_contents,
+                decoder_options,
+            ))?,
+            ImageFormat::Webp => DecoderTrait::decode(&mut ZuneWebpDecoder::new(input_contents)?)?,
+        };
 
-                if image.dimensions() != (source_width, source_height) {
-                    panic!("corrupted image dimensions");
-                }
+        if image.dimensions() != (source_width, source_height) {
+            panic!("corrupted image dimensions");
+        }
 
-                let (target_width, target_height) = size
-                    .as_ref()
-                    .map(ImageSize::as_dimensions)
-                    .unwrap_or((source_width, source_height));
-                let (dest_width, dest_height) = match fit {
-                    ImageFit::Fill => (target_width, target_height),
-                    ImageFit::Contain => (
-                        std::cmp::min(target_width, source_width * target_height / source_height),
-                        std::cmp::min(target_height, source_height * target_width / source_width),
-                    ),
-                    ImageFit::Cover => (
-                        std::cmp::max(target_width, source_width * target_height / source_height),
-                        std::cmp::max(target_height, source_height * target_width / source_width),
-                    ),
-                };
+        let (target_width, target_height) = size
+            .as_ref()
+            .map(ImageSize::as_dimensions)
+            .unwrap_or((source_width, source_height));
+        let (dest_width, dest_height) = match fit {
+            ImageFit::Fill => (target_width, target_height),
+            ImageFit::Contain => (
+                std::cmp::min(target_width, source_width * target_height / source_height),
+                std::cmp::min(target_height, source_height * target_width / source_width),
+            ),
+            ImageFit::Cover => (
+                std::cmp::max(target_width, source_width * target_height / source_height),
+                std::cmp::max(target_height, source_height * target_width / source_width),
+            ),
+        };
 
-                if target_width != dest_width || target_height != dest_height {
-                    // TODO: I should probably allow customizing the resize method; however, this
-                    // is probably fine and seems to give the overall best results.
-                    let resize_op = zune_imageprocs::resize::Resize::new(
-                        dest_width,
-                        dest_height,
-                        zune_imageprocs::resize::ResizeMethod::Lanczos3,
-                    );
-                    resize_op.execute(&mut image)?;
-                }
+        if target_width != dest_width || target_height != dest_height {
+            // TODO: I should probably allow customizing the resize method; however, this
+            // is probably fine and seems to give the overall best results.
+            let resize_op = zune_imageprocs::resize::Resize::new(
+                dest_width,
+                dest_height,
+                zune_imageprocs::resize::ResizeMethod::Lanczos3,
+            );
+            resize_op.execute(&mut image)?;
+        }
 
-                Ok((
-                    image.write_to_vec(format.into())?,
-                    format,
-                    ImageSize {
-                        width: dest_width,
-                        height: dest_height,
-                    },
-                ))
-            })
-            .await??;
-
-        let object = ctx.db().objects.store(output);
+        let object = image.write_to_vec(format.into())?;
+        let object = ctx.db().objects.store(object);
 
         Ok(ImageObject {
             object,
             format,
-            size,
+            size: ImageSize {
+                width: dest_width,
+                height: dest_height,
+            },
         })
     }
 }

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+task-local = { path = "../task-local" }
 async-broadcast = "0.7"
 async-channel = "2.3"
 async-executor = "1.14"
@@ -30,12 +31,20 @@ pub_if = "0.1.0"
 scc = "3.6"
 serde = { version = "1.0", features = ["derive"] }
 sha2 = "0.10"
-surf = "2.3"
 tracing = "0.1"
 url = { version = "2.5", features = ["serde"] }
 zstd = "0.13"
 zune-core = "0.5"
 zune-imageprocs = "0.5"
+
+[dependencies.reqwest]
+version = "0.13"
+features = [
+  "brotli",
+  "gzip",
+  "zstd",
+  "deflate",
+]
 
 [dependencies.zune-image]
 version = "0.5"

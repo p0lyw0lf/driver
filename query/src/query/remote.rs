@@ -1,11 +1,8 @@
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::{
-    db::object::Object,
-    query::context::{Producer, QueryContext},
-    query_key,
-};
+use crate::engine::{Producer, QueryContext, db::Object};
+use crate::query_key;
 
 query_key!(GetUrl(pub url::Url););
 

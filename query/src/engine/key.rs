@@ -3,14 +3,8 @@ use std::fmt::Display;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::js::RunFile;
-use crate::query::files::ListDirectory;
-use crate::query::files::ReadFile;
-use crate::query::html::MarkdownToHtml;
-use crate::query::html::MinifyHtml;
-use crate::query::image::ConvertImage;
-use crate::query::image::ParseImage;
-use crate::query::remote::GetUrl;
+use crate::engine::Producer;
+use crate::query::*;
 
 #[macro_export]
 macro_rules! query_key {
@@ -40,6 +34,19 @@ macro_rules! query_key {
             }
         }
         )*
+
+
+        impl $crate::Producer for $key {
+            type Output = $crate::engine::AnyOutput;
+            fn produce(&self, ctx: &$crate::engine::QueryContext) -> impl Future<Output = Self::Output> + Send {
+                let this = self.clone();
+                async move {
+                    match this { $(
+                        Self::$type(v) => $crate::engine::AnyOutput::new(v.produce(ctx).await),
+                    )* }
+                }
+            }
+        }
     }
 }
 

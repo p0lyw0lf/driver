@@ -1,19 +1,22 @@
 use jiff::fmt::temporal::DateTimeParser;
 use jiff::{Span, Timestamp, ToSpan};
-use reqwest::header::{ETAG, EXPIRES, HeaderMap, HeaderValue, IF_MODIFIED_SINCE, IF_NONE_MATCH};
-use reqwest::{Url, header::CACHE_CONTROL};
+use reqwest::header::{CACHE_CONTROL, ETAG, EXPIRES, IF_MODIFIED_SINCE, IF_NONE_MATCH};
+use reqwest::{
+    StatusCode, Url,
+    header::{HeaderMap, HeaderValue},
+};
 use serde::{Deserialize, Serialize};
 
-use crate::db::object::Object;
-use crate::db::object::Objects;
+use crate::engine::db::object::{Object, Objects};
+use crate::serde::SerializedMap;
 
 /// A store for all URLs that have been fetched remotely. Maps a URL to an object hash and
 /// expiration time, if present on the fetched headers.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RemoteObjects {
     #[serde(skip, default = "RemoteObjects::default_client")]
-    client: surf::Client,
-    cache: crate::serde::SerializedMap<Url, RemoteObject>,
+    client: reqwest::Client,
+    cache: SerializedMap<Url, RemoteObject>,
 }
 
 impl Default for RemoteObjects {
@@ -53,7 +56,7 @@ impl RemoteObject {
 }
 
 impl RemoteObjects {
-    fn default_client() -> surf::Client {
+    fn default_client() -> reqwest::Client {
         static USER_AGENT: &str = concat!(
             "reqwest (",
             env!("CARGO_PKG_NAME"),
@@ -61,10 +64,14 @@ impl RemoteObjects {
             env!("CARGO_PKG_VERSION"),
             ") (+https://github.com/p0lyw0lf/driver)",
         );
-        surf::client().with(|mut req, client, next| {
-            req.set_header("User-Agent", USER_AGENT);
-            next(req, client)
-        })
+        reqwest::Client::builder()
+            .user_agent(USER_AGENT)
+            .brotli(true)
+            .deflate(true)
+            .gzip(true)
+            .zstd(true)
+            .build()
+            .expect("Could not build HTTP client")
     }
 
     /// Fetches a remote URL and adds it to the local store if not present or too stale.

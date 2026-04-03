@@ -21,15 +21,11 @@ use futures_lite::StreamExt;
 use serde::Deserialize;
 use serde::Serialize;
 use sha2::Digest;
-use tokio::{sync::oneshot, task};
 use tracing::trace;
 
 use crate::{
-    db::object::Object,
-    query::{
-        context::{Producer, QueryContext},
-        files::ReadFile,
-    },
+    engine::{Producer, QueryContext, db::Object},
+    query::ReadFile,
     query_key,
     to_hash::ToHash,
 };
@@ -53,10 +49,7 @@ struct ContextFrame {
     outputs: WriteOutputs,
 }
 
-// SAFETY: I'm pretty sure know what I'm doing
-unsafe impl Send for ContextFrame {}
-
-tokio::task_local! {
+task_local::task_local! {
     static QUERY_CONTEXT: RefCell<ContextFrame>;
 }
 
@@ -71,8 +64,8 @@ async fn with_query_context<T, F: Future<Output = crate::Result<T>>>(
         ctx,
         outputs: Default::default(),
     };
-    let fut = QUERY_CONTEXT.scope(RefCell::new(new_frame), async { f().await });
-    tokio::pin!(fut);
+    let fut = QUERY_CONTEXT.scope(RefCell::new(new_frame), f());
+    let fut = std::pin::pin!(fut);
 
     let out = (&mut fut).await?;
     let popped_frame = fut
@@ -84,7 +77,7 @@ async fn with_query_context<T, F: Future<Output = crate::Result<T>>>(
 
 fn get_context() -> JsResult<QueryContext> {
     QUERY_CONTEXT
-        .try_with(|ctx| ctx.borrow().ctx.clone())
+        .with(|ctx| ctx.borrow().ctx.clone())
         .map_err(JsError::from_rust)
 }
 

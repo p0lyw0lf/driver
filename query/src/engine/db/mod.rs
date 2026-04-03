@@ -8,12 +8,14 @@ use pub_if::pub_if;
 use scc::hash_map;
 use serde::{Deserialize, Serialize};
 
-use crate::query::{AnyOutput, QueryKey, Queryable};
+use crate::engine::{AnyOutput, QueryKey, Queryable};
 use crate::serde::{SerializedMap, SerializedMutex};
 use crate::to_hash::ToHash;
 
 pub mod object;
 pub mod remote;
+
+pub use object::Object;
 
 /// Tracks the range [changed_at, verified_at], to confirm the value is corresponds to is the same
 /// for that entire range of revisions.

@@ -3,4 +3,5 @@ resolver = "1"
 members = [
   "driver",
   "query",
+  "task-local",
 ]

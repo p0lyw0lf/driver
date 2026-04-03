@@ -4,13 +4,12 @@ use std::sync::atomic::Ordering;
 
 use tracing::{info, trace};
 
-use crate::db::Database;
-use crate::db::Entry;
-use crate::query::{
-    any_output::{AnyOutput, Output},
-    executor::Executor,
-    key::QueryKey,
-};
+use crate::options::Options;
+
+use super::any_output::{AnyOutput, Output};
+use super::db::{Database, Entry};
+use super::executor::Executor;
+use super::key::QueryKey;
 
 /// The main trait for
 pub trait Producer {
@@ -18,7 +17,7 @@ pub trait Producer {
     fn produce(&self, ctx: &QueryContext) -> impl Future<Output = Self::Output> + Send;
 }
 
-pub(crate) trait Queryable: Producer + Into<QueryKey> + Sized {
+pub trait Queryable: Producer + Into<QueryKey> + Sized {
     async fn query(self, ctx: &QueryContext) -> Self::Output;
 }
 
@@ -45,6 +44,11 @@ impl QueryContext {
     /// Get the database associated with the context.
     pub fn db(&self) -> &Database {
         &self.executor.db
+    }
+
+    /// Get the global options associated with the context.
+    pub(crate) fn options(&self) -> &Options {
+        &self.executor.options
     }
 
     #[tracing::instrument(level = "debug", skip(self), fields(key=%key))]

@@ -17,28 +17,6 @@ dyn_clone::clone_trait_object!(Output);
 #[derive(Clone, Debug)]
 pub struct AnyOutput(pub Box<dyn Output>);
 
-/// Macro to help generate Serialization/Deserializationn for the AnyOutput type. It is very janky
-/// I can't just use typeid because erased-serde isn't compatible with postcard.
-macro_rules! valid_outputs {
-    ($($ty:ty,)*) => {
-$(
-    impl Output for $ty {}
-)*
-    impl Output for AnyOutput {}
-
-static INDEX_TO_TYPE_ID: &[TypeId] = &[$(
-    TypeId::of::<$ty>(),
-)*];
-
-valid_outputs![
-    crate::Result<crate::db::object::Object>,
-    crate::Result<crate::js::FileOutput>,
-    crate::Result<Vec<std::path::PathBuf>>,
-    crate::Result<crate::query::image::ImageObject>,
-    // Just for placeholder purposes, shouldn't show up in serialized DB
-    (),
-];
-
 impl ToHash for AnyOutput {
     fn run_hash(&self, hasher: &mut sha2::Sha256) {
         // no prefix because we _do_ want this to be treated as the underlying value.
@@ -62,6 +40,19 @@ impl PartialEq for AnyOutput {
         self.to_hash() == other.to_hash()
     }
 }
+
+/// Macro to help generate Serialization/Deserializationn for the AnyOutput type. It is very janky
+/// I can't just use typeid because erased-serde isn't compatible with postcard.
+macro_rules! valid_outputs {
+    ($($ty:ty,)*) => {
+$(
+    impl Output for $ty {}
+)*
+    impl Output for AnyOutput {}
+
+static INDEX_TO_TYPE_ID: &[TypeId] = &[$(
+    TypeId::of::<$ty>(),
+)*];
 
 impl Serialize for AnyOutput {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -130,3 +121,13 @@ impl<'de> Deserialize<'de> for AnyOutput
 }
     };
 }
+
+valid_outputs![
+    // Just for placeholder purposes, shouldn't show up in serialized DB
+    (),
+    // These are the actual objects expected to show up.
+    crate::Result<crate::engine::db::Object>,
+    crate::Result<crate::query::js::FileOutput>,
+    crate::Result<Vec<std::path::PathBuf>>,
+    crate::Result<crate::query::image::ImageObject>,
+];

@@ -2,8 +2,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::{
-    db::object::Object,
-    query::context::{Producer, QueryContext},
+    engine::{Producer, QueryContext, db::Object},
     query_key,
 };
 
@@ -16,50 +15,45 @@ impl Producer for MarkdownToHtml {
     async fn produce(&self, ctx: &QueryContext) -> Self::Output {
         let contents = self.0.contents_as_string(ctx)?;
 
-        let output = ctx
-            .rt
-            .spawn_blocking(move || {
-                comrak::markdown_to_html_with_plugins(
-                    &contents,
-                    &comrak::Options {
-                        extension: comrak::options::Extension::builder()
-                            .strikethrough(true)
-                            .table(true)
-                            .autolink(false)
-                            .tasklist(true)
-                            .superscript(false)
-                            .subscript(false)
-                            .footnotes(true)
-                            .math_dollars(true)
-                            .shortcodes(false)
-                            .underline(false)
-                            .spoiler(true)
-                            .subtext(true)
-                            .highlight(true)
-                            .build(),
-                        parse: comrak::options::Parse::builder()
-                            .smart(false)
-                            .tasklist_in_table(true)
-                            .ignore_setext(true)
-                            .build(),
-                        render: comrak::options::Render::builder()
-                            .hardbreaks(false)
-                            .r#unsafe(true)
-                            .escape(false)
-                            .tasklist_classes(true)
-                            .build(),
-                    },
-                    &comrak::options::Plugins::builder()
-                        .render(comrak::options::RenderPlugins {
-                            codefence_syntax_highlighter: Some(
-                                &comrak::plugins::syntect::SyntectAdapterBuilder::new().build(),
-                            ),
-                            heading_adapter: None,
-                        })
-                        .build(),
-                )
-            })
-            .await?;
+        let output = comrak::markdown_to_html_with_plugins(
+            &contents,
+            &comrak::Options {
+                extension: comrak::options::Extension::builder()
+                    .strikethrough(true)
+                    .table(true)
+                    .autolink(false)
+                    .tasklist(true)
+                    .superscript(false)
+                    .subscript(false)
+                    .footnotes(true)
+                    .math_dollars(true)
+                    .shortcodes(false)
+                    .underline(false)
+                    .spoiler(true)
+                    .subtext(true)
+                    .highlight(true)
+                    .build(),
+                parse: comrak::options::Parse::builder()
+                    .smart(false)
+                    .tasklist_in_table(true)
+                    .ignore_setext(true)
+                    .build(),
+                render: comrak::options::Render::builder()
+                    .hardbreaks(false)
+                    .r#unsafe(true)
+                    .escape(false)
+                    .tasklist_classes(true)
+                    .build(),
+            },
+            &comrak::options::Plugins::builder()
+                .render(comrak::options::RenderPlugins {
+                    codefence_syntax_highlighter: Some(
+                        &comrak::plugins::syntect::SyntectAdapterBuilder::new().build(),
+                    ),
+                    heading_adapter: None,
+                })
+                .build(),
+        );
 
         let object = ctx.db().objects.store(output.into_bytes());
         Ok(object)
@@ -82,10 +76,7 @@ impl Producer for MinifyHtml {
             minify_js: true,
             ..Default::default()
         };
-        let output = ctx
-            .rt
-            .spawn_blocking(move || minify_html::minify(contents.as_bytes(), &cfg))
-            .await?;
+        let output = minify_html::minify(contents.as_bytes(), &cfg);
         let object = ctx.db().objects.store(output);
         Ok(object)
     }

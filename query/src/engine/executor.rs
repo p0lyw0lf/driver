@@ -3,15 +3,13 @@ use std::{sync::Arc, thread::JoinHandle};
 use async_task::Runnable;
 use futures_lite::future;
 
-use crate::{
+use crate::engine::{
+    any_output::AnyOutput,
+    context::{QueryContext, Queryable},
     db::Database,
-    options::Options,
-    query::{
-        any_output::AnyOutput,
-        context::{QueryContext, Queryable},
-        key::QueryKey,
-    },
+    key::QueryKey,
 };
+use crate::options::Options;
 
 /// The main struct that runs the futures. Uses a thread-per-core architecture to run things as
 /// efficiently as possible.
@@ -30,7 +28,7 @@ use crate::{
 #[derive(Debug)]
 pub struct Executor {
     /// Options to customize the runtime behavior of the executor
-    options: Options,
+    pub(crate) options: Options,
     /// Created on start, and saved on stop
     pub(crate) db: Database,
     /// All the threads in the threadpool.
