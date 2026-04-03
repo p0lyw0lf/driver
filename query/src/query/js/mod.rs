@@ -24,7 +24,7 @@ use sha2::Digest;
 use tracing::trace;
 
 use crate::{
-    engine::{Producer, QueryContext, db::Object},
+    engine::{Producer, QueryContext, Queryable, db::Object},
     query::ReadFile,
     query_key,
     to_hash::ToHash,
@@ -50,7 +50,7 @@ struct ContextFrame {
 }
 
 task_local::task_local! {
-    static QUERY_CONTEXT: RefCell<ContextFrame>;
+    static QUERY_CONTEXT: ContextFrame;
 }
 
 /// Runs a closure with a QueryContext pushed onto the stack. All calls to `get_context()` that run
@@ -60,34 +60,36 @@ async fn with_query_context<T, F: Future<Output = crate::Result<T>>>(
     ctx: QueryContext,
     f: impl FnOnce() -> F,
 ) -> crate::Result<(T, WriteOutputs)> {
-    let new_frame = ContextFrame {
-        ctx,
-        outputs: Default::default(),
-    };
-    let fut = QUERY_CONTEXT.scope(RefCell::new(new_frame), f());
-    let fut = std::pin::pin!(fut);
+    let fut = QUERY_CONTEXT.scope(
+        ContextFrame {
+            ctx,
+            outputs: Default::default(),
+        },
+        f(),
+    );
+    let mut fut = std::pin::pin!(fut);
 
-    let out = (&mut fut).await?;
-    let popped_frame = fut
-        .take_value()
-        .expect("no context frame to pop")
-        .into_inner();
+    let out = fut.as_mut().await?;
+    let popped_frame = fut.take_value().expect("scope should have value");
     Ok((out, popped_frame.outputs))
 }
 
 fn get_context() -> JsResult<QueryContext> {
     QUERY_CONTEXT
-        .with(|ctx| ctx.borrow().ctx.clone())
-        .map_err(JsError::from_rust)
+        .with(|ctx| ctx.map(|ctx| ctx.ctx.clone()))
+        .ok_or_else(|| {
+            JsNativeError::eval()
+                .with_message("polled without context")
+                .into()
+        })
 }
 
 /// SAFETY: only safe to call when running inside `with_query_context()`
 unsafe fn push_outputs(outputs: impl IntoIterator<Item = (PathBuf, Object)>) -> JsResult<()> {
-    QUERY_CONTEXT.with(|ctx| -> JsResult<_> {
-        ctx.try_borrow_mut()
-            .map_err(JsError::from_rust)?
-            .outputs
-            .extend(outputs);
+    QUERY_CONTEXT.with_mut(|ctx| -> JsResult<()> {
+        let ctx = ctx
+            .ok_or_else(|| JsNativeError::eval().with_message("pushed outputs without context"))?;
+        ctx.outputs.extend(outputs);
         Ok(())
     })
 }
@@ -168,12 +170,7 @@ impl JobExecutor for Executor {
 
     // Sync flavor that needs to be provided
     fn run_jobs(self: Rc<Self>, js_ctx: &mut Context) -> JsResult<()> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_time()
-            .build()
-            .unwrap();
-
-        task::LocalSet::default().block_on(&runtime, self.run_jobs_async(&RefCell::new(js_ctx)))
+        futures_lite::future::block_on(self.run_jobs_async(&RefCell::new(js_ctx)))
     }
 
     async fn run_jobs_async(self: Rc<Self>, js_ctx: &RefCell<&mut Context>) -> JsResult<()> {
@@ -202,7 +199,7 @@ impl JobExecutor for Executor {
             }
 
             self.drain_jobs(&mut js_ctx.borrow_mut());
-            tokio::task::yield_now().await
+            // TOOD: is it better or worse to yield here? Seems like worse but idk
         }
     }
 }
@@ -276,60 +273,45 @@ where
     F: (AsyncFnOnce(&mut Context) -> crate::Result<T>) + Send + 'static,
     T: Send + 'static,
 {
-    let rt = ctx.rt.clone();
-    let (send, recv) = oneshot::channel();
-    let handle = std::thread::spawn(move || {
-        send.send((|| -> crate::Result<T> {
-            // I wish I could only have one runtime, but unfortunately not, the ctx stuff just doesn't work
-            // out... Startup costs are a real thing we have to pay unfortunately. Hopefully multithreaded
-            // pays off some of that!!
-            let executor = Rc::new(Executor::new());
-            let loader = Rc::new(MemoizedModuleLoader::new(ctx));
+    // TODO: cache this Context to be per-thread
+    let executor = Rc::new(Executor::new());
+    let loader = Rc::new(MemoizedModuleLoader::new(ctx));
 
-            let js_ctx = &mut ContextBuilder::new()
-                .job_executor(executor.clone())
-                .module_loader(loader.clone())
-                .build()?;
+    let js_ctx = &mut ContextBuilder::new()
+        .job_executor(executor.clone())
+        .module_loader(loader.clone())
+        .build()?;
 
-            js_ctx.register_global_class::<JsImage>()?;
-            js_ctx.register_global_class::<JsObject>()?;
+    js_ctx.register_global_class::<JsImage>()?;
+    js_ctx.register_global_class::<JsObject>()?;
 
-            js_ctx.register_global_builtin_callable(
-                js_str!("print").into(),
-                1,
-                NativeFunction::from_fn_ptr(|_this, args, js_ctx| {
-                    let mut s = String::new();
-                    for (i, arg) in args.iter().enumerate() {
-                        if i != 0 {
-                            s.push(' ');
-                        }
-                        s.push_str(&arg.to_string(js_ctx)?.to_std_string_lossy());
-                    }
-                    println!("{}", s);
-                    Ok(boa_engine::JsValue::undefined())
-                }),
-            )?;
+    js_ctx.register_global_builtin_callable(
+        js_str!("print").into(),
+        1,
+        NativeFunction::from_fn_ptr(|_this, args, js_ctx| {
+            let mut s = String::new();
+            for (i, arg) in args.iter().enumerate() {
+                if i != 0 {
+                    s.push(' ');
+                }
+                s.push_str(&arg.to_string(js_ctx)?.to_std_string_lossy());
+            }
+            println!("{}", s);
+            Ok(boa_engine::JsValue::undefined())
+        }),
+    )?;
 
-            let arg = arg.try_into_js(js_ctx)?;
-            js_ctx.register_global_property(js_str!("ARG"), arg, Attribute::READONLY)?;
+    let arg = arg.try_into_js(js_ctx)?;
+    js_ctx.register_global_property(js_str!("ARG"), arg, Attribute::READONLY)?;
 
-            let driver_module = make_driver_module(js_ctx)?;
-            loader.set_builtin_module("driver".to_string(), driver_module);
+    let driver_module = make_driver_module(js_ctx)?;
+    loader.set_builtin_module("driver".to_string(), driver_module);
 
-            let local_set = &mut tokio::task::LocalSet::default();
-            rt.block_on(async { local_set.run_until(async { f(js_ctx).await }).await })
-        })())
-        .unwrap_or_else(|_| panic!("failed to send"))
-    });
-    // It's very important we drop this handle here actually! Improves performance by a lot to
-    // detatch the thread, for some reason.
-    drop(handle);
-
-    recv.await.expect("failed to receive")
+    f(js_ctx).await
 }
 
 fn make_driver_module(js_ctx: &mut Context) -> JsResult<Module> {
-    use crate::js::macros::module;
+    use crate::query::js::macros::module;
     use driver_module::*;
     Ok(module!(
         use js_ctx;
@@ -368,14 +350,9 @@ mod driver_module {
 
     use super::{FileOutput, RunFile, get_context, push_outputs};
 
-    use crate::js::{image::JsImage, object::JsObject, path::JsPath, value::JsValue};
-    use crate::query::{
-        context::Producer,
-        files::{ListDirectory, ReadFile},
-        html::{MarkdownToHtml, MinifyHtml},
-        image::{ConvertImage, ParseImage},
-        remote::GetUrl,
-    };
+    use crate::engine::Queryable;
+    use crate::query::js::{image::JsImage, object::JsObject, path::JsPath, value::JsValue};
+    use crate::query::*;
 
     pub async fn read_file(path: JsPath) -> JsResult<JsObject> {
         let ctx = &get_context()?;

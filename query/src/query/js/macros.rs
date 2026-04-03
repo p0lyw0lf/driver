@@ -7,7 +7,7 @@ macro_rules! replace_expr {
 pub(crate) use replace_expr;
 
 macro_rules! count_args {
-        ($($arg:ident),*) => { <[()]>::len(&[$($crate::js::macros::replace_expr!($arg, ())),*]) };
+        ($($arg:ident),*) => { <[()]>::len(&[$($crate::query::js::macros::replace_expr!($arg, ())),*]) };
     }
 pub(crate) use count_args;
 
@@ -74,10 +74,10 @@ macro_rules! fn_obj {
             boa_engine::object::FunctionObjectBuilder::new(
                 $js_ctx.realm(),
                 boa_engine::native_function::NativeFunction::from_fn_ptr(
-                    $crate::js::macros::fn_body!($fn($($arg: $ty),* $(, [$ctx])?) -> $ret)
+                    $crate::query::js::macros::fn_body!($fn($($arg: $ty),* $(, [$ctx])?) -> $ret)
                 ),
             )
-            .length($crate::js::macros::count_args!($($arg),*))
+            .length($crate::query::js::macros::count_args!($($arg),*))
             .name(stringify!($fn))
             .build()
         };
@@ -93,10 +93,10 @@ macro_rules! async_fn_obj {
             boa_engine::object::FunctionObjectBuilder::new(
                 $js_ctx.realm(),
                 boa_engine::native_function::NativeFunction::from_async_fn(
-                    $crate::js::macros::async_fn_body!($fn($($arg: $ty),* $(, [$ctx])?) -> $ret)
+                    $crate::query::js::macros::async_fn_body!($fn($($arg: $ty),* $(, [$ctx])?) -> $ret)
                 ),
             )
-            .length($crate::js::macros::count_args!($($arg),*))
+            .length($crate::query::js::macros::count_args!($($arg),*))
             .name(stringify!($fn))
             .build()
         };
@@ -112,8 +112,8 @@ macro_rules! module {
         )*) => {
             {
             $(
-                $(let $fn = $crate::js::macros::fn_obj!($js_ctx : $fn($($tts)*) -> $ret);)?
-                $(let $async_fn = $crate::js::macros::async_fn_obj!($js_ctx : $async_fn($($async_tts)*) -> $async_ret);)?
+                $(let $fn = $crate::query::js::macros::fn_obj!($js_ctx : $fn($($tts)*) -> $ret);)?
+                $(let $async_fn = $crate::query::js::macros::async_fn_obj!($js_ctx : $async_fn($($async_tts)*) -> $async_ret);)?
             )*
             boa_engine::module::Module::synthetic(
                 &[$(
@@ -214,7 +214,7 @@ macro_rules! class_wrap {
                     class.method(
                         boa_engine::js_string!(stringify!($method_name)),
                         $method_count,
-                        boa_engine::NativeFunction::from_fn_ptr($crate::js::macros::class_fn_wrap!($class, $method_fn)),
+                        boa_engine::NativeFunction::from_fn_ptr($crate::query::js::macros::class_fn_wrap!($class, $method_fn)),
                     );
                 )*)?
                 Ok(())

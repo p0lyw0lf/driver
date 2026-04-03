@@ -3,7 +3,6 @@ use std::fmt::Display;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::engine::Producer;
 use crate::query::*;
 
 #[macro_export]
@@ -38,13 +37,10 @@ macro_rules! query_key {
 
         impl $crate::Producer for $key {
             type Output = $crate::engine::AnyOutput;
-            fn produce(&self, ctx: &$crate::engine::QueryContext) -> impl Future<Output = Self::Output> + Send {
-                let this = self.clone();
-                async move {
-                    match this { $(
-                        Self::$type(v) => $crate::engine::AnyOutput::new(v.produce(ctx).await),
-                    )* }
-                }
+            async fn produce(&self, ctx: &$crate::engine::QueryContext) -> Self::Output {
+                match self { $(
+                    Self::$type(v) => $crate::engine::AnyOutput::new(v.produce(ctx).await),
+                )* }
             }
         }
     }

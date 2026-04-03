@@ -3,7 +3,8 @@ pub use pastey::paste;
 #[macro_export]
 macro_rules! task_local {
     ($(static $ident:ident : $ty:ty ;)*) => {$( $crate::paste! {
-        mod [<def_ $ident:snake>] {
+        mod [<def_ $ident:lower:snake>] {
+            use super::*;
             use std::cell::RefCell;
             use std::pin::Pin;
             use std::task::{Context, Poll};
@@ -23,10 +24,11 @@ macro_rules! task_local {
             impl<F: Future> Future for Scoped<F> {
                 type Output = F::Output;
                 fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-                    // SAFETY: self is pinned
-                    let fut = unsafe { Pin::new_unchecked(&mut self.get_unchecked_mut().fut) };
-                    // SAFETY: self doesn't move as a result of this
-                    let curr = unsafe { &mut self.get_unchecked_mut().curr };
+                    // SAFETY: self stays pinned
+                    let this = unsafe { &mut self.get_unchecked_mut() };
+                    // SAFETY: because self is pinned, this is pinned
+                    let fut = unsafe { Pin::new_unchecked(&mut this.fut) };
+                    let curr = &mut this.curr;
                     let mut swap = || LOCAL.with_borrow_mut(|prev| std::mem::swap(curr, prev));
 
                     swap();
@@ -38,10 +40,12 @@ macro_rules! task_local {
             }
 
             impl<F: Future> Scoped<F> {
-                pub fn take_value(mut self) -> $ty {
-                    // SAFETY: by usage, we cannot ever have a `None` value, except temporary
-                    // (while not owned) in the middle of executing
-                    self.curr.take().expect("scope context somehow none")
+                /// Call this to get the value out of the scope once you're done polling the
+                /// future.
+                pub fn take_value(self: Pin<&mut Self>) -> Option<$ty> {
+                    // SAFETY: self stays pinned
+                    let this = unsafe { &mut self.get_unchecked_mut() };
+                    this.curr.take()
                 }
             }
 
@@ -55,11 +59,15 @@ macro_rules! task_local {
                 }
 
                 pub fn with<T>(&self, f: impl FnOnce(Option<&$ty>) -> T) -> T {
-                    LOCAL.with_borrow(|value| f(value))
+                    LOCAL.with_borrow(|value| f(value.as_ref()))
+                }
+
+                pub fn with_mut<T>(&self, f: impl FnOnce(Option<&mut $ty>) -> T) -> T {
+                    LOCAL.with_borrow_mut(|value| f(value.as_mut()))
                 }
             }
         }
 
-        static $ident: [<def_ $ident:snake>]::ScopeBuilder = [<def_ $ident:snake>]::ScopeBuilder;
+        static $ident: [<def_ $ident:lower:snake>]::ScopeBuilder = [<def_ $ident:lower:snake>]::ScopeBuilder;
     } )*};
 }

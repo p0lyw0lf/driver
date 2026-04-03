@@ -7,7 +7,7 @@ use boa_engine::{JsError, JsNativeError};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
-use crate::js::JsObject;
+use crate::query::js::JsObject;
 use crate::to_hash::ToHash;
 
 /// All the simple javascript values that can be serialized/deserialized losslessly

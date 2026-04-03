@@ -3,8 +3,9 @@ use boa_engine::{JsData, JsResult};
 use boa_gc::{Finalize, GcRef, Trace};
 use serde::{Deserialize, Serialize};
 
-use crate::db::object::Object;
-use crate::js::get_context;
+use crate::engine::db::Object;
+use crate::query::js::get_context;
+use crate::query::js::macros::class_wrap;
 
 #[derive(
     Debug,
@@ -39,7 +40,7 @@ impl JsObject {
     }
 }
 
-crate::js::macros::class_wrap!(class JsObject {
+class_wrap!(class JsObject {
     length 0,
     methods {
         data: (0) |this: GcRef<'_, JsObject>, _args, js_ctx| {

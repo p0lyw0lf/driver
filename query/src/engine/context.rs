@@ -14,7 +14,7 @@ use super::key::QueryKey;
 /// The main trait for
 pub trait Producer {
     type Output: Output + Sized + 'static;
-    fn produce(&self, ctx: &QueryContext) -> impl Future<Output = Self::Output> + Send;
+    fn produce(&self, ctx: &QueryContext) -> impl Future<Output = Self::Output>;
 }
 
 pub trait Queryable: Producer + Into<QueryKey> + Sized {
