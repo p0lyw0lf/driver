@@ -123,9 +123,6 @@ impl<'de> Deserialize<'de> for AnyOutput
 }
 
 valid_outputs![
-    // Just for placeholder purposes, shouldn't show up in serialized DB
-    (),
-    // These are the actual objects expected to show up.
     crate::Result<crate::engine::db::Object>,
     crate::Result<crate::query::js::FileOutput>,
     crate::Result<Vec<std::path::PathBuf>>,

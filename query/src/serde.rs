@@ -1,6 +1,5 @@
 use std::hash::Hash;
 use std::marker::PhantomData;
-use std::sync::Mutex;
 
 use scc::hash_map::HashMap;
 use serde::Deserialize;
@@ -96,56 +95,6 @@ impl<K: Eq + Hash, V> std::ops::Deref for SerializedMap<K, V> {
 }
 
 impl<K: Eq + Hash, V> std::ops::DerefMut for SerializedMap<K, V> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-/// Newtype for std::sync::Mutex that allow the things inside to be serialized.
-/// TODO: I should probably not be using this if I'm also using thread-per-core... Probably want to
-/// be using something like channels instead yeah.
-#[derive(Debug, Default)]
-pub struct SerializedMutex<T>(pub Mutex<T>);
-
-impl<T> SerializedMutex<T> {
-    pub fn new(t: T) -> Self {
-        Self(Mutex::new(t))
-    }
-}
-
-impl<T> Serialize for SerializedMutex<T>
-where
-    T: Serialize,
-{
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        self.lock().unwrap().serialize(serializer)
-    }
-}
-
-impl<'de, T> Deserialize<'de> for SerializedMutex<T>
-where
-    T: Deserialize<'de>,
-{
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        Ok(Self(Mutex::new(T::deserialize(deserializer)?)))
-    }
-}
-
-impl<T> std::ops::Deref for SerializedMutex<T> {
-    type Target = Mutex<T>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<T> std::ops::DerefMut for SerializedMutex<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }

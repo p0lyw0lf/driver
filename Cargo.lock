@@ -3295,12 +3295,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pub_if"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd95cb3c3a9fbd2b36831afc971cbf813b91f44a6591069541ac06dbf16bb4f9"
-
-[[package]]
 name = "pxfm"
 version = "0.1.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3331,7 +3325,6 @@ dependencies = [
  "num_cpus",
  "oneshot",
  "postcard",
- "pub_if",
  "relative-path",
  "reqwest",
  "scc",

@@ -4,12 +4,11 @@ use std::io::Read;
 use std::path::Path;
 use std::sync::{Arc, atomic::AtomicUsize};
 
-use pub_if::pub_if;
 use scc::hash_map;
 use serde::{Deserialize, Serialize};
 
 use crate::engine::{AnyOutput, QueryKey, Queryable};
-use crate::serde::{SerializedMap, SerializedMutex};
+use crate::serde::SerializedMap;
 use crate::to_hash::ToHash;
 
 pub mod object;
@@ -29,8 +28,7 @@ pub struct Revision {
 
 /// Represents the current known state of a query. It is bundled together because it should all be
 /// operated on at once.
-#[pub_if(test)]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Value {
     value: AnyOutput,
     #[serde(skip)]
@@ -38,12 +36,29 @@ pub struct Value {
     revision: Revision,
 }
 
+/// Represents a value as it's being computed by the system. Allows for multiple logcial queries
+/// for the same key to be in-flight at the same time, while only doing one actual computation.
+#[derive(Debug, Serialize, Deserialize)]
+enum LogicalValue {
+    Materialized(Value),
+    /// This is just a oneshot because each entry notifies just the next one waiting that its it's
+    /// turn. I think this is slightly less efficient than using a condition variable + mutex to
+    /// gate tasks one-at-a-time, but it's more correct than async_broadcast which is my closest
+    /// alternative.
+    /// NOTE: acutally, I'm not so sure about this! The oneshot::Receiver could be in a thread
+    /// that's currently doing a lot of other work, and there could be lots of other things waiting
+    /// on it that need to complete as well. Serializing things this way doesn't seem ideal, but
+    /// getting a "real" "hey whoever can take this next, it's up for grabs" seems a bit harder.
+    #[serde(skip)]
+    Computing(oneshot::Receiver<Value>),
+}
+
 #[derive(Default, Debug, Serialize, Deserialize)]
 pub struct Database {
     #[serde(skip)]
     pub(crate) revision: AtomicUsize,
 
-    cache: SerializedMap<QueryKey, Arc<SerializedMutex<Value>>>,
+    cache: SerializedMap<QueryKey, LogicalValue>,
     dep_graph: SerializedMap<QueryKey, BTreeSet<QueryKey>>,
 
     pub objects: object::Objects,
@@ -77,27 +92,32 @@ impl Database {
     pub(crate) async fn with_entry<T>(
         &self,
         key: QueryKey,
-        f: impl for<'a> AsyncFnOnce(Entry<'a>) -> T,
+        f: impl for<'a> AsyncFnOnce(Entry) -> T,
     ) -> T {
-        let (value, occupied) = {
+        let
+        let case =
             match self.cache.entry_sync(key.clone()) {
-                hash_map::Entry::Occupied(entry) => {
-                    let value = entry.get().clone();
-                    (value, true)
+                hash_map::Entry::Occupied(entry) => match entry.get() {
+                    LogicalValue::Materialized(value) => {
+                        let (send, recv) = async_broadcast::broadcast(1);
+                        let _ = entry.insert(LogicalValue::Computing(recv));
+                        Case::Present(value.clone(), send)
+                    },
+                    LogicalValue::Computing(receiver) => Case::Computing(receiver.clone()),
                 }
                 hash_map::Entry::Vacant(entry) => {
-                    // PLACEHOLDER, MEANS NOTHING, MUST NOT BE USED
-                    let placeholder_value = Value {
-                        value: AnyOutput::new(()),
-                        revision: Revision::default(),
-                    };
-                    let entry =
-                        entry.insert_entry(Arc::new(SerializedMutex::new(placeholder_value)));
-                    let value = entry.get().clone();
-                    (value, false)
+                    let (send, recv) = async_broadcast::broadcast(1);
+                    let _ = entry.insert_entry(LogicalValue::Computing(recv));
+                    Case::Missing(send)
                 }
-            }
-        };
+            };
+
+        // This is split out from the above so that we don't hold the lock on the map for too long.
+        let value = match case {
+            Case::Present(value, sender) => todo!(),
+            Case::Missing(sender) => todo!(),
+            Case::Computing(receiver) => todo!()
+        }
 
         let value = value.lock().await;
         f(Entry {
@@ -123,21 +143,20 @@ impl Database {
     }
 }
 
-pub struct Entry<'a> {
+pub struct Entry {
     key: QueryKey,
-    value: MutexGuard<'a, Value>,
-    has_value: bool,
+    value: 
 }
 
-impl<'a> Drop for Entry<'a> {
+impl Drop for Entry {
     fn drop(&mut self) {
-        if !self.has_value {
+        if self.value.is_none() {
             panic!("dropped entry for {} without inserting value", self.key);
         }
     }
 }
 
-impl<'a> Entry<'a> {
+impl Entry {
     pub fn insert(&mut self, revision: usize, value: AnyOutput) {
         let hash = value.to_hash();
         let old = std::mem::replace(&mut self.value.value, value);
