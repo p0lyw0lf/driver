@@ -1,7 +1,9 @@
 use std::{sync::Arc, thread::JoinHandle};
 
 use async_task::Runnable;
+use futures_concurrency::stream::IntoStream;
 use futures_lite::future;
+use futures_lite::stream::{self, StreamExt};
 
 use crate::engine::{
     any_output::AnyOutput,
@@ -124,35 +126,21 @@ enum Event {
 }
 
 /// Main loop of each thread in the threadpool.
-fn main_loop(recv_work: flume::Receiver<UnitOfWork>, mut recv_stop: async_broadcast::Receiver<()>) {
+fn main_loop(recv_work: flume::Receiver<UnitOfWork>, recv_stop: async_broadcast::Receiver<()>) {
     let (send_runnable, recv_runnable) = flume::unbounded::<Runnable>();
     future::block_on(async {
-        loop {
-            // A threadpool does one of three things:
-            // 1: stop
-            let stop_fut = async {
-                let () = recv_stop.recv_direct().await.expect("stop receive error");
-                Event::Stop
-            };
-            // 2: Run an existing future that's been re-scheduled for more work
-            let old_work_fut = async {
-                let runnable = recv_runnable
-                    .recv_async()
-                    .await
-                    .expect("runnable receive error");
-                Event::OldWork(runnable)
-            };
-            // 3: Start a new unit of work
-            let new_work_fut = async {
-                let work = recv_work.recv_async().await.expect("work receive error");
-                Event::NewWork(work)
-            };
-            // NOTE: All of the above futures are cancel-safe! They drop their place in the
-            // receiving line when the future object itself is dropped, no matter if
-            // it's been polled to completion or now.
-            // Prefer higher-priority futures over lower priority ones with the `future::or`
-            // function, which works like a poor woman's `select!` macro.
-            match future::block_on(future::or(stop_fut, future::or(old_work_fut, new_work_fut))) {
+        // A threadpool does one of three things:
+        // 1: stop
+        let stop_stream = recv_stop.into_stream().map(|()| Event::Stop);
+        // 2: Run an existing future that's been re-scheduled for more work
+        let old_work_stream = recv_runnable.into_stream().map(Event::OldWork);
+        // 3: Start a new unit of work
+        let new_work_stream = recv_work.into_stream().map(Event::NewWork);
+
+        let mut event_stream =
+            stream::or(stop_stream, stream::or(old_work_stream, new_work_stream));
+        while let Some(event) = event_stream.next().await {
+            match event {
                 Event::Stop => break,
                 Event::OldWork(runnable) => {
                     // There is a pending task => run it
@@ -161,7 +149,7 @@ fn main_loop(recv_work: flume::Receiver<UnitOfWork>, mut recv_stop: async_broadc
                 Event::NewWork(query) => {
                     // There is no pending task => add a new one
                     let send_runnable = send_runnable.clone();
-                    let (runnable, _) = async_task::spawn_local(
+                    let (runnable, task) = async_task::spawn_local(
                         async {
                             let UnitOfWork { key, ctx, send } = query;
                             let output = key.query(&ctx).await;
@@ -169,6 +157,7 @@ fn main_loop(recv_work: flume::Receiver<UnitOfWork>, mut recv_stop: async_broadc
                         },
                         move |runnable| send_runnable.send(runnable).expect("runnable send error"),
                     );
+                    task.detach();
                     runnable.run();
                 }
             }
