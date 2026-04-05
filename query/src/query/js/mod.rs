@@ -36,11 +36,7 @@ mod object;
 mod path;
 mod value;
 
-use self::{image::JsImage, path::JsPath};
-#[cfg(test)]
-pub use self::{object::JsObject, value::JsValue};
-#[cfg(not(test))]
-use self::{object::JsObject, value::JsValue};
+use self::{image::JsImage, object::JsObject, path::JsPath, value::JsValue};
 
 pub type WriteOutputs = BTreeMap<PathBuf, Object>;
 
@@ -270,8 +266,7 @@ impl ModuleLoader for MemoizedModuleLoader {
 
 async fn with_js_ctx<T, F>(ctx: QueryContext, arg: JsValue, f: F) -> crate::Result<T>
 where
-    F: (AsyncFnOnce(&mut Context) -> crate::Result<T>) + Send + 'static,
-    T: Send + 'static,
+    F: AsyncFnOnce(&mut Context) -> crate::Result<T>,
 {
     // TODO: cache this Context to be per-thread
     let executor = Rc::new(Executor::new());
@@ -549,9 +544,6 @@ query_key!(RunFile {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileOutput {
-    #[cfg(test)]
-    pub value: JsValue,
-    #[cfg(not(test))]
     value: JsValue,
     pub outputs: WriteOutputs,
 }

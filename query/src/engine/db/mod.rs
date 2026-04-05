@@ -44,12 +44,12 @@ enum LogicalValue {
     /// turn. I think this is slightly less efficient than using a condition variable + mutex to
     /// gate tasks one-at-a-time, but it's more correct than async_broadcast which is my closest
     /// alternative.
-    /// NOTE: acutally, I'm not so sure about this! The oneshot::Receiver could be in a thread
+    /// NOTE: acutally, I'm not so sure about this! The receiver could be in a thread
     /// that's currently doing a lot of other work, and there could be lots of other things waiting
     /// on it that need to complete as well. Serializing things this way doesn't seem ideal, but
     /// getting a "real" "hey whoever can take this next, it's up for grabs" seems a bit harder.
     #[serde(skip)]
-    Computing(oneshot::Receiver<Value>),
+    Computing(flume::Receiver<Value>),
 }
 
 #[derive(Default, Debug, Serialize, Deserialize)]
@@ -105,10 +105,10 @@ impl Database {
         enum Case {
             Present(Value),
             Missing,
-            Contended(oneshot::Receiver<Value>),
+            Contended(flume::Receiver<Value>),
         }
 
-        let (send, recv) = oneshot::channel();
+        let (send, recv) = flume::bounded(1);
         let case = match self
             .cache
             .upsert_sync(key.clone(), LogicalValue::Computing(recv))
@@ -122,7 +122,7 @@ impl Database {
         let value = match case {
             Case::Present(value) => Some(value),
             Case::Missing => None,
-            Case::Contended(recv) => Some(recv.await.expect("value receive error")),
+            Case::Contended(recv) => Some(recv.recv_async().await.expect("value receive error")),
         };
 
         let mut entry = Entry { value };
@@ -131,7 +131,7 @@ impl Database {
         let value = entry
             .value
             .unwrap_or_else(|| panic!("operated on entry {} without inserting value", key));
-        send.send(value).expect("value send error");
+        send.try_send(value).expect("value send error");
 
         out
     }

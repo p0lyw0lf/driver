@@ -8,4 +8,5 @@ pub use any_output::AnyOutput;
 pub use context::Producer;
 pub use context::QueryContext;
 pub use context::Queryable;
+pub use executor::Executor;
 pub use key::QueryKey;

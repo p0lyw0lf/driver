@@ -26,7 +26,7 @@ impl<T: Producer + Into<QueryKey> + Sized> Queryable for T {
         let value = ctx
             .executor
             .clone()
-            .query_internal(self.into(), ctx.parent.clone())
+            .query(self.into(), ctx.parent.clone())
             .await;
         *value
             .downcast()
@@ -64,7 +64,7 @@ impl QueryContext {
     }
 
     #[tracing::instrument(level = "debug", skip(self, entry), fields(key=%key))]
-    async fn query_entry<'a>(&self, key: QueryKey, entry: &mut Entry<'a>) -> AnyOutput {
+    async fn query_entry(&self, key: QueryKey, entry: &mut Entry) -> AnyOutput {
         trace!("starting query");
         if let Some(parent) = &self.parent {
             info!("adding edge {parent} -> {key}");
@@ -113,12 +113,12 @@ impl QueryContext {
     }
 
     #[tracing::instrument(level = "debug", skip(self, entry), fields(key=%key))]
-    async fn maybe_changed_after<'a>(
+    async fn maybe_changed_after(
         &self,
         verified_at: usize,
         key: QueryKey,
         current_revision: usize,
-        entry: &mut Entry<'a>,
+        entry: &mut Entry,
     ) -> bool {
         let Some(rev) = entry.revision() else {
             trace!("no revision, need to calculate");

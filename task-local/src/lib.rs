@@ -16,7 +16,7 @@ macro_rules! task_local {
             }
 
             /// Wrapper future that stores a previous context to the stack, if there is any.
-            struct Scoped<F: Future> {
+            pub struct Scoped<F: Future> {
                 curr: Option<$ty>,
                 fut: F,
             }

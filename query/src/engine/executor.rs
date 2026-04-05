@@ -66,7 +66,7 @@ impl Executor {
             .map(|_| {
                 let recv_work = recv_work.clone();
                 let recv_stop = recv_stop.clone();
-                std::thread::spawn(|| main_loop(recv_work, recv_stop))
+                std::thread::spawn(move || main_loop(recv_work, recv_stop))
             })
             .collect();
 
@@ -79,15 +79,7 @@ impl Executor {
         }
     }
 
-    /// MUST NOT be run in an async context.
-    pub fn query<K: Queryable>(self: Arc<Self>, key: K) -> K::Output {
-        let value = future::block_on(self.query_internal(key.into(), None));
-        *value
-            .downcast()
-            .expect("query produced wrong value somehow")
-    }
-
-    pub(crate) async fn query_internal(
+    pub(crate) async fn query(
         self: Arc<Self>,
         key: QueryKey,
         parent: Option<QueryKey>,
@@ -117,6 +109,10 @@ impl Executor {
 
         // Only then should we save the database
         Database::save_to_file(self.db, &self.options.cache_path)
+    }
+
+    pub fn display_dep_graph(&self) -> impl std::fmt::Display + '_ {
+        self.db.display_dep_graph()
     }
 }
 

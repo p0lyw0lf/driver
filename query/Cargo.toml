@@ -6,7 +6,6 @@ edition = "2024"
 [dependencies]
 task-local = { path = "../task-local" }
 async-broadcast = "0.7"
-async-channel = "2.3"
 async-executor = "1.14"
 async-fs = "2.2"
 async-task = "4.7"
