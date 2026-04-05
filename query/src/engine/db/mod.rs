@@ -2,9 +2,8 @@ use std::collections::BTreeSet;
 use std::fmt::Display;
 use std::io::Read;
 use std::path::Path;
-use std::sync::{Arc, atomic::AtomicUsize};
+use std::sync::atomic::AtomicUsize;
 
-use scc::hash_map;
 use serde::{Deserialize, Serialize};
 
 use crate::engine::{AnyOutput, QueryKey, Queryable};
@@ -92,40 +91,49 @@ impl Database {
     pub(crate) async fn with_entry<T>(
         &self,
         key: QueryKey,
-        f: impl for<'a> AsyncFnOnce(Entry) -> T,
+        f: impl for<'a> AsyncFnOnce(&'a mut Entry) -> T,
     ) -> T {
-        let
-        let case =
-            match self.cache.entry_sync(key.clone()) {
-                hash_map::Entry::Occupied(entry) => match entry.get() {
-                    LogicalValue::Materialized(value) => {
-                        let (send, recv) = async_broadcast::broadcast(1);
-                        let _ = entry.insert(LogicalValue::Computing(recv));
-                        Case::Present(value.clone(), send)
-                    },
-                    LogicalValue::Computing(receiver) => Case::Computing(receiver.clone()),
-                }
-                hash_map::Entry::Vacant(entry) => {
-                    let (send, recv) = async_broadcast::broadcast(1);
-                    let _ = entry.insert_entry(LogicalValue::Computing(recv));
-                    Case::Missing(send)
-                }
-            };
+        /// Here, we effectively queue the waiters in FIFO order, based on the time they swap in
+        /// their local oneshot channel into the map. There are other possible algorithms we can do
+        /// here, but they have more overhead and I'm not 100% convinced they are globally better,
+        /// so let's just do this for now.
+        ///
+        /// (Specifically, I think trying to get earlier waiters processed "faster" is fine, even
+        /// if we could be doing more concurrent stuff in-flight, because overall I think there
+        /// won't be _too_ many thread-blocking tasks going on, and even if there are, they'll gum
+        /// up stuff either way, or something like that).
+        enum Case {
+            Present(Value),
+            Missing,
+            Contended(oneshot::Receiver<Value>),
+        }
+
+        let (send, recv) = oneshot::channel();
+        let case = match self
+            .cache
+            .upsert_sync(key.clone(), LogicalValue::Computing(recv))
+        {
+            None => Case::Missing,
+            Some(LogicalValue::Materialized(value)) => Case::Present(value),
+            Some(LogicalValue::Computing(recv)) => Case::Contended(recv),
+        };
 
         // This is split out from the above so that we don't hold the lock on the map for too long.
         let value = match case {
-            Case::Present(value, sender) => todo!(),
-            Case::Missing(sender) => todo!(),
-            Case::Computing(receiver) => todo!()
-        }
+            Case::Present(value) => Some(value),
+            Case::Missing => None,
+            Case::Contended(recv) => Some(recv.await.expect("value receive error")),
+        };
 
-        let value = value.lock().await;
-        f(Entry {
-            key,
-            value,
-            has_value: occupied,
-        })
-        .await
+        let mut entry = Entry { value };
+        let out = f(&mut entry).await;
+
+        let value = entry
+            .value
+            .unwrap_or_else(|| panic!("operated on entry {} without inserting value", key));
+        send.send(value).expect("value send error");
+
+        out
     }
 
     /// Gets the value associated with an entry. MUST ONLY be used to compute diffs between past
@@ -134,68 +142,73 @@ impl Database {
     where
         K: Queryable,
     {
-        let value = { self.cache.get_sync(&key.into())?.get().clone() };
-        let value = {
-            let value = value.lock().await;
-            value.value.clone()
+        let key = key.into();
+        let value = match self.cache.get_sync(&key)?.get() {
+            LogicalValue::Materialized(value) => value.value.clone(),
+            LogicalValue::Computing(_) => {
+                panic!("should not still be computing {key}")
+            }
         };
         value.downcast().map(|x| *x)
     }
 }
 
-pub struct Entry {
-    key: QueryKey,
-    value: 
+impl Value {
+    fn mark_changed(&mut self, revision: usize) {
+        // Only move the revision forward
+        self.revision.changed_at = std::cmp::max(self.revision.changed_at, revision);
+    }
+    fn mark_verified(&mut self, revision: usize) {
+        // Only ever move revision forward.
+        self.revision.verified_at = std::cmp::max(self.revision.verified_at, revision);
+    }
 }
 
-impl Drop for Entry {
-    fn drop(&mut self) {
-        if self.value.is_none() {
-            panic!("dropped entry for {} without inserting value", self.key);
-        }
-    }
+pub(crate) struct Entry {
+    value: Option<Value>,
 }
 
 impl Entry {
     pub fn insert(&mut self, revision: usize, value: AnyOutput) {
-        let hash = value.to_hash();
-        let old = std::mem::replace(&mut self.value.value, value);
-        self.has_value = true;
+        match self.value {
+            None => {
+                self.value = Some(Value {
+                    value,
+                    revision: Revision {
+                        changed_at: revision,
+                        verified_at: revision,
+                    },
+                });
+            }
+            Some(ref mut this) => {
+                let hash = value.to_hash();
+                let old = std::mem::replace(&mut this.value, value);
 
-        let did_change = if self.has_value {
-            old.to_hash() != hash
-        } else {
-            // If there was no previous value, it's always a change
-            true
-        };
+                let did_change = old.to_hash() != hash;
 
-        self.mark_verified(revision);
-        if did_change {
-            // Only move the revision forward
-            self.value.revision.changed_at =
-                std::cmp::max(self.value.revision.changed_at, revision);
+                this.mark_verified(revision);
+                if did_change {
+                    this.mark_changed(revision);
+                }
+            }
         }
     }
 
     pub fn revision(&self) -> Option<Revision> {
-        if self.has_value {
-            Some(self.value.revision)
-        } else {
-            None
-        }
+        self.value.as_ref().map(|value| value.revision)
     }
 
+    /// MUST only be called when the value is known to be present.
     pub fn mark_verified(&mut self, revision: usize) {
-        // Only move the revision forward
-        self.value.revision.verified_at = std::cmp::max(self.value.revision.verified_at, revision);
+        let this = self
+            .value
+            .as_mut()
+            .unwrap_or_else(|| panic!("tried to mark value as verified before inserting"));
+        this.mark_verified(revision);
     }
 
-    pub fn value(&self) -> Option<&'_ AnyOutput> {
-        if self.has_value {
-            Some(&self.value.value)
-        } else {
-            None
-        }
+    pub fn value(&self) -> Option<AnyOutput> {
+        self.value.as_ref().map(|value| value.value.clone())
     }
 }
 

@@ -90,8 +90,7 @@ impl QueryContext {
         if !maybe_changed {
             return entry
                 .value()
-                .unwrap_or_else(|| panic!("Verified query {key} missing value in cache"))
-                .clone();
+                .unwrap_or_else(|| panic!("Verified query {key} missing value in cache"));
         }
 
         trace!("removing dependencies");
