@@ -87,7 +87,10 @@ impl RemoteObjects {
             req
         };
 
-        let resp: Response<Incoming> = self.client.request(req.body(Default::default())?).await?;
+        let resp: Response<Incoming> = self
+            .client
+            .request(req.body(http_body_util::Empty::<hyper::body::Bytes>::new())?)
+            .await?;
         let status = resp.status();
         if !status.is_success() {
             if status == StatusCode::NOT_MODIFIED {

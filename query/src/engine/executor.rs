@@ -172,14 +172,7 @@ fn main_loop(recv_work: flume::Receiver<UnitOfWork>, recv_stop: async_broadcast:
 }
 
 #[derive(Debug, Copy, Clone)]
-#[non_exhaustive]
 pub struct CurrentThreadExecutor;
-
-impl CurrentThreadExecutor {
-    pub const fn new() -> Self {
-        Self
-    }
-}
 
 impl<F> hyper::rt::Executor<F> for CurrentThreadExecutor
 where

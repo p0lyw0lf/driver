@@ -35,6 +35,7 @@
           rustc = rust-toolchain;
         };
 
+        # TOOD: pkgs-config openssl
         driver = naersk'.buildPackage {
           src = ./.;
           cargoBuildOptions = opts: opts ++ [ "--package driver" ];
