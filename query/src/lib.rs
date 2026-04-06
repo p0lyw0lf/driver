@@ -5,7 +5,6 @@ use futures_concurrency::future::TryJoin;
 
 use crate::engine::Producer;
 use crate::engine::db::Object;
-use crate::query::js::FileOutput;
 use crate::query::{RunFile, js::WriteOutputs};
 
 mod engine;
@@ -39,7 +38,7 @@ pub async fn run(rt: Arc<Executor>, file: PathBuf) -> crate::Result<Output> {
     let output = rt
         .query(key.into(), None)
         .await
-        .downcast::<crate::Result<FileOutput>>()
+        .downcast::<<RunFile as Producer>::Output>()
         .expect("invalid type");
     let output = (*output)?;
     Ok(Output {

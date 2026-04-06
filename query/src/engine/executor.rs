@@ -5,12 +5,7 @@ use futures_concurrency::stream::IntoStream;
 use futures_lite::future;
 use futures_lite::stream::{self, StreamExt};
 
-use crate::engine::{
-    any_output::AnyOutput,
-    context::{QueryContext, Queryable},
-    db::Database,
-    key::QueryKey,
-};
+use crate::engine::{any_output::AnyOutput, context::QueryContext, db::Database, key::QueryKey};
 use crate::options::Options;
 
 /// The main struct that runs the futures. Uses a thread-per-core architecture to run things as
@@ -64,7 +59,8 @@ impl Executor {
         let (send_work, recv_work) = flume::unbounded();
         let (send_stop, recv_stop) = async_broadcast::broadcast(1);
 
-        let threads = (0..num_cpus::get())
+        let n = 2; // num_cpus::get();
+        let threads = (0..n)
             .map(|_| {
                 let recv_work = recv_work.clone();
                 let recv_stop = recv_stop.clone();
@@ -152,7 +148,7 @@ fn main_loop(recv_work: flume::Receiver<UnitOfWork>, recv_stop: async_broadcast:
                     let (runnable, task) = async_task::spawn_local(
                         async {
                             let UnitOfWork { key, ctx, send } = query;
-                            let output = key.query(&ctx).await;
+                            let output = ctx.query_internal(key).await;
                             send.send(output).expect("output send error");
                         },
                         move |runnable| send_runnable.send(runnable).expect("runnable send error"),

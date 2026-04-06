@@ -4,8 +4,6 @@ use std::sync::atomic::Ordering;
 
 use tracing::{info, trace};
 
-use crate::options::Options;
-
 use super::any_output::{AnyOutput, Output};
 use super::db::{Database, Entry};
 use super::executor::Executor;
@@ -46,13 +44,10 @@ impl QueryContext {
         &self.executor.db
     }
 
-    /// Get the global options associated with the context.
-    pub(crate) fn options(&self) -> &Options {
-        &self.executor.options
-    }
-
+    /// NOTE: most code that runs inside a query itself should use the `key.query(ctx)` form
+    /// instead. This function is meant to be used by the executor itself.
     #[tracing::instrument(level = "debug", skip(self), fields(key=%key))]
-    async fn query(&self, key: QueryKey) -> AnyOutput {
+    pub(crate) async fn query_internal(&self, key: QueryKey) -> AnyOutput {
         trace!("locking db entry");
         self.db()
             .with_entry(key.clone(), async |mut entry| {
