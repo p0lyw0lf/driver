@@ -19,6 +19,10 @@ futures-concurrency = "7.7"
 futures-lite = "2.6"
 generic-array = { version = "0.14", features = ["serde"] }
 hex = "0.4"
+http-body-util = "0.1"
+hyper = { version = "1.9", features = ["client", "http1"] }
+hyper-rustls = "0.27"
+hyper-util = { version = "0.1.20", features = ["client-legacy", "http1", "tracing"] }
 ignore = "0.4"
 jiff = { version = "0.2", features = ["serde"] }
 minify-html = "0.18"
@@ -34,15 +38,6 @@ url = { version = "2.5", features = ["serde"] }
 zstd = "0.13"
 zune-core = "0.5"
 zune-imageprocs = "0.5"
-
-[dependencies.reqwest]
-version = "0.13"
-features = [
-  "brotli",
-  "gzip",
-  "zstd",
-  "deflate",
-]
 
 [dependencies.zune-image]
 version = "0.5"

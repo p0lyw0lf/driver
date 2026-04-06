@@ -341,11 +341,11 @@ mod driver_module {
     use boa_engine::value::TryFromJs;
     use boa_engine::{Context, js_str};
     use boa_engine::{JsError, JsNativeError, JsResult};
-    use url::Url;
 
     use super::{FileOutput, RunFile, get_context, push_outputs};
 
     use crate::engine::Queryable;
+    use crate::engine::db::remote::Uri;
     use crate::query::js::{image::JsImage, object::JsObject, path::JsPath, value::JsValue};
     use crate::query::*;
 
@@ -424,10 +424,10 @@ mod driver_module {
 
     pub async fn get_url(url: String) -> JsResult<JsObject> {
         let ctx = &get_context()?;
-        let url = Url::parse(&url)
+        let uri = hyper::Uri::try_from(&url)
             .map_err(|e| JsNativeError::eval().with_message(format!("parsing url: {e}")))?;
 
-        let object = GetUrl(url)
+        let object = GetUrl(Uri(uri))
             .query(ctx)
             .await
             .map_err(|e| JsNativeError::eval().with_message(format!("fetching url: {e}")))?;

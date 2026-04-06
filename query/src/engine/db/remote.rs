@@ -1,28 +1,31 @@
+use http_body_util::BodyExt;
+use hyper::Response;
+use hyper::body::Incoming;
+use hyper::header::{CACHE_CONTROL, ETAG, EXPIRES, IF_MODIFIED_SINCE, IF_NONE_MATCH, USER_AGENT};
+use hyper::{HeaderMap, StatusCode, header::HeaderValue};
 use jiff::fmt::temporal::DateTimeParser;
 use jiff::{Span, Timestamp, ToSpan};
-use reqwest::header::{CACHE_CONTROL, ETAG, EXPIRES, IF_MODIFIED_SINCE, IF_NONE_MATCH};
-use reqwest::{
-    StatusCode, Url,
-    header::{HeaderMap, HeaderValue},
-};
 use serde::{Deserialize, Serialize};
 
+use crate::engine::db::http_client::{Client, default_client};
 use crate::engine::db::object::{Object, Objects};
 use crate::serde::SerializedMap;
+
+pub use crate::engine::db::http_client::Uri;
 
 /// A store for all URLs that have been fetched remotely. Maps a URL to an object hash and
 /// expiration time, if present on the fetched headers.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RemoteObjects {
-    #[serde(skip, default = "RemoteObjects::default_client")]
-    client: reqwest::Client,
-    cache: SerializedMap<Url, RemoteObject>,
+    #[serde(skip, default = "crate::engine::db::http_client::default_client")]
+    client: Client,
+    cache: SerializedMap<Uri, RemoteObject>,
 }
 
 impl Default for RemoteObjects {
     fn default() -> Self {
         Self {
-            client: Self::default_client(),
+            client: default_client(),
             cache: Default::default(),
         }
     }
@@ -56,30 +59,12 @@ impl RemoteObject {
 }
 
 impl RemoteObjects {
-    fn default_client() -> reqwest::Client {
-        static USER_AGENT: &str = concat!(
-            "reqwest (",
-            env!("CARGO_PKG_NAME"),
-            " ",
-            env!("CARGO_PKG_VERSION"),
-            ") (+https://github.com/p0lyw0lf/driver)",
-        );
-        reqwest::Client::builder()
-            .user_agent(USER_AGENT)
-            .brotli(true)
-            .deflate(true)
-            .gzip(true)
-            .zstd(true)
-            .build()
-            .expect("Could not build HTTP client")
-    }
-
     /// Fetches a remote URL and adds it to the local store if not present or too stale.
     /// If the URL is present in the cache and still fresh, uses that instead of fetching.
-    pub async fn fetch(&self, objects: &Objects, url: Url) -> crate::Result<RemoteObject> {
+    pub async fn fetch(&self, objects: &Objects, uri: Uri) -> crate::Result<RemoteObject> {
         let req = {
             // Limit lifetime of the remote object that we use to build the request
-            let remote_object = self.cache.get_async(&url).await;
+            let remote_object = self.cache.get_async(&uri).await;
             if let Some(ref remote_object) = remote_object
                 && remote_object.is_fresh()
             {
@@ -88,7 +73,8 @@ impl RemoteObjects {
             }
 
             // Otherwise, we need to fetch the URL.
-            let mut req = self.client.get(url.clone());
+            let mut req = hyper::Request::get(uri.clone())
+                .header(USER_AGENT, crate::engine::db::http_client::USER_AGENT);
             if let Some(ref remote_object) = remote_object {
                 req = req.header(
                     IF_MODIFIED_SINCE,
@@ -101,14 +87,14 @@ impl RemoteObjects {
             req
         };
 
-        let resp = req.send().await?;
+        let resp: Response<Incoming> = self.client.request(req.body(Default::default())?).await?;
         let status = resp.status();
         if !status.is_success() {
             if status == StatusCode::NOT_MODIFIED {
                 // Cache thinks the object we have locally is still fresh, keep it around and
                 // update the headers.
                 let headers = ResponseHeaders::from_headers(resp.headers());
-                let remote_object = self.cache.get_async(&url).await.ok_or_else(|| {
+                let remote_object = self.cache.get_async(&uri).await.ok_or_else(|| {
                     crate::Error::new("server returned 304, but object not found in cache")
                 })?;
                 return Ok(headers.with_object(remote_object.object.clone()));
@@ -121,7 +107,8 @@ impl RemoteObjects {
 
         let headers = ResponseHeaders::from_headers(resp.headers());
 
-        let body = resp.bytes().await?;
+        let body = resp.into_body();
+        let body = body.collect().await?.to_bytes();
         let object = objects.store(body.into());
 
         Ok(headers.with_object(object))

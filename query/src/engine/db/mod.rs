@@ -10,6 +10,7 @@ use crate::engine::{AnyOutput, QueryKey, Queryable};
 use crate::serde::SerializedMap;
 use crate::to_hash::ToHash;
 
+mod http_client;
 pub mod object;
 pub mod remote;
 

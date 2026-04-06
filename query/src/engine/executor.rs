@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::{sync::Arc, thread::JoinHandle};
 
 use async_task::Runnable;
@@ -121,9 +122,18 @@ enum Event {
     Stop,
 }
 
+thread_local! {
+    /// Thread-local value that lets us spawn new futures onto the current thread's executor.
+    static SEND_RUNNABLE: OnceCell<flume::Sender<Runnable>> = const { OnceCell::new() };
+}
+
 /// Main loop of each thread in the threadpool.
 fn main_loop(recv_work: flume::Receiver<UnitOfWork>, recv_stop: async_broadcast::Receiver<()>) {
     let (send_runnable, recv_runnable) = flume::unbounded::<Runnable>();
+    SEND_RUNNABLE.with(|tlv| {
+        tlv.set(send_runnable.clone())
+            .expect("SEND_RUNNABLE already initialized")
+    });
     future::block_on(async {
         // A threadpool does one of three things:
         // 1: stop
@@ -159,4 +169,33 @@ fn main_loop(recv_work: flume::Receiver<UnitOfWork>, recv_stop: async_broadcast:
             }
         }
     });
+}
+
+#[derive(Debug, Copy, Clone)]
+#[non_exhaustive]
+pub struct CurrentThreadExecutor;
+
+impl CurrentThreadExecutor {
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl<F> hyper::rt::Executor<F> for CurrentThreadExecutor
+where
+    F: Future + 'static,
+    F::Output: 'static,
+{
+    fn execute(&self, fut: F) {
+        let send_runnable = SEND_RUNNABLE.with(|tlv| {
+            tlv.get()
+                .expect("SEND_RUNNABLE not initialized for this thread")
+                .clone()
+        });
+        let (runnable, task) = async_task::spawn_local(fut, move |runnable| {
+            send_runnable.send(runnable).expect("runnable send error")
+        });
+        task.detach();
+        runnable.run();
+    }
 }

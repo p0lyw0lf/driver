@@ -1,10 +1,10 @@
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::engine::{Producer, QueryContext, db::Object};
+use crate::engine::{Producer, QueryContext, db::Object, db::remote::Uri};
 use crate::query_key;
 
-query_key!(GetUrl(pub url::Url););
+query_key!(GetUrl(pub Uri););
 
 impl Producer for GetUrl {
     type Output = crate::Result<Object>;
