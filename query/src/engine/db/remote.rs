@@ -1,7 +1,9 @@
 use http_body_util::BodyExt;
 use hyper::Response;
 use hyper::body::Incoming;
-use hyper::header::{CACHE_CONTROL, ETAG, EXPIRES, IF_MODIFIED_SINCE, IF_NONE_MATCH, USER_AGENT};
+use hyper::header::{
+    CACHE_CONTROL, ETAG, EXPIRES, HOST, IF_MODIFIED_SINCE, IF_NONE_MATCH, USER_AGENT,
+};
 use hyper::{HeaderMap, StatusCode, header::HeaderValue};
 use jiff::fmt::temporal::DateTimeParser;
 use jiff::{Span, Timestamp, ToSpan};
@@ -62,7 +64,7 @@ impl RemoteObjects {
     /// Fetches a remote URL and adds it to the local store if not present or too stale.
     /// If the URL is present in the cache and still fresh, uses that instead of fetching.
     pub async fn fetch(&self, objects: &Objects, uri: Uri) -> crate::Result<RemoteObject> {
-        let req = {
+        let (req, why) = {
             // Limit lifetime of the remote object that we use to build the request
             let remote_object = self.cache.get_async(&uri).await;
             if let Some(ref remote_object) = remote_object
@@ -74,7 +76,8 @@ impl RemoteObjects {
 
             // Otherwise, we need to fetch the URL.
             let mut req = hyper::Request::get(uri.clone())
-                .header(USER_AGENT, crate::engine::db::http_client::USER_AGENT);
+                .header(USER_AGENT, crate::engine::db::http_client::USER_AGENT)
+                .header(HOST, uri.host().expect("no host"));
             if let Some(ref remote_object) = remote_object {
                 req = req.header(
                     IF_MODIFIED_SINCE,
@@ -84,13 +87,18 @@ impl RemoteObjects {
                     req = req.header(IF_NONE_MATCH, HeaderValue::from_bytes(etag)?);
                 }
             }
-            req
+
+            let why = match remote_object {
+                None => "not fetched",
+                Some(_) => "stale",
+            };
+
+            (req, why)
         };
 
-        let resp: Response<Incoming> = self
-            .client
-            .request(req.body(http_body_util::Empty::<hyper::body::Bytes>::new())?)
-            .await?;
+        let req = req.body(http_body_util::Empty::<hyper::body::Bytes>::new())?;
+        println!("[{}] fetching: {}", why, uri);
+        let resp: Response<Incoming> = self.client.request(req).await?;
         let status = resp.status();
         if !status.is_success() {
             if status == StatusCode::NOT_MODIFIED {
