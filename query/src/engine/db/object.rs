@@ -102,6 +102,9 @@ impl Objects {
     /// This will create a hardlink from the file in the object store to the specified output path
     pub async fn copy(&self, object: &Object, output_filename: &Path) -> crate::Result<()> {
         let input_filename = self.object_filename(object);
+        if std::fs::exists(output_filename)? {
+            async_fs::remove_file(output_filename).await?;
+        }
         async_fs::hard_link(&input_filename, output_filename).await?;
         Ok(())
     }

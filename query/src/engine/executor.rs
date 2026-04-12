@@ -60,7 +60,7 @@ impl Executor {
         let (send_work, recv_work) = flume::unbounded();
         let (send_stop, recv_stop) = async_broadcast::broadcast(1);
 
-        let n = 2; // num_cpus::get();
+        let n = num_cpus::get();
         let threads = (0..n)
             .map(|_| {
                 let recv_work = recv_work.clone();

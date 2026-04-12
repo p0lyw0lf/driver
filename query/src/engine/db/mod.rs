@@ -282,7 +282,7 @@ impl Database {
     pub(crate) fn save(self, options: &Options) -> crate::Result<()> {
         let file = std::fs::File::create(&options.cache_path)?;
         let file = zstd::Encoder::new(file, 1)?;
-        let file = postcard::to_io(&self.cache, file)?;
+        let file = postcard::to_io(&self.core, file)?;
         file.finish()?;
         // self.objects are already saved as part of normal operation
         Ok(())
