@@ -2,9 +2,9 @@ use std::collections::BTreeSet;
 use std::fmt::Display;
 use std::io::Read;
 use std::path::Path;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use serde::{Deserialize, Serialize, ser::Error as _};
+use serde::{Deserialize, Serialize};
 
 use crate::engine::{AnyOutput, QueryKey, Queryable};
 use crate::serde::SerializedMap;
@@ -41,7 +41,7 @@ pub struct Value {
 
 /// Represents a value as it's being computed by the system. Allows for multiple logcial queries
 /// for the same key to be in-flight at the same time, while only doing one actual computation.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 enum LogicalValue {
     Materialized(Value),
     /// This is just a oneshot because each entry notifies just the next one waiting that its it's
@@ -52,6 +52,7 @@ enum LogicalValue {
     /// that's currently doing a lot of other work, and there could be lots of other things waiting
     /// on it that need to complete as well. Serializing things this way doesn't seem ideal, but
     /// getting a "real" "hey whoever can take this next, it's up for grabs" seems a bit harder.
+    #[serde(skip)]
     Computing(ThreadsafeReceiver<Value>),
 }
 
@@ -60,6 +61,10 @@ pub struct Database {
     #[serde(skip)]
     pub(crate) revision: AtomicUsize,
 
+    /// Used to check that, when a `LogicalValue::Computing` is inserted/taken out, we get the same
+    /// one back. We do this because we can't compare the `oneshot::Receiver`s directly.
+    #[serde(skip)]
+    with_entry_nonce: AtomicUsize,
     cache: SerializedMap<QueryKey, LogicalValue>,
     dep_graph: SerializedMap<QueryKey, BTreeSet<QueryKey>>,
 
@@ -112,10 +117,13 @@ impl Database {
         }
 
         let (send, recv) = oneshot::channel();
-        let case = match self.cache.upsert_sync(
-            key.clone(),
-            LogicalValue::Computing(ThreadsafeReceiver(recv)),
-        ) {
+        let nonce = self.with_entry_nonce.fetch_add(1, Ordering::Relaxed);
+        let recv = ThreadsafeReceiver { recv, nonce };
+
+        let case = match self
+            .cache
+            .upsert_sync(key.clone(), LogicalValue::Computing(recv))
+        {
             None => Case::Missing,
             Some(LogicalValue::Materialized(value)) => Case::Present(value),
             Some(LogicalValue::Computing(recv)) => Case::Contended(recv),
@@ -135,12 +143,27 @@ impl Database {
             .value
             .unwrap_or_else(|| panic!("operated on entry {} without inserting value", key));
 
-        // Place the value in the receiver that's still in the map; the next task to encounter it
-        // should immediately pull it out.
-        send.send(value).expect("value send error");
-        // TODO: should I be replacing with LogicalValue::Materialized to get other things on the
-        // fast path later? Seems like maybe not since that requires another value.clone(), though
-        // I can't be sure until I benchmark later...
+        // If there are no waiters (that is, if no one has swapped out our
+        // LogicalValue::Computing), then let's just immediately swap back in a
+        // LogicalValue::Materialized, otherwise, we have to send the value to the next waiter.
+        match self.cache.entry_sync(key) {
+            scc::hash_map::Entry::Vacant(_) => {
+                panic!("got None after computing value; expected LogicalValue::Computing")
+            }
+            scc::hash_map::Entry::Occupied(mut entry) => {
+                let old_nonce = match entry.get() {
+                    LogicalValue::Materialized(_) => panic!(
+                        "got LogicalValue::Materialized after computing value; expected LogicalValue::Computing because we're holding a lock"
+                    ),
+                    LogicalValue::Computing(recv) => recv.nonce,
+                };
+                if old_nonce == nonce {
+                    let _ = entry.insert(LogicalValue::Materialized(value));
+                } else {
+                    send.send(value).expect("value send error");
+                }
+            }
+        };
 
         out
     }
@@ -166,7 +189,10 @@ impl Database {
 /// threads in our map, without acquiring a lock on the entry. We make it threadsafe by limiting
 /// the allowed operations to "never" take a shared reference.
 #[derive(Debug)]
-struct ThreadsafeReceiver<T>(oneshot::Receiver<T>);
+struct ThreadsafeReceiver<T> {
+    recv: oneshot::Receiver<T>,
+    nonce: usize,
+}
 unsafe impl<T> Sync for ThreadsafeReceiver<T> where T: Send {}
 
 impl<T> IntoFuture for ThreadsafeReceiver<T> {
@@ -174,50 +200,7 @@ impl<T> IntoFuture for ThreadsafeReceiver<T> {
     type IntoFuture = oneshot::AsyncReceiver<T>;
 
     fn into_future(self) -> Self::IntoFuture {
-        self.0.into_future()
-    }
-}
-
-impl<T> Serialize for ThreadsafeReceiver<T>
-where
-    T: Serialize,
-{
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        // NOTE: this is very unsafe actually. but probably fine due to how I use serialization
-        // within this crate: only once, at the very end.
-        let v = self.0.try_recv().map_err(|e| {
-            eprintln!("tried to serialize receiver without value: {e}");
-            S::Error::custom(e.to_string())
-        })?;
-        v.serialize(serializer)
-    }
-}
-
-impl Serialize for LogicalValue {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        // Just flatten both cases down: it will always be deserialized as "Materialized"
-        match self {
-            LogicalValue::Materialized(value) => value.serialize(serializer),
-            LogicalValue::Computing(threadsafe_receiver) => {
-                threadsafe_receiver.serialize(serializer)
-            }
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for LogicalValue {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = Value::deserialize(deserializer)?;
-        Ok(LogicalValue::Materialized(value))
+        self.recv.into_future()
     }
 }
 
