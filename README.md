@@ -5,7 +5,7 @@ WIP
 ## What?
 
 A ***🚀BLAZING🔥FAST💨*** Static Site Generator written in Rust that interprets
-framework-less Javascript files using [QuickJS](https://bellard.org/quickjs/).
+framework-less Javascript files using [BoaJS](https://boajs.dev/).
 
 Features:
 + Full incremental rebuilds, including when build logic changes.
