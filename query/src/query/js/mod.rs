@@ -543,6 +543,7 @@ query_key!(RunFile {
 });
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(Default))]
 pub struct FileOutput {
     value: JsValue,
     pub outputs: WriteOutputs,

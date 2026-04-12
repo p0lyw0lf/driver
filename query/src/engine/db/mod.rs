@@ -4,7 +4,7 @@ use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::AtomicUsize;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, ser::Error as _};
 
 use crate::engine::{AnyOutput, QueryKey, Queryable};
 use crate::serde::SerializedMap;
@@ -13,6 +13,9 @@ use crate::to_hash::ToHash;
 mod http_client;
 pub mod object;
 pub mod remote;
+
+#[cfg(test)]
+mod test;
 
 pub use object::Object;
 
@@ -38,7 +41,7 @@ pub struct Value {
 
 /// Represents a value as it's being computed by the system. Allows for multiple logcial queries
 /// for the same key to be in-flight at the same time, while only doing one actual computation.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 enum LogicalValue {
     Materialized(Value),
     /// This is just a oneshot because each entry notifies just the next one waiting that its it's
@@ -49,8 +52,7 @@ enum LogicalValue {
     /// that's currently doing a lot of other work, and there could be lots of other things waiting
     /// on it that need to complete as well. Serializing things this way doesn't seem ideal, but
     /// getting a "real" "hey whoever can take this next, it's up for grabs" seems a bit harder.
-    #[serde(skip)]
-    Computing(flume::Receiver<Value>),
+    Computing(ThreadsafeReceiver<Value>),
 }
 
 #[derive(Default, Debug, Serialize, Deserialize)]
@@ -106,14 +108,14 @@ impl Database {
         enum Case {
             Present(Value),
             Missing,
-            Contended(flume::Receiver<Value>),
+            Contended(ThreadsafeReceiver<Value>),
         }
 
-        let (send, recv) = flume::bounded(1);
-        let case = match self
-            .cache
-            .upsert_sync(key.clone(), LogicalValue::Computing(recv))
-        {
+        let (send, recv) = oneshot::channel();
+        let case = match self.cache.upsert_sync(
+            key.clone(),
+            LogicalValue::Computing(ThreadsafeReceiver(recv)),
+        ) {
             None => Case::Missing,
             Some(LogicalValue::Materialized(value)) => Case::Present(value),
             Some(LogicalValue::Computing(recv)) => Case::Contended(recv),
@@ -123,7 +125,7 @@ impl Database {
         let value = match case {
             Case::Present(value) => Some(value),
             Case::Missing => None,
-            Case::Contended(recv) => Some(recv.recv_async().await.expect("value receive error")),
+            Case::Contended(recv) => Some(recv.await.expect("value receive error")),
         };
 
         let mut entry = Entry { value };
@@ -132,7 +134,13 @@ impl Database {
         let value = entry
             .value
             .unwrap_or_else(|| panic!("operated on entry {} without inserting value", key));
-        send.try_send(value).expect("value send error");
+
+        // Place the value in the receiver that's still in the map; the next task to encounter it
+        // should immediately pull it out.
+        send.send(value).expect("value send error");
+        // TODO: should I be replacing with LogicalValue::Materialized to get other things on the
+        // fast path later? Seems like maybe not since that requires another value.clone(), though
+        // I can't be sure until I benchmark later...
 
         out
     }
@@ -147,10 +155,69 @@ impl Database {
         let value = match self.cache.get_sync(&key)?.get() {
             LogicalValue::Materialized(value) => value.value.clone(),
             LogicalValue::Computing(_) => {
-                panic!("should not still be computing {key}")
+                panic!("should not be computing {key}")
             }
         };
         value.downcast().map(|x| *x)
+    }
+}
+
+/// We need a threadsafe version of `oneshot::Receiver` in order to store values computed by other
+/// threads in our map, without acquiring a lock on the entry. We make it threadsafe by limiting
+/// the allowed operations to "never" take a shared reference.
+#[derive(Debug)]
+struct ThreadsafeReceiver<T>(oneshot::Receiver<T>);
+unsafe impl<T> Sync for ThreadsafeReceiver<T> where T: Send {}
+
+impl<T> IntoFuture for ThreadsafeReceiver<T> {
+    type Output = Result<T, oneshot::RecvError>;
+    type IntoFuture = oneshot::AsyncReceiver<T>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        self.0.into_future()
+    }
+}
+
+impl<T> Serialize for ThreadsafeReceiver<T>
+where
+    T: Serialize,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        // NOTE: this is very unsafe actually. but probably fine due to how I use serialization
+        // within this crate: only once, at the very end.
+        let v = self.0.try_recv().map_err(|e| {
+            eprintln!("tried to serialize receiver without value: {e}");
+            S::Error::custom(e.to_string())
+        })?;
+        v.serialize(serializer)
+    }
+}
+
+impl Serialize for LogicalValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        // Just flatten both cases down: it will always be deserialized as "Materialized"
+        match self {
+            LogicalValue::Materialized(value) => value.serialize(serializer),
+            LogicalValue::Computing(threadsafe_receiver) => {
+                threadsafe_receiver.serialize(serializer)
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for LogicalValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        Ok(LogicalValue::Materialized(value))
     }
 }
 
