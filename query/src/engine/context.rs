@@ -148,13 +148,13 @@ impl QueryContext {
             trace!("locking {dep}");
             if self
                 .db()
-                .with_entry(dep.clone(), async |mut dep_entry| {
+                .with_entry(dep.clone(), async |dep_entry| {
                     trace!("locked {dep}");
                     let dep_maybe_changed = Box::pin(self.maybe_changed_after(
                         verified_at,
                         dep.clone(),
                         current_revision,
-                        &mut dep_entry,
+                        dep_entry,
                     ))
                     .await;
                     if !dep_maybe_changed {
@@ -163,7 +163,7 @@ impl QueryContext {
                     }
 
                     trace!("pre-querying dep {dep}");
-                    let _ = Box::pin(self.query_entry(dep, &mut dep_entry)).await;
+                    let _ = Box::pin(self.query_entry(dep, dep_entry)).await;
 
                     let dep_rev = dep_entry
                         .revision()

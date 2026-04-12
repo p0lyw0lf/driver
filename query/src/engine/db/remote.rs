@@ -120,7 +120,7 @@ impl RemoteObjects {
 
         let body = resp.into_body();
         let body = body.collect().await?.to_bytes();
-        let object = objects.store(body.into());
+        let object = objects.store(body.into())?;
 
         let remote_object = headers.with_object(object);
         let _ = self.cache.upsert_async(uri, remote_object.clone()).await;

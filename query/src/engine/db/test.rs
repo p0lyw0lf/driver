@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::Options;
 use crate::engine::db::remote::Uri;
 use crate::engine::db::{Database, object::Object};
 use crate::engine::{AnyOutput, QueryKey};
@@ -105,7 +106,7 @@ fn roundtrip_map() {
 
 #[test]
 fn roundtrip_database() {
-    let db = Database::default();
+    let db = Database::new(&Options::default());
     use crate::query::*;
 
     let k1 = QueryKey::GetUrl(GetUrl(Uri(hyper::Uri::from_static(
@@ -155,11 +156,9 @@ fn roundtrip_database() {
         db
     });
 
-    let objects2 = roundtrip(&db1.objects);
-    assert_eq!(db1.objects, objects2);
     let _remotes2 = roundtrip(&db1.remotes);
 
     // This is more of a "can it serialize at all" test tbh, don't _really_ need to test
     // for equality right away.
-    let _db2 = roundtrip(&db1);
+    let _db2 = roundtrip(&db1.core);
 }

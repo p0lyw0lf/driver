@@ -172,7 +172,7 @@ impl<'de> Deserialize<'de> for Uri {
         D: serde::Deserializer<'de>,
     {
         let s = <&'_ str>::deserialize(deserializer)?;
-        let uri = hyper::Uri::try_from(s).map_err(|err| D::Error::custom(err))?;
+        let uri = hyper::Uri::try_from(s).map_err(D::Error::custom)?;
         Ok(Uri(uri))
     }
 }

@@ -55,7 +55,7 @@ impl Producer for MarkdownToHtml {
                 .build(),
         );
 
-        let object = ctx.db().objects.store(output.into_bytes());
+        let object = ctx.db().objects.store(output.into_bytes())?;
         Ok(object)
     }
 }
@@ -77,7 +77,7 @@ impl Producer for MinifyHtml {
             ..Default::default()
         };
         let output = minify_html::minify(contents.as_bytes(), &cfg);
-        let object = ctx.db().objects.store(output);
+        let object = ctx.db().objects.store(output)?;
         Ok(object)
     }
 }

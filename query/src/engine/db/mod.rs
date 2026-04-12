@@ -1,11 +1,12 @@
 use std::collections::BTreeSet;
 use std::fmt::Display;
 use std::io::Read;
-use std::path::Path;
+use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::{Deserialize, Serialize};
 
+use crate::Options;
 use crate::engine::{AnyOutput, QueryKey, Queryable};
 use crate::serde::SerializedMap;
 use crate::to_hash::ToHash;
@@ -56,8 +57,8 @@ enum LogicalValue {
     Computing(ThreadsafeReceiver<Value>),
 }
 
-#[derive(Default, Debug, Serialize, Deserialize)]
-pub struct Database {
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Core {
     #[serde(skip)]
     pub(crate) revision: AtomicUsize,
 
@@ -68,11 +69,25 @@ pub struct Database {
     cache: SerializedMap<QueryKey, LogicalValue>,
     dep_graph: SerializedMap<QueryKey, BTreeSet<QueryKey>>,
 
-    pub objects: object::Objects,
+    /// TODO: save these separately
     pub remotes: remote::RemoteObjects,
 }
 
-impl Database {
+#[derive(Debug)]
+pub struct Database {
+    core: Core,
+    pub objects: object::Objects,
+}
+
+impl Deref for Database {
+    type Target = Core;
+
+    fn deref(&self) -> &Self::Target {
+        &self.core
+    }
+}
+
+impl Core {
     pub(crate) async fn add_dependency(&self, parent: QueryKey, child: QueryKey) {
         let entry = self.dep_graph.entry_async(parent).await;
         let mut child = BTreeSet::from([child]);
@@ -145,7 +160,7 @@ impl Database {
 
         // If there are no waiters (that is, if no one has swapped out our
         // LogicalValue::Computing), then let's just immediately swap back in a
-        // LogicalValue::Materialized, otherwise, we have to send the value to the next waiter.
+        // LogicalValue::Materialized. Otherwise, we have to send the value to the next waiter.
         match self.cache.entry_sync(key) {
             scc::hash_map::Entry::Vacant(_) => {
                 panic!("got None after computing value; expected LogicalValue::Computing")
@@ -264,21 +279,37 @@ impl Entry {
 }
 
 impl Database {
-    pub(crate) fn save_to_file(db: Database, file: &Path) -> crate::Result<()> {
-        let file = std::fs::File::create(file)?;
+    pub(crate) fn save(self, options: &Options) -> crate::Result<()> {
+        let file = std::fs::File::create(&options.cache_path)?;
         let file = zstd::Encoder::new(file, 1)?;
-        let file = postcard::to_io(&db, file)?;
+        let file = postcard::to_io(&self.cache, file)?;
         file.finish()?;
+        // self.objects are already saved as part of normal operation
         Ok(())
     }
 
-    pub(crate) fn restore_from_file(file: &Path) -> crate::Result<Database> {
-        let file = std::fs::File::open(file)?;
+    pub(crate) fn restore(options: &Options) -> crate::Result<Self> {
+        std::fs::create_dir_all(
+            options
+                .cache_path
+                .parent()
+                .ok_or_else(|| crate::Error::new("invalid cache path"))?,
+        )?;
+        std::fs::create_dir_all(&options.objects_path)?;
+
+        let file = std::fs::File::open(&options.cache_path)?;
         let mut file = zstd::Decoder::new(file)?;
         let mut bytes = Vec::<u8>::new();
         file.read_to_end(&mut bytes)?;
-        let db: Database = postcard::from_bytes(&bytes)?;
-        Ok(db)
+        let core: Core = postcard::from_bytes(&bytes)?;
+        let objects = object::Objects::new(options.objects_path.clone());
+        Ok(Self { core, objects })
+    }
+
+    pub(crate) fn new(options: &Options) -> Self {
+        let core = Core::default();
+        let objects = object::Objects::new(options.objects_path.clone());
+        Self { core, objects }
     }
 
     pub(crate) fn display_dep_graph(&self) -> impl Display + '_ {

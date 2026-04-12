@@ -418,7 +418,10 @@ mod driver_module {
     pub fn store(value: String) -> JsResult<JsObject> {
         let ctx = &get_context()?;
 
-        let object = ctx.db().objects.store(value.into_bytes());
+        let object =
+            ctx.db().objects.store(value.into_bytes()).map_err(|err| {
+                JsNativeError::eval().with_message(format!("loading object: {err}"))
+            })?;
         Ok(JsObject { object })
     }
 

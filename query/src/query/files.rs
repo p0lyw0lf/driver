@@ -12,8 +12,11 @@ impl Producer for ReadFile {
     type Output = crate::Result<Object>;
     #[tracing::instrument(level = "debug", skip_all)]
     async fn produce(&self, ctx: &QueryContext) -> Self::Output {
+        println!("reading {}", self.0.display());
         let content = async_fs::read(&self.0).await?;
-        let object = ctx.db().objects.store(content);
+        println!("read {}", self.0.display());
+        let object = ctx.db().objects.store(content)?;
+        println!("stored content for {}: {}", self.0.display(), object);
         Ok(object)
     }
 }

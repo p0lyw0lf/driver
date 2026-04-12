@@ -201,7 +201,7 @@ impl Producer for ConvertImage {
         }
 
         let object = image.write_to_vec(format.into())?;
-        let object = ctx.db().objects.store(object);
+        let object = ctx.db().objects.store(object)?;
 
         Ok(ImageObject {
             object,

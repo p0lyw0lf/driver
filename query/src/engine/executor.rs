@@ -49,9 +49,9 @@ struct UnitOfWork {
 impl Executor {
     /// MUST NOT be run in an async context.
     pub fn start(options: Options) -> Executor {
-        let db = Database::restore_from_file(&options.cache_path).unwrap_or_else(|err| {
+        let db = Database::restore(&options).unwrap_or_else(|err| {
             eprintln!("error restoring database: {err}");
-            Default::default()
+            Database::new(&options)
         });
         // Bust cache immediately
         db.revision
@@ -107,7 +107,7 @@ impl Executor {
         }
 
         // Only then should we save the database
-        Database::save_to_file(self.db, &self.options.cache_path)
+        Database::save(self.db, &self.options)
     }
 
     pub fn display_dep_graph(&self) -> impl std::fmt::Display + '_ {

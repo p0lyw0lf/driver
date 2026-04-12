@@ -93,16 +93,9 @@ async fn write(
     let mut futs = Vec::new();
     for (path, object) in iter {
         let full_path = root.join(path);
-        // TODO: is it even worth to clone here? Feels like the concurrency gains might not be
-        // worth it in general... Should benchmark eventually
-        let contents = rt
-            .db
-            .objects
-            .with(object, |obj| Vec::from(obj.expect("missing object")));
-        // TODO: should we run these on separate threads instead of just concurrently?
         futs.push(async move {
             async_fs::create_dir_all(full_path.parent().unwrap()).await?;
-            async_fs::write(full_path, contents).await?;
+            rt.db.objects.copy(object, &full_path).await?;
             crate::Result::Ok(())
         });
     }
