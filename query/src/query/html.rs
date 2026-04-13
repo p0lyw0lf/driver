@@ -48,7 +48,9 @@ impl Producer for MarkdownToHtml {
             &comrak::options::Plugins::builder()
                 .render(comrak::options::RenderPlugins {
                     codefence_syntax_highlighter: Some(
-                        &comrak::plugins::syntect::SyntectAdapterBuilder::new().build(),
+                        &comrak::plugins::syntect::SyntectAdapterBuilder::new()
+                            .css()
+                            .build(),
                     ),
                     heading_adapter: None,
                 })
