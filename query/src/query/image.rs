@@ -189,7 +189,7 @@ impl Producer for ConvertImage {
             ),
         };
 
-        if target_width != dest_width || target_height != dest_height {
+        if source_width != dest_width || source_height != dest_height {
             // TODO: I should probably allow customizing the resize method; however, this
             // is probably fine and seems to give the overall best results.
             let resize_op = zune_imageprocs::resize::Resize::new(
