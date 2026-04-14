@@ -49,10 +49,10 @@ struct UnitOfWork {
 impl Executor {
     /// MUST NOT be run in an async context.
     pub fn start(options: Options) -> Executor {
-        let db = Database::restore(&options).unwrap_or_else(|err| {
-            eprintln!("error restoring database: {err}");
-            Database::new(&options)
-        });
+        let db = match Database::restore(&options) {
+            Ok(db) => db,
+            Err(err) => panic!("error restoring database: {err}"),
+        };
         // Bust cache immediately
         db.revision
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);

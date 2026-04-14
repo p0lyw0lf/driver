@@ -4,6 +4,7 @@ use std::path::PathBuf;
 pub struct Options {
     pub output_path: PathBuf,
     pub cache_path: PathBuf,
+    pub remotes_path: PathBuf,
     pub objects_path: PathBuf,
 }
 
@@ -12,6 +13,7 @@ impl Default for Options {
         Self {
             output_path: PathBuf::from("./dist"),
             cache_path: PathBuf::from("./.driver/cache.zst"),
+            remotes_path: PathBuf::from("./.driver/remotes.zst"),
             objects_path: PathBuf::from("./.driver/objects"),
         }
     }

@@ -68,15 +68,13 @@ pub struct Core {
     with_entry_nonce: AtomicUsize,
     cache: SerializedMap<QueryKey, LogicalValue>,
     dep_graph: SerializedMap<QueryKey, BTreeSet<QueryKey>>,
-
-    /// TODO: save these separately
-    pub remotes: remote::RemoteObjects,
 }
 
 #[derive(Debug)]
 pub struct Database {
     core: Core,
     pub objects: object::Objects,
+    pub remotes: remote::RemoteObjects,
 }
 
 impl Deref for Database {
@@ -280,36 +278,73 @@ impl Entry {
 
 impl Database {
     pub(crate) fn save(self, options: &Options) -> crate::Result<()> {
-        let file = std::fs::File::create(&options.cache_path)?;
-        let file = zstd::Encoder::new(file, 1)?;
-        let file = postcard::to_io(&self.core, file)?;
-        file.finish()?;
-        // self.objects are already saved as part of normal operation
-        Ok(())
-    }
-
-    pub(crate) fn restore(options: &Options) -> crate::Result<Self> {
         std::fs::create_dir_all(
             options
                 .cache_path
                 .parent()
                 .ok_or_else(|| crate::Error::new("invalid cache path"))?,
         )?;
-        std::fs::create_dir_all(&options.objects_path)?;
+        let file = std::fs::File::create(&options.cache_path)?;
+        let file = zstd::Encoder::new(file, 1)?;
+        let file = postcard::to_io(&self.core, file)?;
+        file.finish()?;
 
-        let file = std::fs::File::open(&options.cache_path)?;
-        let mut file = zstd::Decoder::new(file)?;
-        let mut bytes = Vec::<u8>::new();
-        file.read_to_end(&mut bytes)?;
-        let core: Core = postcard::from_bytes(&bytes)?;
-        let objects = object::Objects::new(options.objects_path.clone());
-        Ok(Self { core, objects })
+        // TODO: allow saving two files concurrently with async
+        std::fs::create_dir_all(
+            options
+                .remotes_path
+                .parent()
+                .ok_or_else(|| crate::Error::new("invalid remotes path"))?,
+        )?;
+        let file = std::fs::File::create(&options.remotes_path)?;
+        let file = zstd::Encoder::new(file, 1)?;
+        let file = postcard::to_io(&self.remotes, file)?;
+        file.finish()?;
+
+        // self.objects are already saved as part of normal operation
+        Ok(())
     }
 
-    pub(crate) fn new(options: &Options) -> Self {
-        let core = Core::default();
+    pub(crate) fn restore(options: &Options) -> crate::Result<Self> {
+        std::fs::create_dir_all(&options.objects_path)?;
         let objects = object::Objects::new(options.objects_path.clone());
-        Self { core, objects }
+
+        let core = (|| {
+            let file = std::fs::File::open(&options.cache_path)?;
+            let mut file = zstd::Decoder::new(file)?;
+            let mut bytes = Vec::<u8>::new();
+            file.read_to_end(&mut bytes)?;
+            let core: Core = postcard::from_bytes(&bytes)?;
+            crate::Result::Ok(core)
+        })()
+        .unwrap_or_else(|err| {
+            eprintln!("error restoring {}: {}", options.cache_path.display(), err);
+            Default::default()
+        });
+
+        // TODO: allow restoring from both files concurrently
+        let remotes = (|| {
+            let file = std::fs::File::open(&options.remotes_path)?;
+            let mut file = zstd::Decoder::new(file)?;
+            let mut bytes = Vec::<u8>::new();
+            file.read_to_end(&mut bytes)?;
+            let remotes: remote::RemoteObjects = postcard::from_bytes(&bytes)?;
+            crate::Result::Ok(remotes)
+        })()
+        .unwrap_or_else(|err| {
+            eprintln!(
+                "error restoring {}: {}",
+                options.remotes_path.display(),
+                err
+            );
+            Default::default()
+        });
+
+        Ok(Self {
+            core,
+            remotes,
+            objects,
+        })
     }
 
     pub(crate) fn display_dep_graph(&self) -> impl Display + '_ {
