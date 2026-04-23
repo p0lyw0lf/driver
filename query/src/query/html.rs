@@ -44,33 +44,51 @@ impl Producer for MarkdownToHtml {
                     .tasklist_classes(true)
                     .build(),
             };
-            static HIGHLIGHTER: comrak::plugins::syntect::SyntectAdapter = comrak::plugins::syntect::SyntectAdapterBuilder::new()
-                .css()
-                .build();
+            static HIGHLIGHTER: arborium::Highlighter = arborium::Highlighter::with_config(arborium::Config {
+                html_format: arborium::HtmlFormat::ClassNames,
+                ..Default::default()
+            });
 
         }
 
         /// Very silly things I have to do to get thread locals to reference properly...
-        struct LocalHighlighter(
-            &'static std::thread::LocalKey<comrak::plugins::syntect::SyntectAdapter>,
-        );
-        impl comrak::adapters::SyntaxHighlighterAdapter for LocalHighlighter {
+        struct ArboriumHighlighter(&'static std::thread::LocalKey<arborium::Highlighter>);
+        impl comrak::adapters::SyntaxHighlighterAdapter for ArboriumHighlighter {
             fn write_highlighted(
                 &self,
                 output: &mut dyn std::fmt::Write,
                 lang: Option<&str>,
                 code: &str,
             ) -> std::fmt::Result {
-                self.0
-                    .with(|inner| inner.write_highlighted(output, lang, code))
+                match lang {
+                    None => comrak::html::escape(output, code),
+                    Some(lang) => {
+                        if lang.is_empty() {
+                            comrak::html::escape(output, code)
+                        } else {
+                            let mut highlighter = self.0.with(|h| h.fork());
+                            match highlighter.highlight(lang, code).map_err(|e| {
+                                eprintln!("error highlighting code: {e}");
+                                std::fmt::Error
+                            }) {
+                                Ok(html) => output.write_str(&html),
+                                Err(_) => comrak::html::escape(output, code),
+                            }
+                        }
+                    }
+                }
             }
 
             fn write_pre_tag(
                 &self,
                 output: &mut dyn std::fmt::Write,
-                attributes: std::collections::HashMap<&'static str, std::borrow::Cow<'_, str>>,
+                _attributes: std::collections::HashMap<&'static str, std::borrow::Cow<'_, str>>,
             ) -> std::fmt::Result {
-                self.0.with(|inner| inner.write_pre_tag(output, attributes))
+                comrak::html::write_opening_tag(
+                    output,
+                    "pre",
+                    vec![("class", "syntax-highlighting")],
+                )
             }
 
             fn write_code_tag(
@@ -78,8 +96,7 @@ impl Producer for MarkdownToHtml {
                 output: &mut dyn std::fmt::Write,
                 attributes: std::collections::HashMap<&'static str, std::borrow::Cow<'_, str>>,
             ) -> std::fmt::Result {
-                self.0
-                    .with(|inner| inner.write_code_tag(output, attributes))
+                comrak::html::write_opening_tag(output, "code", attributes)
             }
         }
 
@@ -88,7 +105,7 @@ impl Producer for MarkdownToHtml {
                 .render(comrak::options::RenderPlugins {
                     codefence_renderers: Default::default(),
                     codefence_syntax_highlighter: Some(
-                        &LocalHighlighter(&HIGHLIGHTER),
+                        &ArboriumHighlighter(&HIGHLIGHTER),
                     ),
                     heading_adapter: None,
                 })
