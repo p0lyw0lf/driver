@@ -17,6 +17,7 @@ fn main() -> query::Result<()> {
 
     tracing_subscriber::registry().with(fmt_layer).init();
 
+    let _ = include_str!("../Cargo.toml");
     let matches = command!()
         .arg(arg!(--dist <dir> "Where to output the files to. Default: ./dist"))
         .arg(arg!(--cache <dir> "Where to save the cache to. Default: ./.driver"))
@@ -35,7 +36,11 @@ fn main() -> query::Result<()> {
         objects_path: cache.join("objects"),
     };
 
-    println!("parsed cli args: {:?}", start.elapsed()?);
+    println!(
+        "parsed cli args: {:?} {:?}",
+        start.elapsed()?,
+        std::env::args()
+    );
 
     let rt = Arc::new(query::Executor::start(options));
     println!("restored database: {:?}", start.elapsed()?);

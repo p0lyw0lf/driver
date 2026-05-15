@@ -105,10 +105,15 @@ impl RemoteObjects {
                 // Cache thinks the object we have locally is still fresh, keep it around and
                 // update the headers.
                 let headers = ResponseHeaders::from_headers(resp.headers());
-                let remote_object = self.cache.get_async(&uri).await.ok_or_else(|| {
-                    crate::Error::new("server returned 304, but object not found in cache")
-                })?;
-                return Ok(headers.with_object(remote_object.object.clone()));
+                return match self.cache.entry_async(uri).await {
+                    scc::hash_map::Entry::Occupied(mut entry) => {
+                        *entry = headers.with_object(entry.object.clone());
+                        Ok(entry.clone())
+                    }
+                    scc::hash_map::Entry::Vacant(_) => Err(crate::Error::new(
+                        "server returned 304, but object not found in cache. please clear your local cache.",
+                    )),
+                };
             }
             // Otherwise, the error is unexpected
             return Err(crate::Error::new(
