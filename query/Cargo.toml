@@ -26,6 +26,7 @@ http-body-util = "0.1"
 hyper = { version = "1.9", features = ["client", "http1"] }
 ignore = "0.4"
 jiff = { version = "0.2", features = ["serde"] }
+katex-rs = "0.2"
 minify-html = "0.18"
 num_cpus = "1.17"
 relative-path = "2.0"
