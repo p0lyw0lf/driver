@@ -47,8 +47,14 @@ pub async fn run(rt: Arc<Executor>, file: PathBuf) -> crate::Result<Output> {
     })
 }
 
+#[derive(Default)]
+pub struct WriteOptions {
+    /// If this is specified, we only write new files, never delete old ones.
+    pub no_delete_missing: bool,
+}
+
 impl Output {
-    pub async fn write(self, rt: &Executor) -> crate::Result<()> {
+    pub async fn write(self, rt: &Executor, options: &WriteOptions) -> crate::Result<()> {
         let root = &rt.options.output_path;
         match self.prev {
             None => {
@@ -69,7 +75,7 @@ impl Output {
                     remove(
                         root,
                         prev.iter().filter_map(|(path, _)| {
-                            if self.curr.contains_key(path) {
+                            if options.no_delete_missing || self.curr.contains_key(path) {
                                 None
                             } else {
                                 Some(path)
