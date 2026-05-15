@@ -101,16 +101,7 @@ impl Display for QueryKey {
             QueryKey::ParseImage(parse_image) => write!(f, "parse_image({})", parse_image.0),
             QueryKey::ReadFile(read_file) => write!(f, "read_file({:?})", read_file.0),
             QueryKey::RunFile(run_file) => {
-                write!(
-                    f,
-                    "{}({})",
-                    run_file.file.display(),
-                    run_file
-                        .arg
-                        .as_ref()
-                        .map(|arg| arg.to_string())
-                        .unwrap_or_default(),
-                )
+                write!(f, "{}({})", run_file.file.display(), run_file.arg)
             }
         }
     }

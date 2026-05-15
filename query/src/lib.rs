@@ -26,8 +26,15 @@ pub struct Output {
     curr: WriteOutputs,
 }
 
-pub async fn run(rt: Arc<Executor>, file: PathBuf) -> crate::Result<Output> {
-    let key = RunFile { file, arg: None };
+pub async fn run<'a>(
+    rt: Arc<Executor>,
+    file: PathBuf,
+    args: impl IntoIterator<Item = &'a str>,
+) -> crate::Result<Output> {
+    let key = RunFile {
+        file,
+        arg: query::js::parse_args(args),
+    };
     // SAFETY: we are the one place this function is allowed to be called.
     let prev = match unsafe { rt.db.get_value(key.clone()).await } {
         None => None,

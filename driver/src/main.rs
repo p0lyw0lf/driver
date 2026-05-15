@@ -1,7 +1,8 @@
+use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use clap::{Command, arg, command};
+use clap::{Arg, ArgAction, Command, arg, command};
 use futures_lite::future;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -23,7 +24,8 @@ fn main() -> query::Result<()> {
         .arg(arg!(--cache <dir> "Where to save the cache to. Default: ./.driver"))
         .subcommand(Command::new("run")
             .arg(arg!(--"no-delete-missing" "Only adds new output files, never deletes old ones"))
-            .arg(arg!(<script> "The file to run")))
+            .arg(arg!(<script> "The file to run"))
+            .arg(Arg::new("remaining").last(true).action(ArgAction::Append)))
         .subcommand(Command::new("print-graph"))
         .get_matches();
 
@@ -36,11 +38,7 @@ fn main() -> query::Result<()> {
         objects_path: cache.join("objects"),
     };
 
-    println!(
-        "parsed cli args: {:?} {:?}",
-        start.elapsed()?,
-        std::env::args()
-    );
+    println!("parsed cli args: {:?}", start.elapsed()?);
 
     let rt = Arc::new(query::Executor::start(options));
     println!("restored database: {:?}", start.elapsed()?);
@@ -52,8 +50,12 @@ fn main() -> query::Result<()> {
         let write_options = query::WriteOptions {
             no_delete_missing: run_matches.get_flag("no-delete-missing"),
         };
+        let args = run_matches
+            .get_many::<String>("remaining")
+            .unwrap_or_default()
+            .map(|s| s.deref());
 
-        let output = future::block_on(query::run(rt.clone(), filename.into()))?;
+        let output = future::block_on(query::run(rt.clone(), filename.into(), args))?;
         println!("ran query: {:?}", start.elapsed()?);
         future::block_on(output.write(&rt, &write_options))?;
         println!("wrote output: {:?}", start.elapsed()?);

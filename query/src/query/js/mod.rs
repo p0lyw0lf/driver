@@ -38,6 +38,16 @@ mod value;
 
 use self::{image::JsImage, object::JsObject, path::JsPath, value::JsValue};
 
+/// Turns command-line arguments into a javascript-compatible list.
+/// TODO: better types than `&str`.
+pub fn parse_args<'a>(iter: impl IntoIterator<Item = &'a str>) -> JsValue {
+    JsValue::Array(
+        iter.into_iter()
+            .map(|s| JsValue::String(s.to_string()))
+            .collect::<Vec<_>>(),
+    )
+}
+
 pub type WriteOutputs = BTreeMap<PathBuf, Object>;
 
 struct ContextFrame {
@@ -328,7 +338,7 @@ fn make_driver_module(js_ctx: &mut Context) -> JsResult<Module> {
             [js_ctx: &mut Context],
         ) -> JsResult<JsImage>;
 
-        async fn run_task(filename: JsPath, args: Option<JsValue>) -> JsResult<JsValue>;
+        async fn run_task(filename: JsPath, args: JsValue) -> JsResult<JsValue>;
         fn write_output(name: String, contents: JsObject) -> JsResult<()>;
     ))
 }
@@ -374,7 +384,7 @@ mod driver_module {
         Ok(contents)
     }
 
-    pub async fn run_task(filename: JsPath, arg: Option<JsValue>) -> JsResult<JsValue> {
+    pub async fn run_task(filename: JsPath, arg: JsValue) -> JsResult<JsValue> {
         let ctx = &get_context()?;
 
         let filename = filename.0;
@@ -387,7 +397,7 @@ mod driver_module {
             JsNativeError::eval().with_message(format!(
                 "error running {}({}):\n\t{}",
                 filename.display(),
-                arg.as_ref().map(JsValue::to_string).unwrap_or_default(),
+                arg,
                 e
             ))
         })?;
@@ -542,7 +552,7 @@ mod driver_module {
 
 query_key!(RunFile {
     pub file: PathBuf,
-    pub arg: Option<JsValue>,
+    pub arg: JsValue,
 });
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -567,17 +577,10 @@ impl Producer for RunFile {
 
     #[tracing::instrument(level = "debug", skip(ctx))]
     async fn produce(&self, ctx: &QueryContext) -> Self::Output {
-        println!(
-            "running {}({})",
-            self.file.display(),
-            self.arg
-                .as_ref()
-                .map(JsValue::to_string)
-                .unwrap_or_default()
-        );
+        println!("running {}({})", self.file.display(), self.arg);
 
         let file = self.file.clone();
-        let arg = self.arg.clone().unwrap_or_default();
+        let arg = self.arg.clone();
 
         let object = ReadFile(self.file.clone()).query(ctx).await?;
         let contents = object.contents_as_bytes(ctx)?;
