@@ -10,9 +10,10 @@ use tera::Tera;
 
 use crate::engine::db::Object;
 use crate::engine::{Producer, QueryContext, Queryable};
-use crate::query::js::JsValue;
+use crate::query::js::{JsObject, JsValue};
 use crate::query::{ListDirectory, ReadFile, RunFile};
 use crate::query_key;
+use crate::to_hash::Hash;
 
 query_key!(RunTemplate { pub file: PathBuf, pub arg: JsValue });
 
@@ -181,9 +182,8 @@ fn register_functions(ctx: &QueryContext, tera: &mut Tera) {
         let ctx = ctx.clone();
         move |args: &HashMap<String, tera::Value>| -> tera::Result<tera::Value> {
             get_arg!(file: as_str <- args);
-            get_arg!(arg <- args);
             let file = resolve_path(file)?;
-            let arg = tera_to_js_value(arg)?;
+            let arg = tera_to_js_context(args, "file")?;
 
             let output = future::block_on(
                 RunFile {
@@ -204,16 +204,7 @@ fn register_functions(ctx: &QueryContext, tera: &mut Tera) {
         move |args: &HashMap<String, tera::Value>| -> tera::Result<tera::Value> {
             get_arg!(template: as_str <- args);
             let file = resolve_path(template)?;
-
-            let mut arg = BTreeMap::new();
-            for (key, value) in args.iter() {
-                if key == "template" {
-                    continue;
-                }
-                let value = tera_to_js_value(value)?;
-                let _ = arg.insert(key.clone(), value);
-            }
-            let arg = JsValue::Object(arg);
+            let arg = tera_to_js_context(args, "template")?;
 
             let output = future::block_on(
                 RunTemplate {
@@ -228,6 +219,33 @@ fn register_functions(ctx: &QueryContext, tera: &mut Tera) {
             Ok(output.into())
         }
     });
+
+    tera.register_filter("store", {
+        let ctx = ctx.clone();
+        move |arg: &tera::Value, _: &HashMap<String, tera::Value>| -> tera::Result<tera::Value> {
+            let tera::Value::String(s) = arg else {
+                return Err("store must take in str".into());
+            };
+            let object = ctx
+                .db()
+                .objects
+                .store(s.clone().into_bytes())
+                .map_err(|e| e.to_string())?;
+            js_to_tera_value(&JsValue::Store(JsObject { object }))
+        }
+    });
+
+    tera.register_filter("unstore", {
+        let ctx = ctx.clone();
+        move |arg: &tera::Value, _: &HashMap<String, tera::Value>| -> tera::Result<tera::Value> {
+            let tera::Value::Object(obj) = arg else {
+                return Err("unstore must take in object".into());
+            };
+            let object = tera_to_js_store_object(obj)?;
+            let output = object.contents_as_string(&ctx).map_err(|e| e.to_string())?;
+            Ok(tera::Value::String(output))
+        }
+    });
 }
 
 /// Resolves a path to normalized relative to the cwd
@@ -239,17 +257,37 @@ fn resolve_path(path: &str) -> tera::Result<PathBuf> {
 }
 
 fn js_to_tera_context(value: &JsValue) -> crate::Result<tera::Context> {
-    let JsValue::Object(obj) = value else {
-        return Err(crate::Error::new("template arg must be object"));
-    };
+    match value {
+        JsValue::Object(obj) => {
+            let mut ctx = tera::Context::new();
+            for (key, value) in obj.iter() {
+                ctx.try_insert(key, value)?;
+            }
 
-    let mut ctx = tera::Context::new();
-    for (key, value) in obj.iter() {
-        ctx.try_insert(key, value)?;
+            Ok(ctx)
+        }
+        JsValue::Null | JsValue::Undefined => Ok(tera::Context::default()),
+        _ => Err(crate::Error::new("template arg must be object")),
     }
-
-    Ok(ctx)
 }
+
+fn tera_to_js_context(args: &HashMap<String, tera::Value>, ignore: &str) -> tera::Result<JsValue> {
+    let mut arg = BTreeMap::new();
+    for (key, value) in args.iter() {
+        if key == ignore {
+            continue;
+        }
+        let value = tera_to_js_value(value)?;
+        let _ = arg.insert(key.clone(), value);
+    }
+    Ok(if arg.is_empty() {
+        JsValue::Null
+    } else {
+        JsValue::Object(arg)
+    })
+}
+
+const STORE_OBJECT_MAGIC: &str = "__store_object";
 
 fn js_to_tera_value(value: &JsValue) -> tera::Result<tera::Value> {
     Ok(match value {
@@ -268,7 +306,14 @@ fn js_to_tera_value(value: &JsValue) -> tera::Result<tera::Value> {
                 })
                 .collect::<Result<_, _>>()?,
         ),
-        JsValue::Store(_) => return Err("cannot pass StoreObject to tera".into()),
+        JsValue::Store(s) => {
+            let mut map = tera::Map::new();
+            map.insert(
+                STORE_OBJECT_MAGIC.to_string(),
+                tera::Value::String(s.object.to_string()),
+            );
+            tera::Value::Object(map)
+        }
     })
 }
 
@@ -287,12 +332,33 @@ fn tera_to_js_value(value: &tera::Value) -> tera::Result<JsValue> {
         tera::Value::Array(arr) => {
             JsValue::Array(arr.iter().map(tera_to_js_value).collect::<Result<_, _>>()?)
         }
-        tera::Value::Object(obj) => JsValue::Object(
-            obj.into_iter()
-                .map(|(key, value)| -> tera::Result<_> {
-                    Ok((key.clone(), tera_to_js_value(value)?))
-                })
-                .collect::<Result<_, _>>()?,
-        ),
+        tera::Value::Object(obj) => match tera_to_js_store_object(obj) {
+            Ok(object) => JsValue::Store(JsObject { object }),
+            Err(_) => JsValue::Object(
+                obj.into_iter()
+                    .map(|(key, value)| -> tera::Result<_> {
+                        Ok((key.clone(), tera_to_js_value(value)?))
+                    })
+                    .collect::<Result<_, _>>()?,
+            ),
+        },
     })
+}
+
+fn tera_to_js_store_object(obj: &tera::Map<String, tera::Value>) -> tera::Result<Object> {
+    match obj.get(STORE_OBJECT_MAGIC) {
+        Some(hash) => {
+            let hash = hash
+                .as_str()
+                .ok_or("store object magic must be str")?
+                .as_bytes();
+            let hash = <[_; 32]>::try_from(hash).map_err(|e| e.to_string())?;
+            let hash = Hash::from(hash);
+            // SAFETY: we have no choice but to trust this. The user has purposefully messed us
+            // up otherwise, worst case we will find there is no backing file.
+            let object = unsafe { Object::from_hash(hash) };
+            Ok(object)
+        }
+        None => Err("not a store object".into()),
+    }
 }
