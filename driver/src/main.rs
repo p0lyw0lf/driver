@@ -8,7 +8,17 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer, fmt};
 
-fn main() -> query::Result<()> {
+fn main() {
+    match real_main() {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn real_main() -> query::Result<()> {
     let start = std::time::SystemTime::now();
 
     let fmt_layer = fmt::layer()

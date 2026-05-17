@@ -33,9 +33,16 @@ impl TryFromJs for JsValue {
             boa_engine::JsVariant::String(js_string) => Ok(Self::String(
                 js_string.to_std_string().map_err(JsError::from_rust)?,
             )),
-            boa_engine::JsVariant::Float64(_) => Err(JsNativeError::typ()
-                .with_message("cannot serialize float")
-                .into()),
+            boa_engine::JsVariant::Float64(f) => {
+                let i = f as i32;
+                if (i as f64) == f {
+                    Ok(Self::Int(i))
+                } else {
+                    Err(JsNativeError::typ()
+                        .with_message("cannot serialize float")
+                        .into())
+                }
+            }
             boa_engine::JsVariant::Integer32(i) => Ok(Self::Int(i)),
             boa_engine::JsVariant::BigInt(_) => Err(JsNativeError::typ()
                 .with_message("cannot serialize BigInt")
