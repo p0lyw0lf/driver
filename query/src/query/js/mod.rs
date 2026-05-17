@@ -339,6 +339,7 @@ fn make_driver_module(js_ctx: &mut Context) -> JsResult<Module> {
         ) -> JsResult<JsImage>;
 
         async fn run_task(filename: JsPath, args: JsValue) -> JsResult<JsValue>;
+        async fn run_template(filename: JsPath, args: JsValue) -> JsResult<JsValue>;
         fn write_output(name: String, contents: JsObject) -> JsResult<()>;
     ))
 }
@@ -406,6 +407,27 @@ mod driver_module {
         unsafe { push_outputs(outputs) }?;
 
         Ok(value)
+    }
+
+    pub async fn run_template(filename: JsPath, arg: JsValue) -> JsResult<JsValue> {
+        let ctx = &get_context()?;
+
+        let filename = filename.0;
+        let task = RunTemplate {
+            file: filename.clone(),
+            arg: arg.clone(),
+        };
+
+        let object = task.query(ctx).await.map_err(|e| {
+            JsNativeError::eval().with_message(format!(
+                "error templating {}({}):\n\t{}",
+                filename.display(),
+                arg,
+                e
+            ))
+        })?;
+
+        Ok(JsValue::Store(JsObject { object }))
     }
 
     pub fn file_type(entry_name: String) -> JsResult<String> {

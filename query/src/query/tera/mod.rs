@@ -23,12 +23,15 @@ enum State<T> {
 }
 
 impl Producer for RunTemplate {
-    type Output = crate::Result<String>;
+    type Output = crate::Result<Object>;
 
+    #[tracing::instrument(level = "debug", skip(ctx))]
     async fn produce(&self, ctx: &QueryContext) -> Self::Output {
+        println!("templating {}({})", self.file.display(), self.arg);
         let input = ReadFile(self.file.clone()).query(ctx).await?;
         let output = render_tera_async(ctx, &input, &self.file, &self.arg).await?;
-        Ok(output)
+        let object = ctx.db().objects.store(output.into_bytes())?;
+        Ok(object)
     }
 }
 
@@ -153,6 +156,27 @@ fn register_functions(ctx: &QueryContext, tera: &mut Tera) {
         }
     });
 
+    tera.register_function(
+        "file_type",
+        |args: &HashMap<String, tera::Value>| -> tera::Result<tera::Value> {
+            get_arg!(entry: as_str <- args);
+            let entry = resolve_path(entry)?;
+
+            let metadata = std::fs::metadata(entry).map_err(|e| e.to_string())?;
+
+            Ok(if metadata.is_file() {
+                "file"
+            } else if metadata.is_dir() {
+                "dir"
+            } else if metadata.is_symlink() {
+                "symlink"
+            } else {
+                "unknown"
+            }
+            .into())
+        },
+    );
+
     tera.register_function("run_task", {
         let ctx = ctx.clone();
         move |args: &HashMap<String, tera::Value>| -> tera::Result<tera::Value> {
@@ -199,6 +223,7 @@ fn register_functions(ctx: &QueryContext, tera: &mut Tera) {
                 .query(&ctx),
             )
             .map_err(|e| format!("error templating {}({}):\n\t{}", file.display(), arg, e))?;
+            let output = output.contents_as_string(&ctx).map_err(|e| e.to_string())?;
 
             Ok(output.into())
         }
