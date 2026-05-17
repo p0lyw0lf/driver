@@ -282,6 +282,10 @@ fn tera_to_js_context(args: &HashMap<String, tera::Value>, ignore: &str) -> tera
     }
     Ok(if arg.is_empty() {
         JsValue::Null
+    } else if arg.len() == 1
+        && let Some(value) = arg.get("arg")
+    {
+        value.clone()
     } else {
         JsValue::Object(arg)
     })
