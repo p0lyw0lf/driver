@@ -80,7 +80,7 @@ declare module "driver" {
     | Arg[]
     | { [key in string]?: Arg };
   /**
-   * Run a given file. The file will have the global variable `ARG` populated with
+   * Run a given Javascript file. The file will have the global variable `ARG` populated with
    * whatever you pass in, if anything. If the same filename/argument combination is run multiple
    * times, later results will be cached from the first run.
    *
@@ -88,6 +88,13 @@ declare module "driver" {
    * the project root.
    */
   function run_task(filename: string, arg: Arg): Promise<Arg>;
+
+  /**
+   * Run a given Tera file with the given context.
+   *
+   * NOTE: just like `run_task()`, the `filename` argument is relative to the project root.
+   */
+  function run_template(filename: string, arg: { [key in string]?: Arg }): Promise<Arg>;
 
   /**
    * Writes an object from the store to a path relative to the build directory.
