@@ -41,6 +41,7 @@ tracing = "0.1"
 zstd = "0.13"
 zune-core = "0.5"
 zune-imageprocs = "0.5"
+slug = "0.1"
 
 [dependencies.zune-image]
 version = "0.5"

@@ -321,6 +321,7 @@ fn make_driver_module(js_ctx: &mut Context) -> JsResult<Module> {
     Ok(module!(
         use js_ctx;
         fn store(value: String) -> JsResult<JsObject>;
+        fn slugify(value: String) -> JsResult<String>;
 
         async fn read_file(path: JsPath) -> JsResult<JsObject>;
         async fn list_directory(dirname: JsPath) -> JsResult<Vec<String>>;
@@ -359,6 +360,10 @@ mod driver_module {
     use crate::engine::db::remote::Uri;
     use crate::query::js::{image::JsImage, object::JsObject, path::JsPath, value::JsValue};
     use crate::query::*;
+
+    pub fn slugify(value: String) -> JsResult<String> {
+        Ok(slug::slugify(value))
+    }
 
     pub async fn read_file(path: JsPath) -> JsResult<JsObject> {
         let ctx = &get_context()?;

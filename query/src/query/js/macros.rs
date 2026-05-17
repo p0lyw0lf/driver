@@ -122,10 +122,10 @@ macro_rules! module {
                 )*],
                 boa_engine::module::SyntheticModuleInitializer::from_copy_closure_with_captures(
                     |module, fns, _| {
-                        let ($(
-                                $($fn)?
-                                $($async_fn)?
-                            ),*) = fns;
+                        let (
+                            ($($($fn,)?)*),
+                            ($($($async_fn,)?)*),
+                        ) = fns;
                         $(
                             $(module.set_export(
                                 &boa_engine::js_string!(stringify!($fn)),
@@ -138,10 +138,10 @@ macro_rules! module {
                         )*
                         Ok(())
                     },
-                    ($(
-                        $($fn)?
-                        $($async_fn)?
-                    ),*),
+                    (
+                        ($($($fn,)?)*),
+                        ($($($async_fn,)?)*),
+                    ),
                 ),
                 None,
                 None,

@@ -19,6 +19,10 @@ declare module "driver" {
    * Required to interface with the other methods that transform values.
    */
   function store(value: string): StoreObject;
+  /**
+   * Converts a string to a slug, using the same logic as Tera's `slugify` filter.
+   */
+  function slugify(value: string): string;
 
   ////////// 2 //////////
   // NOTE: All paths are relative to the PROJECT ROOT, where the driver binary is run!!
