@@ -123,8 +123,9 @@ impl<'de> Deserialize<'de> for AnyOutput
 }
 
 valid_outputs![
-    crate::Result<crate::engine::db::Object>,
-    crate::Result<crate::query::js::FileOutput>,
+    crate::Result<String>,
     crate::Result<Vec<std::path::PathBuf>>,
+    crate::Result<crate::engine::db::Object>,
     crate::Result<crate::query::image::ImageObject>,
+    crate::Result<crate::query::js::FileOutput>,
 ];

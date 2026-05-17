@@ -36,6 +36,7 @@ scc = "3.6"
 serde = { version = "1.0", features = ["derive"] }
 sha2 = "0.10"
 smol-hyper = "0.1"
+tera = "1"
 tracing = "0.1"
 zstd = "0.13"
 zune-core = "0.5"

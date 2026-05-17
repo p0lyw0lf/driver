@@ -55,6 +55,7 @@ query_key!(QueryKey {
     ParseImage,
     ReadFile,
     RunFile,
+    RunTemplate,
 });
 
 impl QueryKey {
@@ -69,6 +70,7 @@ impl QueryKey {
             QueryKey::ParseImage(_) => false,
             QueryKey::ReadFile(_) => true,
             QueryKey::RunFile(_) => false,
+            QueryKey::RunTemplate(_) => false,
         }
     }
 }
@@ -102,6 +104,9 @@ impl Display for QueryKey {
             QueryKey::ReadFile(read_file) => write!(f, "read_file({:?})", read_file.0),
             QueryKey::RunFile(run_file) => {
                 write!(f, "{}({})", run_file.file.display(), run_file.arg)
+            }
+            QueryKey::RunTemplate(run_template) => {
+                write!(f, "{}({})", run_template.file.display(), run_template.arg)
             }
         }
     }

@@ -36,7 +36,7 @@ mod object;
 mod path;
 mod value;
 
-use self::{image::JsImage, object::JsObject, path::JsPath, value::JsValue};
+pub use self::{image::JsImage, object::JsObject, path::JsPath, value::JsValue};
 
 /// Turns command-line arguments into a javascript-compatible list.
 /// TODO: better types than `&str`.
