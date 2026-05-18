@@ -39,7 +39,7 @@ impl TryFromJs for JsValue {
                     Ok(Self::Int(i))
                 } else {
                     Err(JsNativeError::typ()
-                        .with_message("cannot serialize float")
+                        .with_message(format!("cannot serialize float {f}"))
                         .into())
                 }
             }

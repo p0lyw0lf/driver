@@ -260,7 +260,11 @@ fn register_functions(
                 }
                 .query(&ctx),
             )
-            .map_err(|e| format!("error running {}({}):\n\t{}", file.display(), arg, e))?;
+            .map_err(|e| {
+                let e = format!("error running {}({}):\n\t{}", file.display(), arg, e);
+                eprintln!("{e}");
+                e
+            })?;
             {
                 outputs.lock().unwrap().extend(output.outputs);
             }
