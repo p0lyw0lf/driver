@@ -76,7 +76,6 @@ declare module "driver" {
     | number
     | string
     | StoreObject
-    | StoreImage
     | Arg[]
     | { [key in string]?: Arg };
   /**
@@ -94,7 +93,10 @@ declare module "driver" {
    *
    * NOTE: just like `run_task()`, the `filename` argument is relative to the project root.
    */
-  function run_template(filename: string, arg: { [key in string]?: Arg }): Promise<Arg>;
+  function run_template(
+    filename: string,
+    arg: { [key in string]?: Arg },
+  ): Promise<Arg>;
 
   /**
    * Writes an object from the store to a path relative to the build directory.
