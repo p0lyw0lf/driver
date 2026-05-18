@@ -354,11 +354,12 @@ mod driver_module {
     use boa_engine::{Context, js_str};
     use boa_engine::{JsError, JsNativeError, JsResult};
 
-    use super::{FileOutput, RunFile, get_context, push_outputs};
+    use super::{RunFile, TaskOutput, get_context, push_outputs};
 
     use crate::engine::Queryable;
     use crate::engine::db::remote::Uri;
     use crate::query::js::{image::JsImage, object::JsObject, path::JsPath, value::JsValue};
+    use crate::query::tera::TemplateOutput;
     use crate::query::*;
 
     pub fn slugify(value: String) -> JsResult<String> {
@@ -399,7 +400,7 @@ mod driver_module {
             arg: arg.clone(),
         };
 
-        let FileOutput { value, outputs } = task.query(ctx).await.map_err(|e| {
+        let TaskOutput { value, outputs } = task.query(ctx).await.map_err(|e| {
             JsNativeError::eval().with_message(format!(
                 "error running {}({}):\n\t{}",
                 filename.display(),
@@ -408,7 +409,6 @@ mod driver_module {
             ))
         })?;
 
-        // Limit the amount of time we borrow QUERY_CONTEXT
         unsafe { push_outputs(outputs) }?;
 
         Ok(value)
@@ -423,7 +423,10 @@ mod driver_module {
             arg: arg.clone(),
         };
 
-        let object = task.query(ctx).await.map_err(|e| {
+        let TemplateOutput {
+            value: object,
+            outputs,
+        } = task.query(ctx).await.map_err(|e| {
             JsNativeError::eval().with_message(format!(
                 "error templating {}({}):\n\t{}",
                 filename.display(),
@@ -431,6 +434,8 @@ mod driver_module {
                 e
             ))
         })?;
+
+        unsafe { push_outputs(outputs) }?;
 
         Ok(JsValue::Store(JsObject { object }))
     }
@@ -584,14 +589,14 @@ query_key!(RunFile {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(Default))]
-pub struct FileOutput {
+pub struct TaskOutput {
     pub value: JsValue,
     pub outputs: WriteOutputs,
 }
 
-impl ToHash for FileOutput {
+impl ToHash for TaskOutput {
     fn run_hash(&self, hasher: &mut sha2::Sha256) {
-        hasher.update(b"FileOutput(");
+        hasher.update(b"TaskOutput(");
         self.value.run_hash(hasher);
         hasher.update(b")(");
         self.outputs.run_hash(hasher);
@@ -600,7 +605,7 @@ impl ToHash for FileOutput {
 }
 
 impl Producer for RunFile {
-    type Output = crate::Result<FileOutput>;
+    type Output = crate::Result<TaskOutput>;
 
     #[tracing::instrument(level = "debug", skip(ctx))]
     async fn produce(&self, ctx: &QueryContext) -> Self::Output {
@@ -673,6 +678,6 @@ impl Producer for RunFile {
             out
         })
         .await?;
-        Ok(FileOutput { value, outputs })
+        Ok(TaskOutput { value, outputs })
     }
 }

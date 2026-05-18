@@ -8,7 +8,7 @@ use crate::engine::db::remote::Uri;
 use crate::engine::db::{Database, object::Object};
 use crate::engine::{AnyOutput, QueryKey};
 use crate::query::image::{ImageObject, ImageSize};
-use crate::query::js::FileOutput;
+use crate::query::js::TaskOutput;
 use crate::serde::SerializedMap;
 
 // just for testing purposes, never refers to actual data.
@@ -49,7 +49,7 @@ fn roundtrip_any_output_obj() {
 
 #[test]
 fn roundtrip_file_output() {
-    let mut a1: FileOutput = Default::default();
+    let mut a1: TaskOutput = Default::default();
     a1.outputs = BTreeMap::from([(PathBuf::from("./index.html"), o(6))]);
     let a2 = roundtrip(&a1);
     assert_eq!(a1.outputs, a2.outputs);
@@ -57,7 +57,7 @@ fn roundtrip_file_output() {
 
 #[test]
 fn roundtrip_any_output_file_output() {
-    let mut a1: FileOutput = Default::default();
+    let mut a1: TaskOutput = Default::default();
     a1.outputs = BTreeMap::from([(PathBuf::from("./index.html"), o(7))]);
     let a1 = AnyOutput::new(crate::Result::Ok(a1));
     let a2 = roundtrip(&a1);
@@ -146,7 +146,7 @@ fn roundtrip_database() {
         })
         .await;
         db.with_entry(k6.clone(), async |entry| {
-            let mut output: FileOutput = Default::default();
+            let mut output: TaskOutput = Default::default();
             output.outputs = BTreeMap::from([(PathBuf::from("./index.html"), o(6))]);
             entry.insert(6, AnyOutput::new(crate::Result::Ok(output)));
         })
