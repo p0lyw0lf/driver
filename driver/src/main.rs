@@ -18,9 +18,20 @@ fn main() {
     }
 }
 
-fn real_main() -> query::Result<()> {
-    let start = std::time::SystemTime::now();
+fn time<T>(message: &'static str, f: impl FnOnce() -> T) -> T {
+    let start = std::time::Instant::now();
+    let out = f();
+    println!("{}: {:?}", message, start.elapsed());
+    out
+}
 
+fn map_err_print(f: impl FnOnce() -> query::Result<()>) {
+    if let Err(e) = f() {
+        eprintln!("{e}");
+    }
+}
+
+fn real_main() -> query::Result<()> {
     let fmt_layer = fmt::layer()
         .with_ansi(false)
         .without_time()
@@ -48,10 +59,9 @@ fn real_main() -> query::Result<()> {
         objects_path: cache.join("objects"),
     };
 
-    println!("parsed cli args: {:?}", start.elapsed()?);
-
-    let rt = Arc::new(query::Executor::start(options));
-    println!("restored database: {:?}", start.elapsed()?);
+    let rt = time("restored database", || {
+        Arc::new(query::Executor::start(options))
+    });
 
     if let Some(run_matches) = matches.subcommand_matches("run") {
         let filename = run_matches
@@ -65,20 +75,28 @@ fn real_main() -> query::Result<()> {
             .unwrap_or_default()
             .map(|s| s.deref());
 
-        let output = future::block_on(query::run(rt.clone(), filename.into(), args))?;
-        println!("ran query: {:?}", start.elapsed()?);
-        future::block_on(output.write(&rt, &write_options))?;
-        println!("wrote output: {:?}", start.elapsed()?);
+        map_err_print(|| {
+            let output = time("ran query", || {
+                future::block_on(query::run(rt.clone(), filename.into(), args))
+            })?;
+            time("wrote output", || {
+                future::block_on(output.write(&rt, &write_options))
+            })?;
+            Ok(())
+        });
     }
 
     if matches.subcommand_matches("print-graph").is_some() {
         println!("{}", rt.display_dep_graph());
     }
 
-    let rt = Arc::into_inner(rt).expect("was still running");
-    rt.stop()?;
-
-    println!("saved database: {:?}", start.elapsed()?);
+    map_err_print(|| {
+        time("saved database", || {
+            let rt = Arc::into_inner(rt).expect("was still running");
+            rt.stop()?;
+            Ok(())
+        })
+    });
 
     Ok(())
 }
