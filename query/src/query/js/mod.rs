@@ -278,7 +278,6 @@ async fn with_js_ctx<T, F>(ctx: QueryContext, arg: JsValue, f: F) -> crate::Resu
 where
     F: AsyncFnOnce(&mut Context) -> crate::Result<T>,
 {
-    // TODO: cache this Context to be per-thread
     let executor = Rc::new(Executor::new());
     let loader = Rc::new(MemoizedModuleLoader::new(ctx));
 
