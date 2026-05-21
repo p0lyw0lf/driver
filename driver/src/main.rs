@@ -25,12 +25,6 @@ fn time<T>(message: &'static str, f: impl FnOnce() -> T) -> T {
     out
 }
 
-fn map_err_print(f: impl FnOnce() -> query::Result<()>) {
-    if let Err(e) = f() {
-        eprintln!("{e}");
-    }
-}
-
 fn real_main() -> query::Result<()> {
     let fmt_layer = fmt::layer()
         .with_ansi(false)
@@ -75,28 +69,23 @@ fn real_main() -> query::Result<()> {
             .unwrap_or_default()
             .map(|s| s.deref());
 
-        map_err_print(|| {
-            let output = time("ran query", || {
-                future::block_on(query::run(rt.clone(), filename.into(), args))
-            })?;
-            time("wrote output", || {
-                future::block_on(output.write(&rt, &write_options))
-            })?;
-            Ok(())
-        });
+        let output = time("ran query", || {
+            future::block_on(query::run(rt.clone(), filename.into(), args))
+        })?;
+        time("wrote output", || {
+            future::block_on(output.write(&rt, &write_options))
+        })?;
     }
 
     if matches.subcommand_matches("print-graph").is_some() {
         println!("{}", rt.display_dep_graph());
     }
 
-    map_err_print(|| {
-        time("saved database", || {
-            let rt = Arc::into_inner(rt).expect("was still running");
-            rt.stop()?;
-            Ok(())
-        })
-    });
+    time("saved database", || {
+        let rt = Arc::into_inner(rt).expect("was still running");
+        rt.stop()?;
+        query::Result::Ok(())
+    })?;
 
     Ok(())
 }
