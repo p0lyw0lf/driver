@@ -45,7 +45,7 @@ impl Producer for RunTemplate {
 
     #[tracing::instrument(level = "debug", skip(ctx))]
     async fn produce(&self, ctx: &QueryContext) -> Self::Output {
-        println!("templating {}({})", self.file.display(), self.arg);
+        println!("run_tera(\"{}\", {})", self.file.display(), self.arg);
         let input = ReadFile(self.file.clone()).query(ctx).await?;
         render_tera_async(ctx, &input, &self.file, &self.arg).await
     }
@@ -247,7 +247,7 @@ fn register_functions(
     );
 
     tera.register_function(
-        "run_task",
+        "run_js",
         wrap_function!(move(key, ctx, outputs) |args| {
             get_arg!(file: as_str <- args);
             let file = resolve_path(file)?;
@@ -275,7 +275,7 @@ fn register_functions(
     );
 
     tera.register_function(
-        "run_template",
+        "run_tera",
         wrap_function!(move(key, ctx, outputs) |args| {
             get_arg!(template: as_str <- args);
             let file = resolve_path(template)?;
@@ -319,7 +319,7 @@ fn register_functions(
             let tera::Value::Object(obj) = arg else {
                 return Err("unstore must take in object".into());
             };
-            let object = tera_to_js_store_object(&obj)?;
+            let object = tera_to_js_store_object(obj)?;
             let output = object.contents_as_string(&ctx).map_err(|e| e.to_string())?;
             Ok(tera::Value::String(output))
         }),

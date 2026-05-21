@@ -105,8 +105,8 @@ impl Display for QueryKey {
             QueryKey::RunFile(run_file) => {
                 write!(f, "{}({})", run_file.file.display(), run_file.arg)
             }
-            QueryKey::RunTemplate(run_template) => {
-                write!(f, "{}({})", run_template.file.display(), run_template.arg)
+            QueryKey::RunTemplate(run_tera) => {
+                write!(f, "{}({})", run_tera.file.display(), run_tera.arg)
             }
         }
     }

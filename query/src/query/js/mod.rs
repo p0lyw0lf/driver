@@ -339,8 +339,8 @@ fn make_driver_module(js_ctx: &mut Context) -> JsResult<Module> {
             [js_ctx: &mut Context],
         ) -> JsResult<JsImage>;
 
-        async fn run_task(filename: JsPath, args: JsValue) -> JsResult<JsValue>;
-        async fn run_template(filename: JsPath, args: JsValue) -> JsResult<JsValue>;
+        async fn run_js(filename: JsPath, args: JsValue) -> JsResult<JsValue>;
+        async fn run_tera(filename: JsPath, args: JsValue) -> JsResult<JsValue>;
         fn write_output(name: String, contents: JsObject) -> JsResult<()>;
     ))
 }
@@ -391,7 +391,7 @@ mod driver_module {
         Ok(contents)
     }
 
-    pub async fn run_task(filename: JsPath, arg: JsValue) -> JsResult<JsValue> {
+    pub async fn run_js(filename: JsPath, arg: JsValue) -> JsResult<JsValue> {
         let ctx = &get_context()?;
 
         let filename = filename.0;
@@ -414,7 +414,7 @@ mod driver_module {
         Ok(value)
     }
 
-    pub async fn run_template(filename: JsPath, arg: JsValue) -> JsResult<JsValue> {
+    pub async fn run_tera(filename: JsPath, arg: JsValue) -> JsResult<JsValue> {
         let ctx = &get_context()?;
 
         let filename = filename.0;
@@ -609,7 +609,7 @@ impl Producer for RunFile {
 
     #[tracing::instrument(level = "debug", skip(ctx))]
     async fn produce(&self, ctx: &QueryContext) -> Self::Output {
-        println!("running {}({})", self.file.display(), self.arg);
+        println!("run_js(\"{}\", {})", self.file.display(), self.arg);
 
         let file = self.file.clone();
         let arg = self.arg.clone();
@@ -622,28 +622,6 @@ impl Producer for RunFile {
             trace!("with_js_ctx start");
             let out = with_query_context(ctx, async move || {
                 trace!("with_query_context start {}({})", file.display(), arg);
-                // TODO: print stack traces
-                /*
-                let catch = |err: rquickjs::Error| -> crate::Error {
-                    match err {
-                        rquickjs::Error::Exception => {
-                            let value = js_ctx.catch();
-                            if let Some(err) = value.as_exception() {
-                                let message = err.message().unwrap_or_default();
-                                let stack = err.stack().unwrap_or_default();
-                                eprintln!("js exception: {message}");
-                                eprintln!("{stack}");
-                            } else if let Ok(value) = JsValue::from_js(&js_ctx, value.clone()) {
-                                eprintln!("js thrown value: {}", value);
-                            } else {
-                                eprintln!("js error: {:?}", value);
-                            }
-                            crate::Error::from(rquickjs::Error::Exception)
-                        }
-                        otherwise => crate::Error::from(otherwise),
-                    }
-                };
-                */
 
                 let source = boa_engine::Source::from_bytes(&contents).with_path(&file);
                 let module = boa_engine::Module::parse(source, None, js_ctx)?;

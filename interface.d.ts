@@ -86,14 +86,14 @@ declare module "driver" {
    * NOTE: just like `read_file()` and `list_directory()`, the `filename` argument is relative to
    * the project root.
    */
-  function run_task(filename: string, arg: Arg): Promise<Arg>;
+  function run_js(filename: string, arg: Arg): Promise<Arg>;
 
   /**
    * Run a given Tera file with the given context.
    *
-   * NOTE: just like `run_task()`, the `filename` argument is relative to the project root.
+   * NOTE: just like `run_js()`, the `filename` argument is relative to the project root.
    */
-  function run_template(
+  function run_tera(
     filename: string,
     arg: { [key in string]?: Arg },
   ): Promise<Arg>;

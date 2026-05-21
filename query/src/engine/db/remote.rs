@@ -97,7 +97,7 @@ impl RemoteObjects {
         };
 
         let req = req.body(http_body_util::Empty::<hyper::body::Bytes>::new())?;
-        println!("[{}] fetching: {}", why, uri);
+        println!("[{}] get_url(\"{}\")", why, uri);
         let resp: Response<Incoming> = self.client.request(req).await?;
         let status = resp.status();
         if !status.is_success() {
