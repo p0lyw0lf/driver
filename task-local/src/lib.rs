@@ -4,7 +4,7 @@ use std::task::{Context, Poll};
 use std::thread::LocalKey;
 
 /// Wrapper future that stores a previous context to the stack, if there is any.
-pub struct Scoped<F: Future, T: 'static> {
+pub struct Scoped<F, T: 'static> {
     tls: &'static LocalKey<RefCell<Option<T>>>,
     curr: Option<T>,
     fut: F,
@@ -28,7 +28,7 @@ impl<F: Future, T: 'static> Future for Scoped<F, T> {
     }
 }
 
-impl<F: Future, T: 'static> Scoped<F, T> {
+impl<F, T: 'static> Scoped<F, T> {
     /// Call this to get the value out of the scope once you're done polling the
     /// future.
     pub fn take_value(self: Pin<&mut Self>) -> Option<T> {

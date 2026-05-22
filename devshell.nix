@@ -16,5 +16,6 @@ pkgs.mkShell {
     vscode-extensions.vadimcn.vscode-lldb.adapter
     # For developing
     cargo-watch
+    cargo-udeps
   ];
 }

@@ -21,7 +21,6 @@ flume = "0.12"
 futures-concurrency = "7.7"
 futures-lite = "2.6"
 generic-array = { version = "0.14", features = ["serde"] }
-hex = "0.4"
 http-body-util = "0.1"
 hyper = { version = "1.9", features = ["client", "http1"] }
 ignore = "0.4"
