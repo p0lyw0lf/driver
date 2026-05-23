@@ -1,21 +1,28 @@
-use std::fmt::Display;
-use std::ops::Deref;
+//! TODO: connection pooling
+
+use std::error::Error as StdError;
+use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use async_native_tls::TlsStream;
 use async_net::TcpStream;
 use futures_lite::{AsyncRead, AsyncWrite, io};
-use hyper::rt::Executor;
-use serde::{Deserialize, Serialize, de::Error};
+use futures_util::future::FutureExt;
+use hyper::body::Body;
+use hyper::client::conn::http1::Connection;
+use smol_hyper::rt::FuturesIo;
+use thiserror::Error;
 
-use crate::engine::executor::CurrentThreadExecutor;
+mod uri;
+pub use uri::Uri;
 
-/// TODO: connection pooling
+/// The main struct used to fetch URLs. Contains a hyper::rt::Executor that is used to spawn
+/// connection tasks.
 #[derive(Debug)]
-pub struct Client;
-pub fn default_client() -> Client {
-    Client
+pub struct Client<'a, E, B> {
+    executor: &'a E,
+    body_type: PhantomData<B>,
 }
 
 pub static USER_AGENT: &str = concat!(
@@ -26,17 +33,53 @@ pub static USER_AGENT: &str = concat!(
     ") (+https://github.com/p0lyw0lf/driver)",
 );
 
-impl Client {
+#[derive(Error, Debug)]
+pub enum ClientError {
+    #[error("cannot parse host: {uri}")]
+    InvalidHost { uri: String },
+    #[error("unsupported scheme: {scheme}")]
+    UnsupportedScheme { scheme: String },
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("tls error: {0}")]
+    Tls(#[from] async_native_tls::Error),
+    #[error("hyper error: {0}")]
+    Hyper(#[from] hyper::Error),
+}
+
+type ConnectionFuture<B> = Connection<FuturesIo<SmolStream>, B>;
+type ConnectionOutput<B> = <ConnectionFuture<B> as Future>::Output;
+type ConnectionOutputFn<B> = fn(ConnectionOutput<B>) -> ();
+type SpawnFuture<B> = futures_util::future::Map<ConnectionFuture<B>, ConnectionOutputFn<B>>;
+
+/// We need to specifiy _which_ future we're going to be spawning on the executor, so let's do that
+/// with some gnarly typing. All that a consumer of this library needs to do is to provide a type
+/// that implements `hyper::rt::Executor` for a sufficient variety of futures.
+#[allow(private_bounds)]
+impl<'a, E, B> Client<'a, E, B>
+where
+    E: hyper::rt::Executor<SpawnFuture<B>>,
+    B: Body + 'static,
+    B::Data: Send,
+    B::Error: Into<Box<dyn StdError + Send + Sync>>,
+{
+    pub fn new(executor: &'a E) -> Self {
+        Self {
+            executor,
+            body_type: PhantomData,
+        }
+    }
+
     /// Mostly taken from https://github.com/smol-rs/smol/blob/4af083b2078f2e4d6b9810abb0e6ed4186729ef9/examples/hyper-client.rs
     pub async fn request(
         &self,
-        req: hyper::Request<http_body_util::Empty<hyper::body::Bytes>>,
-    ) -> crate::Result<hyper::Response<hyper::body::Incoming>> {
+        req: hyper::Request<B>,
+    ) -> Result<hyper::Response<hyper::body::Incoming>, ClientError> {
         let io = {
-            let host = req
-                .uri()
-                .host()
-                .ok_or_else(|| crate::Error::new("cannot parse host"))?;
+            let uri = req.uri();
+            let host = uri.host().ok_or_else(|| ClientError::InvalidHost {
+                uri: uri.to_string(),
+            })?;
             match req.uri().scheme_str() {
                 Some("http") => {
                     let stream = {
@@ -53,18 +96,22 @@ impl Client {
                     let stream = async_native_tls::connect(host, stream).await?;
                     SmolStream::Tls(stream)
                 }
-                _otherwise => return Err(crate::Error::new("unsupported scheme")),
+                otherwise => {
+                    return Err(ClientError::UnsupportedScheme {
+                        scheme: otherwise.unwrap_or("None").into(),
+                    });
+                }
             }
         };
 
         // Spawn the HTTP/1 connection.
         let (mut sender, conn) =
             hyper::client::conn::http1::handshake(smol_hyper::rt::FuturesIo::new(io)).await?;
-        CurrentThreadExecutor.execute(async move {
-            if let Err(e) = conn.await {
+        self.executor.execute(FutureExt::map(conn, |output| {
+            if let Err(e) = output {
                 eprintln!("connection failed: {e}");
             }
-        });
+        }));
 
         let result = sender.send_request(req).await?;
         Ok(result)
@@ -117,62 +164,5 @@ impl AsyncWrite for SmolStream {
             SmolStream::Plain(stream) => Pin::new(stream).poll_flush(cx),
             SmolStream::Tls(stream) => Pin::new(stream).poll_flush(cx),
         }
-    }
-}
-
-/// Newtype in order to get Serialize/Deserialize, and PartialOrd/Ord
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct Uri(pub hyper::Uri);
-
-impl From<Uri> for hyper::Uri {
-    fn from(value: Uri) -> Self {
-        value.0
-    }
-}
-
-impl Deref for Uri {
-    type Target = hyper::Uri;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl Display for Uri {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl PartialOrd for Uri {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for Uri {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        let a = self.0.to_string();
-        let b = other.0.to_string();
-        a.cmp(&b)
-    }
-}
-
-impl Serialize for Uri {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.0.to_string())
-    }
-}
-
-impl<'de> Deserialize<'de> for Uri {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = <&'_ str>::deserialize(deserializer)?;
-        let uri = hyper::Uri::try_from(s).map_err(D::Error::custom)?;
-        Ok(Uri(uri))
     }
 }
