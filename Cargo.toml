@@ -10,6 +10,7 @@ members = [
   "packages/driver-query-minify-html",
   "packages/driver-query-tera",
   "packages/driver-query-zune",
+  "packages/driver-util",
   "packages/smol-hyper-client",
   "packages/task-local",
 

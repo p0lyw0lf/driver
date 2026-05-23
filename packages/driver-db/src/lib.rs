@@ -6,17 +6,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use crate::Options;
 use crate::engine::{AnyOutput, QueryKey, Queryable};
 use crate::serde::SerializedMap;
 use crate::to_hash::ToHash;
 
-mod http_client;
 pub mod object;
+mod options;
 pub mod remote;
 
-#[cfg(test)]
-mod test;
+pub use options::Options;
 
 pub use object::Object;
 

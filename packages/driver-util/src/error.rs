@@ -20,7 +20,7 @@ impl Display for Error {
     }
 }
 
-impl crate::to_hash::ToHash for Error {
+impl crate::ToHash for Error {
     fn run_hash(&self, hasher: &mut sha2::Sha256) {
         hasher.update(b"Error(");
         hasher.update(self.0.as_bytes());

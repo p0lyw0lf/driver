@@ -1,3 +1,6 @@
+//! Newtypes that allow for serialization/deserialization of various datastructures that we care
+//! about in the driver series of crates.
+
 use std::hash::Hash;
 use std::marker::PhantomData;
 
