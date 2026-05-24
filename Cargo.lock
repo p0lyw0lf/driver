@@ -2806,7 +2806,6 @@ version = "0.1.0"
 dependencies = [
  "scc",
  "serde",
- "sha2",
 ]
 
 [[package]]
