@@ -19,6 +19,6 @@ impl Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self::with_base_dir("./.driver")
+        Self::with_base_dir("./.driver".into())
     }
 }
