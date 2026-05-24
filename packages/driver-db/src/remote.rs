@@ -1,4 +1,4 @@
-use http_body_util::BodyExt;
+use http_body_util::BodyExt as _;
 use hyper::Response;
 use hyper::body::Incoming;
 use hyper::header::{
@@ -9,18 +9,22 @@ use jiff::fmt::temporal::DateTimeParser;
 use jiff::{Span, Timestamp, ToSpan};
 use serde::{Deserialize, Serialize};
 
-use crate::engine::db::http_client::{Client, default_client};
-use crate::engine::db::object::{Object, Objects};
-use crate::serde::SerializedMap;
+use smol_hyper_client::{Client, USER_AGENT as USER_AGENT_VALUE, Uri};
 
-pub use crate::engine::db::http_client::Uri;
+use crate::{Object, Objects, Options};
+use driver_util::serde::SerializedMap;
+
+type MyClient = Client<'static, (), http_body_util::Empty<hyper::body::Bytes>>;
+fn default_client() -> MyClient {
+    todo!()
+}
 
 /// A store for all URLs that have been fetched remotely. Maps a URL to an object hash and
 /// expiration time, if present on the fetched headers.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RemoteObjects {
-    #[serde(skip, default = "crate::engine::db::http_client::default_client")]
-    client: Client,
+    #[serde(skip, default = "default_client")]
+    client: MyClient,
     cache: SerializedMap<Uri, RemoteObject>,
 }
 
@@ -63,7 +67,12 @@ impl RemoteObject {
 impl RemoteObjects {
     /// Fetches a remote URL and adds it to the local store if not present or too stale.
     /// If the URL is present in the cache and still fresh, uses that instead of fetching.
-    pub async fn fetch(&self, objects: &Objects, uri: Uri) -> crate::Result<RemoteObject> {
+    pub async fn fetch(
+        &self,
+        options: &Options,
+        objects: &Objects,
+        uri: Uri,
+    ) -> driver_util::Result<RemoteObject> {
         let (req, why) = {
             // Limit lifetime of the remote object that we use to build the request
             let remote_object = self.cache.get_async(&uri).await;
@@ -76,8 +85,8 @@ impl RemoteObjects {
 
             // Otherwise, we need to fetch the URL.
             let mut req = hyper::Request::get(uri.clone())
-                .header(USER_AGENT, crate::engine::db::http_client::USER_AGENT)
-                .header(HOST, uri.host().expect("no host"));
+                .header(USER_AGENT, USER_AGENT_VALUE)
+                .header(HOST, uri.host().ok_or(driver_util::Error::new("no host"))?);
             if let Some(ref remote_object) = remote_object {
                 req = req.header(
                     IF_MODIFIED_SINCE,
@@ -110,13 +119,13 @@ impl RemoteObjects {
                         *entry = headers.with_object(entry.object.clone());
                         Ok(entry.clone())
                     }
-                    scc::hash_map::Entry::Vacant(_) => Err(crate::Error::new(
+                    scc::hash_map::Entry::Vacant(_) => Err(driver_util::Error::new(
                         "server returned 304, but object not found in cache. please clear your local cache.",
                     )),
                 };
             }
             // Otherwise, the error is unexpected
-            return Err(crate::Error::new(
+            return Err(driver_util::Error::new(
                 status.canonical_reason().unwrap_or("unknown response code"),
             ));
         }
@@ -125,7 +134,7 @@ impl RemoteObjects {
 
         let body = resp.into_body();
         let body = body.collect().await?.to_bytes();
-        let object = objects.store(body.into())?;
+        let object = objects.store(options, body.into())?;
 
         let remote_object = headers.with_object(object);
         let _ = self.cache.upsert_async(uri, remote_object.clone()).await;
@@ -183,7 +192,7 @@ impl ResponseHeaders {
     fn calculate_freshness_lifetime(
         headers: &HeaderMap,
         fetched: Timestamp,
-    ) -> crate::Result<Span> {
+    ) -> driver_util::Result<Span> {
         if let Some(cache_control) = headers.get(CACHE_CONTROL) {
             let cache_control = cache_control.to_str()?;
             let directives = cache_control
@@ -226,7 +235,7 @@ impl ResponseHeaders {
 }
 
 /// Implements the formatting specification from https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/If-Modified-Since
-fn format_header_date(timestamp: Timestamp) -> crate::Result<HeaderValue> {
+fn format_header_date(timestamp: Timestamp) -> driver_util::Result<HeaderValue> {
     let gmt = timestamp.in_tz("Etc/GMT")?;
 
     let weekday = match gmt.weekday() {
@@ -254,7 +263,7 @@ fn format_header_date(timestamp: Timestamp) -> crate::Result<HeaderValue> {
         10 => "Oct",
         11 => "Nov",
         12 => "Dec",
-        _ => return Err(crate::Error::new("invalid month")),
+        _ => return Err(driver_util::Error::new("invalid month")),
     };
 
     let year = gmt.year();

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use sha2::Digest;
+use sha2::Digest as _;
 
 use crate::Options;
 use driver_util::serde::SerializedMap;
@@ -16,7 +16,7 @@ pub struct Objects {
 
 /// Newtype for a hash that represents it's an object in the store.
 #[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
-pub struct Object(Hash);
+pub struct Object(sha2::digest::Output<sha2::Sha256>);
 
 impl Objects {
     pub fn new() -> Self {
@@ -82,7 +82,7 @@ impl Objects {
     }
 
     fn object_filename(&self, options: &Options, object: &Object) -> PathBuf {
-        self.base_dir.join(object.to_string())
+        options.objects_path.join(object.to_string())
     }
 }
 

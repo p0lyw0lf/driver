@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::{Deserialize, Serialize};
 
+use crate::{Objects, Options, RemoteObjects};
 use driver_util::serde::SerializedMap;
 
 /// Tracks the range [changed_at, verified_at], to confirm the value is corresponds to is the same
@@ -46,8 +47,8 @@ enum LogicalValue<Output> {
     Computing(ThreadsafeReceiver<Value<Output>>),
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub struct Core<Key: Hash + Eq, Output> {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Core<Key: Hash + Ord + Eq, Output> {
     #[serde(skip)]
     pub revision: AtomicUsize,
 
@@ -59,14 +60,26 @@ pub struct Core<Key: Hash + Eq, Output> {
     dep_graph: SerializedMap<Key, BTreeSet<Key>>,
 }
 
-#[derive(Debug)]
-pub struct Database<Key: Hash + Eq, Output> {
-    core: Core<Key, Output>,
-    pub objects: object::Objects,
-    pub remotes: remote::RemoteObjects,
+/// Manual impl to avoid extraneous bounds on `Output`.
+impl<Key: Hash + Ord + Eq, Output> Default for Core<Key, Output> {
+    fn default() -> Self {
+        Self {
+            revision: Default::default(),
+            with_entry_nonce: Default::default(),
+            cache: Default::default(),
+            dep_graph: Default::default(),
+        }
+    }
 }
 
-impl<Key: Hash + Eq, Output> Deref for Database<Key, Output> {
+#[derive(Debug)]
+pub struct Database<Key: Hash + Ord + Eq, Output> {
+    core: Core<Key, Output>,
+    pub objects: Objects,
+    pub remotes: RemoteObjects,
+}
+
+impl<Key: Hash + Ord + Eq, Output> Deref for Database<Key, Output> {
     type Target = Core<Key, Output>;
 
     fn deref(&self) -> &Self::Target {
@@ -101,7 +114,7 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Core<Key, Output> {
     pub async fn with_entry<T>(
         &self,
         key: Key,
-        f: impl for<'a> AsyncFnOnce(&'a mut Entry) -> T,
+        f: impl for<'a> AsyncFnOnce(&'a mut Entry<Output>) -> T,
     ) -> T {
         /// Here, we effectively queue the waiters in FIFO order, based on the time they swap in
         /// their local oneshot channel into the map. There are other possible algorithms we can do
@@ -167,14 +180,13 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Core<Key, Output> {
 
     /// Gets the value associated with an entry. MUST ONLY be used to compute diffs between past
     /// known values and queried values; MUST NOT be relied on as an accurate "this is up to date".
-    pub async unsafe fn get_value(&self, key: &Key) -> Option<Output> {
-        let value = match self.cache.get_sync(key)?.get() {
-            LogicalValue::Materialized(value) => value.value.clone(),
+    pub async fn get_value(&self, key: &Key) -> Option<Output> {
+        match self.cache.get_sync(key)?.get() {
+            LogicalValue::Materialized(value) => Some(value.value.clone()),
             LogicalValue::Computing(_) => {
                 panic!("should not be computing {key}")
             }
-        };
-        value.downcast().map(|x| *x)
+        }
     }
 }
 
@@ -225,10 +237,8 @@ impl<Output: driver_util::Output> Entry<Output> {
                 });
             }
             Some(ref mut this) => {
-                let hash = value.to_hash();
-                let old = std::mem::replace(&mut this.value, value);
-
-                let did_change = old.to_hash() != hash;
+                let did_change = this.value != value;
+                this.value = value;
 
                 this.mark_verified(revision);
                 if did_change {
@@ -287,14 +297,14 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Database<Key, Output> {
 
     pub fn restore(options: &Options) -> driver_util::Result<Self> {
         std::fs::create_dir_all(&options.objects_path)?;
-        let objects = object::Objects::new(options.objects_path.clone());
+        let objects = Objects::new();
 
         let core = (|| {
             let file = std::fs::File::open(&options.cache_path)?;
             let mut file = zstd::Decoder::new(file)?;
             let mut bytes = Vec::<u8>::new();
             file.read_to_end(&mut bytes)?;
-            let core: Core = postcard::from_bytes(&bytes)?;
+            let core: Core<Key, Output> = postcard::from_bytes(&bytes)?;
             driver_util::Result::Ok(core)
         })()
         .unwrap_or_else(|err| {
@@ -308,7 +318,7 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Database<Key, Output> {
             let mut file = zstd::Decoder::new(file)?;
             let mut bytes = Vec::<u8>::new();
             file.read_to_end(&mut bytes)?;
-            let remotes: remote::RemoteObjects = postcard::from_bytes(&bytes)?;
+            let remotes: RemoteObjects = postcard::from_bytes(&bytes)?;
             driver_util::Result::Ok(remotes)
         })()
         .unwrap_or_else(|err| {

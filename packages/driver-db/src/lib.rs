@@ -1,10 +1,13 @@
 mod database;
 pub use database::Database;
 
-pub mod object;
-mod options;
-pub mod remote;
+mod object;
+pub use object::Object;
+pub use object::Objects;
 
+mod options;
 pub use options::Options;
 
-pub use object::Object;
+mod remote;
+pub use remote::RemoteObject;
+pub use remote::RemoteObjects;
