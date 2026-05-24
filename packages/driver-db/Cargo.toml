@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+driver-util = { path = "../driver-util" }
 task-local = { path = "../task-local" }
 arborium = { version = "2.16", features = ["all-languages"] }
 async-broadcast = "0.7"

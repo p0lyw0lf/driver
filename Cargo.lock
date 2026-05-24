@@ -2417,6 +2417,7 @@ dependencies = [
  "boa_engine",
  "boa_gc",
  "comrak",
+ "driver-util",
  "dyn-clone",
  "either",
  "flume",
