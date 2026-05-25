@@ -1,13 +1,15 @@
+use std::any::Any;
 use std::cell::OnceCell;
-use std::{sync::Arc, thread::JoinHandle};
+use std::pin::Pin;
+use std::thread::JoinHandle;
 
 use async_task::Runnable;
 use futures_concurrency::stream::IntoStream;
 use futures_lite::future;
-use futures_lite::stream::{self, StreamExt};
+use futures_lite::stream::{self, StreamExt as _};
 
-use crate::engine::{any_output::AnyOutput, context::QueryContext, db::Database, key::QueryKey};
-use crate::options::Options;
+#[cfg(feature="hyper")]
+mod hyper;
 
 /// The main struct that runs the futures. Uses a thread-per-core architecture to run things as
 /// efficiently as possible.
@@ -25,38 +27,30 @@ use crate::options::Options;
 /// This is also the top-level
 #[derive(Debug)]
 pub struct Executor {
-    /// Options to customize the runtime behavior of the executor
-    pub(crate) options: Options,
-    /// Created on start, and saved on stop
-    pub(crate) db: Database,
     /// All the threads in the threadpool.
     threads: Vec<JoinHandle<()>>,
     /// The sending end of a channel that lets us spawn new queries onto the threadpool.
     send_work: flume::Sender<UnitOfWork>,
     /// A broadcast channel to let us stop the threadpool
     send_stop: async_broadcast::Sender<()>,
+    // TODO: The sending end of a channel that lets us send things back to the entire threadpool
+    // if they are `Send`.
+    // global_send_runnable: flume::Sender<Runnable>,
 }
+
+type BoxedFuture = Box<dyn Future<Output = Box<dyn Any>>>;
 
 /// A single "unit of work" (lmao at the name) that the executor keeps track of. Multiple
 /// corredponding to a single key/ctx can be in-flight at the same time, but only the first one
 /// will actually run any "real" computation (thanks to a locking mechanism).
 struct UnitOfWork {
-    key: QueryKey,
-    ctx: QueryContext,
-    send: oneshot::Sender<AnyOutput>,
+    fut: Pin<BoxedFuture>,
+    send: oneshot::Sender<Box<dyn Any>>,
 }
 
 impl Executor {
     /// MUST NOT be run in an async context.
-    pub fn start(options: Options) -> Executor {
-        let db = match Database::restore(&options) {
-            Ok(db) => db,
-            Err(err) => panic!("error restoring database: {err}"),
-        };
-        // Bust cache immediately
-        db.revision
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
+    pub fn start() -> Executor {
         let (send_work, recv_work) = flume::unbounded();
         let (send_stop, recv_stop) = async_broadcast::broadcast(1);
 
@@ -70,31 +64,36 @@ impl Executor {
             .collect();
 
         Self {
-            options,
-            db,
             threads,
             send_work,
             send_stop,
         }
     }
 
-    pub(crate) async fn query(
-        self: Arc<Self>,
-        key: QueryKey,
-        parent: Option<QueryKey>,
-    ) -> AnyOutput {
+    /// Pushes a new unit of work onto the global queue, where it then be pinned to the first
+    /// thread that starts executing it.
+    pub async fn execute<F>(&self, fut: F) -> F::Output
+    where
+        F: Future,
+        F::Output: Send,
+    {
         let (send, recv) = oneshot::channel();
-        let ctx = QueryContext {
-            parent,
-            executor: self.clone(),
+        let query = UnitOfWork {
+            fut: Box::into_pin(
+                Box::new(async { Box::new(fut.await) as Box<dyn Any> }) as BoxedFuture
+            ),
+            send,
         };
-        let query = UnitOfWork { key, ctx, send };
         self.send_work.send(query).expect("query send error");
-        recv.await.expect("output receive error")
+        *recv
+            .await
+            .expect("output receive error")
+            .downcast()
+            .expect("output type error")
     }
 
     /// MUST NOT be run in an async context.
-    pub fn stop(self) -> crate::Result<()> {
+    pub fn stop(self) {
         // Tell all threads to stop running
         let _ = self
             .send_stop
@@ -105,13 +104,6 @@ impl Executor {
         for thread in self.threads.into_iter() {
             thread.join().expect("thread join error");
         }
-
-        // Only then should we save the database
-        Database::save(self.db, &self.options)
-    }
-
-    pub fn display_dep_graph(&self) -> impl std::fmt::Display + '_ {
-        self.db.display_dep_graph()
     }
 }
 
@@ -131,8 +123,9 @@ thread_local! {
 fn main_loop(recv_work: flume::Receiver<UnitOfWork>, recv_stop: async_broadcast::Receiver<()>) {
     let (send_runnable, recv_runnable) = flume::unbounded::<Runnable>();
     SEND_RUNNABLE.with(|tlv| {
+        // TODO: relax this restriction
         tlv.set(send_runnable.clone())
-            .expect("SEND_RUNNABLE already initialized")
+            .expect("SEND_RUNNABLE already initialized; there can only be one Executor running for the duration of a program.")
     });
     future::block_on(async {
         // A threadpool does one of three things:
@@ -157,9 +150,8 @@ fn main_loop(recv_work: flume::Receiver<UnitOfWork>, recv_stop: async_broadcast:
                     let send_runnable = send_runnable.clone();
                     let (runnable, task) = async_task::spawn_local(
                         async {
-                            let UnitOfWork { key, ctx, send } = query;
-                            let output = ctx.query_internal(key).await;
-                            send.send(output).expect("output send error");
+                            let UnitOfWork { fut, send } = query;
+                            send.send(fut.await).expect("output send error");
                         },
                         move |runnable| send_runnable.send(runnable).expect("runnable send error"),
                     );
@@ -171,15 +163,15 @@ fn main_loop(recv_work: flume::Receiver<UnitOfWork>, recv_stop: async_broadcast:
     });
 }
 
+/// If an `Executor` is running, use this to run further futures on the current thread.
 #[derive(Debug, Copy, Clone)]
 pub struct CurrentThreadExecutor;
 
-impl<F> hyper::rt::Executor<F> for CurrentThreadExecutor
-where
-    F: Future + 'static,
-    F::Output: 'static,
-{
-    fn execute(&self, fut: F) {
+impl CurrentThreadExecutor {
+    pub fn spawn<F>(&self, fut: F)
+    where
+        F: Future,
+    {
         let send_runnable = SEND_RUNNABLE.with(|tlv| {
             tlv.get()
                 .expect("SEND_RUNNABLE not initialized for this thread")
