@@ -1,4 +1,3 @@
-use std::any::Any;
 use std::cell::OnceCell;
 use std::pin::Pin;
 use std::thread::JoinHandle;
@@ -32,65 +31,111 @@ pub struct Executor {
     /// The sending end of a channel that lets us spawn new queries onto the threadpool, whose
     /// Runnables will be pinned to whatever thread picks it up.
     send_work: flume::Sender<UnitOfWork>,
+    /// The sending end of a channel to put work onto a "global" poll that any thread can pick up.
+    send_unpinned_runnable: flume::Sender<Runnable>,
     /// A broadcast channel to let us stop the threadpool
     send_stop: async_broadcast::Sender<()>,
-    // TODO: The sending end of a channel that lets us send things back to the entire threadpool
-    // if they are `Send`.
-    // global_send_runnable: flume::Sender<Runnable>,
 }
 
-type BoxedFuture = Box<dyn Future<Output = ()> + Send>;
-type BoxedOutput = Box<dyn Any + Send>;
+type BoxedFn = Box<dyn (FnOnce() -> Pin<BoxedFuture>) + Send>;
+type BoxedFuture = Box<dyn Future<Output = ()>>;
+type SendBoxedFuture = Box<dyn Future<Output = ()> + Send>;
 
 /// A single "unit of work" (lmao at the name) that the executor keeps track of. Multiple
 /// corredponding to a single key/ctx can be in-flight at the same time, but only the first one
 /// will actually run any "real" computation (thanks to a locking mechanism).
-struct UnitOfWork {
-    fut: Pin<BoxedFuture>,
+enum UnitOfWork {
+    Pinned(BoxedFn),
+    Unpinned(Pin<SendBoxedFuture>),
 }
 
 impl Executor {
     /// MUST NOT be run in an async context.
     pub fn start() -> Executor {
         let (send_work, recv_work) = flume::unbounded();
+        let (send_unpinned_runnable, recv_unpinned_runnable) = flume::unbounded();
         let (send_stop, recv_stop) = async_broadcast::broadcast(1);
 
         let n = num_cpus::get();
         let threads = (0..n)
             .map(|_| {
                 let recv_work = recv_work.clone();
+                let send_unpinned_runnable = send_unpinned_runnable.clone();
+                let recv_unpinned_runnable = recv_unpinned_runnable.clone();
                 let recv_stop = recv_stop.clone();
-                std::thread::spawn(move || main_loop(recv_work, recv_stop))
+                std::thread::spawn(move || {
+                    main_loop(
+                        recv_work,
+                        send_unpinned_runnable,
+                        recv_unpinned_runnable,
+                        recv_stop,
+                    )
+                })
             })
             .collect();
 
         Self {
             threads,
             send_work,
+            send_unpinned_runnable,
             send_stop,
         }
     }
 
-    /// Pushes a new unit of work onto the global queue, where it then be pinned to the first
-    /// thread that starts executing it.
-    pub async fn execute<F>(&self, fut: F) -> F::Output
+    fn spawn_pinned<F, Fut>(&self, f: F) -> oneshot::Receiver<Fut::Output>
     where
-        F: Future + Send + 'static,
-        F::Output: Send + 'static,
+        F: (FnOnce() -> Fut) + Send + 'static,
+        Fut: Future + 'static,
+        Fut::Output: Send + 'static,
     {
         let (send, recv) = oneshot::channel();
-        let work = UnitOfWork {
-            fut: Box::into_pin(Box::new(async {
-                let output = Box::new(fut.await) as BoxedOutput;
-                send.send(output).expect("output send error");
-            }) as BoxedFuture),
-        };
-        self.send_work.send(work).expect("query send error");
-        *recv
+        let work = UnitOfWork::Pinned(Box::new(move || {
+            let fut = f();
+            Box::into_pin(Box::new(async {
+                let output = fut.await;
+                send.send(output).expect("pinned output send error");
+            }) as BoxedFuture)
+        }));
+        self.send_work.send(work).expect("pinned work send error");
+        recv
+    }
+
+    /// Pushes a new unit of work onto the global queue, where it then be pinned to the first
+    /// thread that starts executing it.
+    pub async fn execute_pinned<F, Fut>(&self, f: F) -> Fut::Output
+    where
+        F: (FnOnce() -> Fut) + Send + 'static,
+        Fut: Future + 'static,
+        Fut::Output: Send + 'static,
+    {
+        self.spawn_pinned(f)
             .await
-            .expect("output receive error")
-            .downcast()
-            .expect("output type error")
+            .expect("pinned output receive error")
+    }
+
+    fn spawn_unpinned<Fut>(&self, fut: Fut) -> oneshot::Receiver<Fut::Output>
+    where
+        Fut: Future + Send + 'static,
+        Fut::Output: Send + 'static,
+    {
+        let (send, recv) = oneshot::channel();
+        let work = UnitOfWork::Unpinned(Box::into_pin(Box::new(async {
+            let output = fut.await;
+            send.send(output).expect("unpinned output send error");
+        }) as SendBoxedFuture));
+        self.send_work.send(work).expect("unpinned work send error");
+        recv
+    }
+
+    /// Pushes a new unit of work onto the global queue, where any available thread can execute it.
+    pub async fn execute_unpinned<Fut>(&self, fut: Fut) -> Fut::Output
+    where
+        Fut: Future + Send + 'static,
+        Fut::Output: Send + 'static,
+    {
+        self.spawn_unpinned(fut)
+            .await
+            .expect("unpinned output receive error")
     }
 
     /// MUST NOT be run in an async context.
@@ -121,24 +166,36 @@ thread_local! {
 }
 
 /// Main loop of each thread in the threadpool.
-fn main_loop(recv_work: flume::Receiver<UnitOfWork>, recv_stop: async_broadcast::Receiver<()>) {
-    let (send_runnable, recv_runnable) = flume::unbounded::<Runnable>();
+fn main_loop(
+    recv_work: flume::Receiver<UnitOfWork>,
+    send_unpinned_runnable: flume::Sender<Runnable>,
+    recv_unpinned_runnable: flume::Receiver<Runnable>,
+    recv_stop: async_broadcast::Receiver<()>,
+) {
+    let (send_pinned_runnable, recv_pinned_runnable) = flume::unbounded::<Runnable>();
     SEND_RUNNABLE.with(|tlv| {
         // TODO: relax this restriction
-        tlv.set(send_runnable.clone())
+        tlv.set(send_pinned_runnable.clone())
             .expect("SEND_RUNNABLE already initialized; there can only be one Executor running for the duration of a program.")
     });
     future::block_on(async {
         // A threadpool does one of three things:
         // 1: stop
         let stop_stream = recv_stop.into_stream().map(|()| Event::Stop);
-        // 2: Run an existing future that's been re-scheduled for more work
-        let old_work_stream = recv_runnable.into_stream().map(Event::OldWork);
+        // 2.1: Run an existing future from the "local" poll that's been re-scheduled for more work
+        let pinned_runnable_stream = recv_pinned_runnable.into_stream().map(Event::OldWork);
+        // 2.2: Run an existing future from the "global" pool (lower priority)
+        let unpinned_runnable_stream = recv_unpinned_runnable.into_stream().map(Event::OldWork);
         // 3: Start a new unit of work
         let new_work_stream = recv_work.into_stream().map(Event::NewWork);
 
-        let mut event_stream =
-            stream::or(stop_stream, stream::or(old_work_stream, new_work_stream));
+        let mut event_stream = stream::or(
+            stop_stream,
+            stream::or(
+                stream::race(pinned_runnable_stream, unpinned_runnable_stream),
+                new_work_stream,
+            ),
+        );
         while let Some(event) = event_stream.next().await {
             match event {
                 Event::Stop => break,
@@ -146,11 +203,23 @@ fn main_loop(recv_work: flume::Receiver<UnitOfWork>, recv_stop: async_broadcast:
                     // There is a pending task => run it
                     runnable.run();
                 }
-                Event::NewWork(work) => {
+                Event::NewWork(UnitOfWork::Pinned(mk_fut)) => {
                     // There is no pending task => add a new one
-                    let send_runnable = send_runnable.clone();
-                    let (runnable, task) = async_task::spawn_local(work.fut, move |runnable| {
-                        send_runnable.send(runnable).expect("runnable send error")
+                    let send_pinned_runnable = send_pinned_runnable.clone();
+                    let (runnable, task) = async_task::spawn_local((mk_fut)(), move |runnable| {
+                        send_pinned_runnable
+                            .send(runnable)
+                            .expect("pinned runnable send error")
+                    });
+                    task.detach();
+                    runnable.run();
+                }
+                Event::NewWork(UnitOfWork::Unpinned(fut)) => {
+                    let send_unpinned_runnable = send_unpinned_runnable.clone();
+                    let (runnable, task) = async_task::spawn(fut, move |runnable| {
+                        send_unpinned_runnable
+                            .send(runnable)
+                            .expect("unpinned runnable send error")
                     });
                     task.detach();
                     runnable.run();
@@ -175,6 +244,7 @@ impl CurrentThreadExecutor {
                 .expect("SEND_RUNNABLE not initialized for this thread")
                 .clone()
         });
+        // TODO: Don't spawn onto queue immediately, wait in line like other work does.
         let (runnable, task) = async_task::spawn_local(fut, move |runnable| {
             send_runnable.send(runnable).expect("runnable send error")
         });
