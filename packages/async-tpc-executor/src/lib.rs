@@ -29,7 +29,8 @@ mod hyper;
 pub struct Executor {
     /// All the threads in the threadpool.
     threads: Vec<JoinHandle<()>>,
-    /// The sending end of a channel that lets us spawn new queries onto the threadpool.
+    /// The sending end of a channel that lets us spawn new queries onto the threadpool, whose
+    /// Runnables will be pinned to whatever thread picks it up.
     send_work: flume::Sender<UnitOfWork>,
     /// A broadcast channel to let us stop the threadpool
     send_stop: async_broadcast::Sender<()>,
@@ -38,7 +39,7 @@ pub struct Executor {
     // global_send_runnable: flume::Sender<Runnable>,
 }
 
-type BoxedFuture = Box<dyn Future<Output = Box<dyn Any + Send>> + Send>;
+type BoxedFuture = Box<dyn Future<Output = ()> + Send>;
 type BoxedOutput = Box<dyn Any + Send>;
 
 /// A single "unit of work" (lmao at the name) that the executor keeps track of. Multiple
@@ -46,7 +47,6 @@ type BoxedOutput = Box<dyn Any + Send>;
 /// will actually run any "real" computation (thanks to a locking mechanism).
 struct UnitOfWork {
     fut: Pin<BoxedFuture>,
-    send: oneshot::Sender<BoxedOutput>,
 }
 
 impl Executor {
@@ -79,13 +79,13 @@ impl Executor {
         F::Output: Send + 'static,
     {
         let (send, recv) = oneshot::channel();
-        let query = UnitOfWork {
-            fut: Box::into_pin(
-                Box::new(async { Box::new(fut.await) as BoxedOutput }) as BoxedFuture
-            ),
-            send,
+        let work = UnitOfWork {
+            fut: Box::into_pin(Box::new(async {
+                let output = Box::new(fut.await) as BoxedOutput;
+                send.send(output).expect("output send error");
+            }) as BoxedFuture),
         };
-        self.send_work.send(query).expect("query send error");
+        self.send_work.send(work).expect("query send error");
         *recv
             .await
             .expect("output receive error")
@@ -146,16 +146,12 @@ fn main_loop(recv_work: flume::Receiver<UnitOfWork>, recv_stop: async_broadcast:
                     // There is a pending task => run it
                     runnable.run();
                 }
-                Event::NewWork(query) => {
+                Event::NewWork(work) => {
                     // There is no pending task => add a new one
                     let send_runnable = send_runnable.clone();
-                    let (runnable, task) = async_task::spawn_local(
-                        async {
-                            let UnitOfWork { fut, send } = query;
-                            send.send(fut.await).expect("output send error");
-                        },
-                        move |runnable| send_runnable.send(runnable).expect("runnable send error"),
-                    );
+                    let (runnable, task) = async_task::spawn_local(work.fut, move |runnable| {
+                        send_runnable.send(runnable).expect("runnable send error")
+                    });
                     task.detach();
                     runnable.run();
                 }
