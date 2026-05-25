@@ -8,7 +8,7 @@ use futures_concurrency::stream::IntoStream;
 use futures_lite::future;
 use futures_lite::stream::{self, StreamExt as _};
 
-#[cfg(feature="hyper")]
+#[cfg(feature = "hyper")]
 mod hyper;
 
 /// The main struct that runs the futures. Uses a thread-per-core architecture to run things as
@@ -38,14 +38,15 @@ pub struct Executor {
     // global_send_runnable: flume::Sender<Runnable>,
 }
 
-type BoxedFuture = Box<dyn Future<Output = Box<dyn Any>>>;
+type BoxedFuture = Box<dyn Future<Output = Box<dyn Any + Send>> + Send>;
+type BoxedOutput = Box<dyn Any + Send>;
 
 /// A single "unit of work" (lmao at the name) that the executor keeps track of. Multiple
 /// corredponding to a single key/ctx can be in-flight at the same time, but only the first one
 /// will actually run any "real" computation (thanks to a locking mechanism).
 struct UnitOfWork {
     fut: Pin<BoxedFuture>,
-    send: oneshot::Sender<Box<dyn Any>>,
+    send: oneshot::Sender<BoxedOutput>,
 }
 
 impl Executor {
@@ -74,13 +75,13 @@ impl Executor {
     /// thread that starts executing it.
     pub async fn execute<F>(&self, fut: F) -> F::Output
     where
-        F: Future,
-        F::Output: Send,
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
     {
         let (send, recv) = oneshot::channel();
         let query = UnitOfWork {
             fut: Box::into_pin(
-                Box::new(async { Box::new(fut.await) as Box<dyn Any> }) as BoxedFuture
+                Box::new(async { Box::new(fut.await) as BoxedOutput }) as BoxedFuture
             ),
             send,
         };
@@ -170,7 +171,8 @@ pub struct CurrentThreadExecutor;
 impl CurrentThreadExecutor {
     pub fn spawn<F>(&self, fut: F)
     where
-        F: Future,
+        F: Future + 'static,
+        F::Output: 'static,
     {
         let send_runnable = SEND_RUNNABLE.with(|tlv| {
             tlv.get()
