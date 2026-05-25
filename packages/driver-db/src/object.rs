@@ -8,8 +8,7 @@ use driver_util::serde::SerializedMap;
 
 /// A store for all strings/blobs that would otherwise be too large to persist to disk multiple
 /// times. "Uniquely" keyed by the hashes of the strings/blobs it stores.
-#[derive(Debug, Default)]
-#[cfg_attr(test, derive(PartialEq))]
+#[derive(Debug, Default, PartialEq)]
 pub struct Objects {
     cache: SerializedMap<Object, Vec<u8>>,
 }
@@ -30,7 +29,8 @@ impl Objects {
         Ok(object)
     }
 
-    /// SAFETY: object must be the hash of contents
+    /// # Safety
+    /// `object` MUST be the hash of `contents`
     pub unsafe fn store_raw(
         &self,
         options: &Options,

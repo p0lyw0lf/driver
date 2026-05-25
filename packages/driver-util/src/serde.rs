@@ -11,8 +11,7 @@ use serde::ser::SerializeMap;
 
 /// Newtype for scc::HashMap that allows for serializing/deserializing, so long as the & is
 /// actually an &mut or owned value.
-#[derive(Clone, Debug)]
-#[cfg_attr(test, derive(PartialEq))]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SerializedMap<K: Eq + Hash, V>(pub scc::HashMap<K, V>);
 
 impl<K: Eq + Hash, V> Default for SerializedMap<K, V> {

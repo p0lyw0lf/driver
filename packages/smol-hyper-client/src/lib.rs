@@ -10,9 +10,10 @@ use async_net::TcpStream;
 use futures_lite::{AsyncRead, AsyncWrite, io};
 use futures_util::future::FutureExt;
 use hyper::body::Body;
-use hyper::client::conn::http1::Connection;
-use smol_hyper::rt::FuturesIo;
 use thiserror::Error;
+
+mod executor;
+pub use executor::Executor;
 
 mod uri;
 pub use uri::Uri;
@@ -20,8 +21,7 @@ pub use uri::Uri;
 /// The main struct used to fetch URLs. Contains a hyper::rt::Executor that is used to spawn
 /// connection tasks.
 #[derive(Debug)]
-pub struct Client<'a, E, B> {
-    executor: &'a E,
+pub struct Client<B> {
     body_type: PhantomData<B>,
 }
 
@@ -47,34 +47,31 @@ pub enum ClientError {
     Hyper(#[from] hyper::Error),
 }
 
-type ConnectionFuture<B> = Connection<FuturesIo<SmolStream>, B>;
-type ConnectionOutput<B> = <ConnectionFuture<B> as Future>::Output;
-type ConnectionOutputFn<B> = fn(ConnectionOutput<B>) -> ();
-type SpawnFuture<B> = futures_util::future::Map<ConnectionFuture<B>, ConnectionOutputFn<B>>;
-
 /// We need to specifiy _which_ future we're going to be spawning on the executor, so let's do that
 /// with some gnarly typing. All that a consumer of this library needs to do is to provide a type
 /// that implements `hyper::rt::Executor` for a sufficient variety of futures.
 #[allow(private_bounds)]
-impl<'a, E, B> Client<'a, E, B>
+impl<B> Client<B>
 where
-    E: hyper::rt::Executor<SpawnFuture<B>>,
     B: Body + 'static,
     B::Data: Send,
     B::Error: Into<Box<dyn StdError + Send + Sync>>,
 {
-    pub fn new(executor: &'a E) -> Self {
+    pub fn new() -> Self {
         Self {
-            executor,
             body_type: PhantomData,
         }
     }
 
     /// Mostly taken from https://github.com/smol-rs/smol/blob/4af083b2078f2e4d6b9810abb0e6ed4186729ef9/examples/hyper-client.rs
-    pub async fn request(
+    pub async fn request<E>(
         &self,
+        executor: &E,
         req: hyper::Request<B>,
-    ) -> Result<hyper::Response<hyper::body::Incoming>, ClientError> {
+    ) -> Result<hyper::Response<hyper::body::Incoming>, ClientError>
+    where
+        E: Executor<B>,
+    {
         let io = {
             let uri = req.uri();
             let host = uri.host().ok_or_else(|| ClientError::InvalidHost {
@@ -107,7 +104,7 @@ where
         // Spawn the HTTP/1 connection.
         let (mut sender, conn) =
             hyper::client::conn::http1::handshake(smol_hyper::rt::FuturesIo::new(io)).await?;
-        self.executor.execute(FutureExt::map(conn, |output| {
+        executor.execute(FutureExt::map(conn, |output| {
             if let Err(e) = output {
                 eprintln!("connection failed: {e}");
             }
@@ -115,6 +112,17 @@ where
 
         let result = sender.send_request(req).await?;
         Ok(result)
+    }
+}
+
+impl<B> Default for Client<B>
+where
+    B: Body + 'static,
+    B::Data: Send,
+    B::Error: Into<Box<dyn StdError + Send + Sync>>,
+{
+    fn default() -> Self {
+        Self::new()
     }
 }
 

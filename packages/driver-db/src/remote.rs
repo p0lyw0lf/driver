@@ -14,9 +14,10 @@ use smol_hyper_client::{Client, USER_AGENT as USER_AGENT_VALUE, Uri};
 use crate::{Object, Objects, Options};
 use driver_util::serde::SerializedMap;
 
-type MyClient = Client<'static, (), http_body_util::Empty<hyper::body::Bytes>>;
+type EmptyBody = http_body_util::Empty<hyper::body::Bytes>;
+type MyClient = Client<EmptyBody>;
 fn default_client() -> MyClient {
-    todo!()
+    MyClient::new()
 }
 
 /// A store for all URLs that have been fetched remotely. Maps a URL to an object hash and
@@ -67,12 +68,16 @@ impl RemoteObject {
 impl RemoteObjects {
     /// Fetches a remote URL and adds it to the local store if not present or too stale.
     /// If the URL is present in the cache and still fresh, uses that instead of fetching.
-    pub async fn fetch(
+    pub async fn fetch<E>(
         &self,
+        executor: &E,
         options: &Options,
         objects: &Objects,
         uri: Uri,
-    ) -> driver_util::Result<RemoteObject> {
+    ) -> driver_util::Result<RemoteObject>
+    where
+        E: smol_hyper_client::Executor<EmptyBody>,
+    {
         let (req, why) = {
             // Limit lifetime of the remote object that we use to build the request
             let remote_object = self.cache.get_async(&uri).await;
@@ -107,7 +112,7 @@ impl RemoteObjects {
 
         let req = req.body(http_body_util::Empty::<hyper::body::Bytes>::new())?;
         println!("[{}] get_url(\"{}\")", why, uri);
-        let resp: Response<Incoming> = self.client.request(req).await?;
+        let resp: Response<Incoming> = self.client.request(executor, req).await?;
         let status = resp.status();
         if !status.is_success() {
             if status == StatusCode::NOT_MODIFIED {

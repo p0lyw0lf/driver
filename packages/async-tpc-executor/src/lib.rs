@@ -1,4 +1,3 @@
-use std::cell::OnceCell;
 use std::pin::Pin;
 use std::thread::JoinHandle;
 
@@ -28,11 +27,8 @@ mod hyper;
 pub struct Executor {
     /// All the threads in the threadpool.
     threads: Vec<JoinHandle<()>>,
-    /// The sending end of a channel that lets us spawn new queries onto the threadpool, whose
-    /// Runnables will be pinned to whatever thread picks it up.
+    /// The sending end of a channel that lets us spawn new queries onto the threadpool.
     send_work: flume::Sender<UnitOfWork>,
-    /// The sending end of a channel to put work onto a "global" poll that any thread can pick up.
-    send_unpinned_runnable: flume::Sender<Runnable>,
     /// A broadcast channel to let us stop the threadpool
     send_stop: async_broadcast::Sender<()>,
 }
@@ -45,7 +41,9 @@ type SendBoxedFuture = Box<dyn Future<Output = ()> + Send>;
 /// corredponding to a single key/ctx can be in-flight at the same time, but only the first one
 /// will actually run any "real" computation (thanks to a locking mechanism).
 enum UnitOfWork {
+    /// Runnables created with this will stay "pinned" to whatever thread picks them up first.
     Pinned(BoxedFn),
+    /// Runnables created with this will be "unpinned", available to run on whatever thread is available.
     Unpinned(Pin<SendBoxedFuture>),
 }
 
@@ -77,7 +75,6 @@ impl Executor {
         Self {
             threads,
             send_work,
-            send_unpinned_runnable,
             send_stop,
         }
     }
@@ -160,11 +157,6 @@ enum Event {
     Stop,
 }
 
-thread_local! {
-    /// Thread-local value that lets us spawn new futures onto the current thread's executor.
-    static SEND_RUNNABLE: OnceCell<flume::Sender<Runnable>> = const { OnceCell::new() };
-}
-
 /// Main loop of each thread in the threadpool.
 fn main_loop(
     recv_work: flume::Receiver<UnitOfWork>,
@@ -173,11 +165,6 @@ fn main_loop(
     recv_stop: async_broadcast::Receiver<()>,
 ) {
     let (send_pinned_runnable, recv_pinned_runnable) = flume::unbounded::<Runnable>();
-    SEND_RUNNABLE.with(|tlv| {
-        // TODO: relax this restriction
-        tlv.set(send_pinned_runnable.clone())
-            .expect("SEND_RUNNABLE already initialized; there can only be one Executor running for the duration of a program.")
-    });
     future::block_on(async {
         // A threadpool does one of three things:
         // 1: stop
@@ -227,28 +214,4 @@ fn main_loop(
             }
         }
     });
-}
-
-/// If an `Executor` is running, use this to run further futures on the current thread.
-#[derive(Debug, Copy, Clone)]
-pub struct CurrentThreadExecutor;
-
-impl CurrentThreadExecutor {
-    pub fn spawn<F>(&self, fut: F)
-    where
-        F: Future + 'static,
-        F::Output: 'static,
-    {
-        let send_runnable = SEND_RUNNABLE.with(|tlv| {
-            tlv.get()
-                .expect("SEND_RUNNABLE not initialized for this thread")
-                .clone()
-        });
-        // TODO: Don't spawn onto queue immediately, wait in line like other work does.
-        let (runnable, task) = async_task::spawn_local(fut, move |runnable| {
-            send_runnable.send(runnable).expect("runnable send error")
-        });
-        task.detach();
-        runnable.run();
-    }
 }
