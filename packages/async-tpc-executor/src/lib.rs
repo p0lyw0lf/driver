@@ -48,13 +48,17 @@ enum UnitOfWork {
 }
 
 impl Executor {
-    /// MUST NOT be run in an async context.
-    pub fn start() -> Executor {
+    /// Starts a new Executor. MUST NOT be run in an async context.
+    pub fn start() -> Self {
+        Self::start_n_threads(num_cpus::get())
+    }
+
+    /// Starts a new Executor with `n` threads in its threadpool. MUST NOT be run in an async context.
+    pub fn start_n_threads(n: usize) -> Self {
         let (send_work, recv_work) = flume::unbounded();
         let (send_unpinned_runnable, recv_unpinned_runnable) = flume::unbounded();
         let (send_stop, recv_stop) = async_broadcast::broadcast(1);
 
-        let n = num_cpus::get();
         let threads = (0..n)
             .map(|_| {
                 let recv_work = recv_work.clone();

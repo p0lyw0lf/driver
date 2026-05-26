@@ -1,53 +1,86 @@
-use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::{fmt::Debug, hash::Hash};
 
 use tracing::{info, trace};
 
-use super::any_output::{AnyOutput, Output};
-use super::db::{Database, Entry};
-use super::executor::Executor;
-use super::key::QueryKey;
+use async_tpc_executor::Executor;
+use driver_db::{Database, Entry, Options};
 
-/// The main trait for
-pub trait Producer {
-    type Output: Output + Sized + 'static;
-    fn produce(&self, ctx: &QueryContext) -> impl Future<Output = Self::Output>;
-}
+use crate::Producer;
 
-pub trait Queryable: Producer + Into<QueryKey> + Sized {
-    async fn query(self, ctx: &QueryContext) -> Self::Output;
-}
-
-impl<T: Producer + Into<QueryKey> + Sized> Queryable for T {
-    async fn query(self, ctx: &QueryContext) -> Self::Output {
-        let value = ctx
-            .executor
-            .clone()
-            .query(self.into(), ctx.parent.clone())
-            .await;
-        *value
-            .downcast()
-            .expect("query produced wrong value somehow")
-    }
+#[derive(Debug)]
+struct State<Key: Hash + Ord + Eq, Output> {
+    db: Database<Key, Output>,
+    executor: Executor,
 }
 
 #[derive(Debug, Clone)]
-pub struct QueryContext {
-    pub(crate) parent: Option<QueryKey>,
-    pub(crate) executor: Arc<Executor>,
+pub struct Context<Key: Hash + Ord + Eq, Output> {
+    pub(crate) parent: Option<Key>,
+    state: Arc<State<Key, Output>>,
 }
 
-impl QueryContext {
+impl<Key, Output> Context<Key, Output> {
     /// Get the database associated with the context.
-    pub fn db(&self) -> &Database {
-        &self.executor.db
+    pub fn db(&self) -> &Database<Key, Key::Output> {
+        &self.state.db
+    }
+
+    /// Get the executor associated with the context.
+    pub fn executor(&self) -> &Executor {
+        &self.state.executor
+    }
+}
+
+impl<Key: Producer<Key>> Context<Key, Key::Output> {
+    /// Starts a new root context. Users SHOULD call `.destroy_root()` before dropping it. MUST be
+    /// called outside of any async context.
+    pub fn create_root(options: &Options) -> Self {
+        let db = Database::restore(options);
+
+        // Bust cache immediately
+        // TODO: should only bust the input queries here; right now this busts "everything" which
+        // is wrong; see thunderseethe's email response.
+        db.revision.fetch_add(1, Ordering::Relaxed);
+
+        let executor = Executor::start();
+
+        Self {
+            parent: None,
+            state: Arc::new(State { db, executor }),
+        }
+    }
+
+    /// Stops a root context. MUST only be called:
+    /// - on contexts directly created by `Context::create_root()`
+    /// - with the same `options` as that `create_root()` call.
+    /// - outside of any async context.
+    ///
+    /// TODO: I should probably find a more type-safe way to enforce this API...
+    pub fn destroy_root(self, options: &Options) -> driver_util::Result<()> {
+        let Self { parent: _, state } = self;
+        let state = Arc::into_inner(state).expect("was still running");
+        state.executor.stop();
+        state.db.save(options)
+    }
+
+    /// Creates a root context with an empty database and a single-threaded executor. Only meant
+    /// for testing, you probably want to use `Context::create_root()` instead.
+    pub fn create_empty_root_for_testing_only() -> Self {
+        let db = Database::empty();
+        let executor = Executor::start_n_threads(1);
+
+        Self {
+            parent: None,
+            state: Arc::new(State { db, executor }),
+        }
     }
 
     /// NOTE: most code that runs inside a query itself should use the `key.query(ctx)` form
     /// instead. This function is meant to be used by the executor itself.
     #[tracing::instrument(level = "debug", skip(self), fields(key=%key))]
-    pub(crate) async fn query_internal(&self, key: QueryKey) -> AnyOutput {
+    pub(crate) async fn query_internal(self, key: Key) -> Key::Output {
         trace!("locking db entry");
         self.db()
             .with_entry(key.clone(), async |mut entry| {
@@ -59,7 +92,7 @@ impl QueryContext {
     }
 
     #[tracing::instrument(level = "debug", skip(self, entry), fields(key=%key))]
-    async fn query_entry(&self, key: QueryKey, entry: &mut Entry) -> AnyOutput {
+    async fn query_entry(&self, key: Key, entry: &mut Entry<Key::Output>) -> Key::Output {
         trace!("starting query");
         if let Some(parent) = &self.parent {
             info!("adding edge {parent} -> {key}");
@@ -94,9 +127,9 @@ impl QueryContext {
         trace!("removed");
 
         let value = key
-            .produce(&QueryContext {
+            .produce(&Context {
                 parent: Some(key.clone()),
-                executor: self.executor.clone(),
+                state: self.state.clone(),
             })
             .await;
         trace!("produced value");
@@ -111,9 +144,9 @@ impl QueryContext {
     async fn maybe_changed_after(
         &self,
         verified_at: usize,
-        key: QueryKey,
+        key: Key,
         current_revision: usize,
-        entry: &mut Entry,
+        entry: &mut Entry<Key::Output>,
     ) -> bool {
         let Some(rev) = entry.revision() else {
             trace!("no revision, need to calculate");

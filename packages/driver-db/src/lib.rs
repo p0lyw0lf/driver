@@ -1,5 +1,7 @@
 mod database;
 pub use database::Database;
+pub use database::Entry;
+pub use database::Revision;
 
 mod object;
 pub use object::Object;

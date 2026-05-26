@@ -295,8 +295,9 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Database<Key, Output> {
         Ok(())
     }
 
-    pub fn restore(options: &Options) -> driver_util::Result<Self> {
-        std::fs::create_dir_all(&options.objects_path)?;
+    pub fn restore(options: &Options) -> Self {
+        std::fs::create_dir_all(&options.objects_path)
+            .expect("could not create/read object directory");
         let objects = Objects::new();
 
         let core = (|| {
@@ -330,11 +331,21 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Database<Key, Output> {
             Default::default()
         });
 
-        Ok(Self {
+        Self {
             core,
             remotes,
             objects,
-        })
+        }
+    }
+
+    /// Intentionally creates an empty database. Meant for testing, you should probably be using
+    /// `Database::restore()` instead.
+    pub fn empty() -> Self {
+        Self {
+            core: Default::default(),
+            remotes: Default::default(),
+            objects: Objects::new(),
+        }
     }
 
     pub fn display_dep_graph(&self) -> impl Display + '_ {

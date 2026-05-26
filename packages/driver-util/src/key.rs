@@ -3,7 +3,17 @@ use std::hash::Hash;
 
 /// Marker trait that MUST be implemented for all keys present in the system.
 pub trait Key:
-    Hash + Eq + Ord + Clone + Debug + Display + serde::Serialize + for<'de> serde::Deserialize<'de>
+    'static
+    + Send
+    + Sync
+    + Hash
+    + Eq
+    + Ord
+    + Clone
+    + Debug
+    + Display
+    + serde::Serialize
+    + for<'de> serde::Deserialize<'de>
 {
     /// Returns whether a given key is an "input" or not. Being an input key has a special
     /// connotation: input keys are assumed to not have any dependencies, and are instead _only_
