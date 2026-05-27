@@ -1,5 +1,5 @@
 [package]
-name = "driver-query-zune"
+name = "driver-query-ssg"
 version = "0.1.0"
 edition = "2024"
 
