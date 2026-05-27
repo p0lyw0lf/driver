@@ -9,28 +9,35 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use tera::Tera;
 
-use crate::engine::db::Object;
-use crate::engine::{Producer, QueryContext, Queryable};
-use crate::query::js::{JsObject, JsValue, WriteOutputs};
-use crate::query::{ListDirectory, ReadFile, RunFile};
-use crate::query_key;
-use crate::to_hash::ToHash;
+use driver_db::Object;
+use driver_engine::query;
+use driver_query_fs::{ListDirectory, ReadFile};
 
-query_key!(RunTemplate { pub file: PathBuf, pub arg: JsValue });
+use crate::boa::{JsObject, JsValue, RunJs, WriteOutputs};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TemplateOutput {
-    pub value: Object,
-    pub outputs: WriteOutputs,
+driver_engine::key!(
+    #[input=|_| false]
+    struct RunTera {
+        pub file: PathBuf,
+        pub arg: JsValue,
+    }
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunTeraOutput {
+    pub export: Object,
+    pub writes: WriteOutputs,
 }
 
-impl ToHash for TemplateOutput {
-    fn run_hash(&self, hasher: &mut sha2::Sha256) {
-        hasher.update(b"TemplateOutput(");
-        self.value.run_hash(hasher);
-        hasher.update(b")(");
-        self.outputs.run_hash(hasher);
-        hasher.update(b")");
+driver_engine::producer!(RunTera(self, ctx) where [ReadFile] -> driver_util::Result<RunTeraOutput> {
+    println!("run_tera(\"{}\", {})", self.file.display(), self.arg);
+    let input = query(ctx, ReadFile(self.file.clone())).await?;
+    render_tera_async(ctx, &input, &self.file, &self.arg).await
+});
+
+impl std::fmt::Display for RunTera {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "run_tera(\"{}\", {})", self.file.display(), self.arg)
     }
 }
 
@@ -40,30 +47,19 @@ enum State<T> {
     Complete(T),
 }
 
-impl Producer for RunTemplate {
-    type Output = crate::Result<TemplateOutput>;
-
-    #[tracing::instrument(level = "debug", skip(ctx))]
-    async fn produce(&self, ctx: &QueryContext) -> Self::Output {
-        println!("run_tera(\"{}\", {})", self.file.display(), self.arg);
-        let input = ReadFile(self.file.clone()).query(ctx).await?;
-        render_tera_async(ctx, &input, &self.file, &self.arg).await
-    }
-}
-
 fn render_tera_async(
     ctx: &QueryContext,
     input: &Object,
     file: &Path,
     arg: &JsValue,
-) -> impl Future<Output = crate::Result<TemplateOutput>> {
+) -> impl Future<Output = driver_util::Result<TemplateOutput>> {
     // The main reason why I can't just block is because the blocking tera template will itself
     // call back into the async executor wanting other threads to complete, with potential for
     // deadlock if all such threads are occupied by tera template renders. So instead, I need
     // to spawn a thread for each template, which isn't ideal.
     // I'll be on the lookout for if tera will support async filters eventually...
     let state = Arc::new(Mutex::new(
-        State::<crate::Result<TemplateOutput>>::NotStarted,
+        State::<driver_util::Result<TemplateOutput>>::NotStarted,
     ));
     future::poll_fn(move |poll_ctx| {
         // First, check if we are already running/finished. This ensures we only spawn one
@@ -106,7 +102,7 @@ fn render_tera(
     input: &Object,
     file: &Path,
     arg: &JsValue,
-) -> crate::Result<TemplateOutput> {
+) -> driver_util::Result<TemplateOutput> {
     let input = input.contents_as_string(ctx)?;
     let outputs = Arc::new(Mutex::new(WriteOutputs::new()));
 
@@ -253,13 +249,13 @@ fn register_functions(
             let file = resolve_path(file)?;
             let arg = tera_to_js_context(args, "file")?;
 
-            let output = future::block_on(
-                RunFile {
+            let output = future::block_on(query(
+                &ctx,
+                RunJs {
                     file: file.clone(),
                     arg: arg.clone(),
                 }
-                .query(&ctx),
-            )
+            ))
             .map_err(|e| {
                 let e = format!("error running {}({}):\n\t{}", file.display(), arg, e);
                 eprintln!("{e}");
@@ -334,7 +330,7 @@ fn resolve_path(path: &str) -> tera::Result<PathBuf> {
         .to_path("."))
 }
 
-fn js_to_tera_context(value: &JsValue) -> crate::Result<tera::Context> {
+fn js_to_tera_context(value: &JsValue) -> driver_util::Result<tera::Context> {
     match value {
         JsValue::Object(obj) => {
             let mut ctx = tera::Context::new();
@@ -346,7 +342,7 @@ fn js_to_tera_context(value: &JsValue) -> crate::Result<tera::Context> {
             Ok(ctx)
         }
         JsValue::Null | JsValue::Undefined => Ok(tera::Context::default()),
-        _ => Err(crate::Error::new("template arg must be object")),
+        _ => Err(driver_util::Error::new("template arg must be object")),
     }
 }
 

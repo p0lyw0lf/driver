@@ -3,9 +3,9 @@ use boa_engine::{JsData, JsResult};
 use boa_gc::{Finalize, GcRef, Trace};
 use serde::{Deserialize, Serialize};
 
-use crate::engine::db::Object;
-use crate::query::js::get_context;
-use crate::query::js::macros::class_wrap;
+use crate::boa::get_context;
+use crate::boa::macros::class_wrap;
+use driver_db::Object;
 
 #[derive(
     Debug,

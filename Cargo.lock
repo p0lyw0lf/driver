@@ -2480,37 +2480,23 @@ name = "driver-query-ssg"
 version = "0.1.0"
 dependencies = [
  "arborium",
- "async-broadcast",
- "async-executor",
- "async-fs",
- "async-native-tls",
- "async-net",
- "async-task",
  "async-task-local",
  "boa_engine",
  "boa_gc",
  "comrak",
- "dyn-clone",
- "either",
- "flume",
+ "driver-db",
+ "driver-engine",
+ "driver-query-fs",
+ "driver-query-hyper",
+ "driver-util",
  "futures-concurrency",
  "futures-lite",
- "generic-array",
- "http-body-util",
- "hyper",
- "ignore",
- "jiff",
  "katex-rs",
  "minify-html",
- "num_cpus",
- "oneshot",
- "postcard",
  "relative-path",
  "scc",
  "serde",
- "sha2",
  "slug",
- "smol-hyper",
  "tera",
  "tracing",
  "zstd",
@@ -2541,12 +2527,6 @@ checksum = "cd1511a7b6a56299bd043a9c167a6d2bfb37bf84a6dfceaba651168adfb43c87"
 dependencies = [
  "dtoa",
 ]
-
-[[package]]
-name = "dyn-clone"
-version = "1.0.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "dynify"

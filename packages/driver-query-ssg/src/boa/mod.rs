@@ -20,15 +20,11 @@ use futures_concurrency::future::FutureGroup;
 use futures_lite::StreamExt;
 use serde::Deserialize;
 use serde::Serialize;
-use sha2::Digest;
 use tracing::trace;
 
-use crate::{
-    engine::{Producer, QueryContext, Queryable, db::Object},
-    query::ReadFile,
-    query_key,
-    to_hash::ToHash,
-};
+use driver_db::Object;
+use driver_engine::query;
+use driver_query_fs::ReadFile;
 
 mod image;
 mod macros;
@@ -55,17 +51,17 @@ struct ContextFrame {
     outputs: WriteOutputs,
 }
 
-task_local::task_local! {
+async_task_local::task_local! {
     static QUERY_CONTEXT: ContextFrame;
 }
 
 /// Runs a closure with a QueryContext pushed onto the stack. All calls to `get_context()` that run
 /// as a result of that closure will access this ctx object. Therefore, all pointer accesses from
 /// `get_context()` have safety ensured as a result of running in this function.
-async fn with_query_context<T, F: Future<Output = crate::Result<T>>>(
+async fn with_query_context<T, F: Future<Output = driver_util::Result<T>>>(
     ctx: QueryContext,
     f: impl FnOnce() -> F,
-) -> crate::Result<(T, WriteOutputs)> {
+) -> driver_util::Result<(T, WriteOutputs)> {
     let fut = QUERY_CONTEXT.scope(
         ContextFrame {
             ctx,
@@ -274,9 +270,9 @@ impl ModuleLoader for MemoizedModuleLoader {
     }
 }
 
-async fn with_js_ctx<T, F>(ctx: QueryContext, arg: JsValue, f: F) -> crate::Result<T>
+async fn with_js_ctx<T, F>(ctx: QueryContext, arg: JsValue, f: F) -> driver_util::Result<T>
 where
-    F: AsyncFnOnce(&mut Context) -> crate::Result<T>,
+    F: AsyncFnOnce(&mut Context) -> driver_util::Result<T>,
 {
     let executor = Rc::new(Executor::new());
     let loader = Rc::new(MemoizedModuleLoader::new(ctx));
@@ -315,8 +311,8 @@ where
 }
 
 fn make_driver_module(js_ctx: &mut Context) -> JsResult<Module> {
-    use crate::query::js::macros::module;
     use driver_module::*;
+    use macros::module;
     Ok(module!(
         use js_ctx;
         fn store(value: String) -> JsResult<JsObject>;
@@ -345,6 +341,8 @@ fn make_driver_module(js_ctx: &mut Context) -> JsResult<Module> {
 }
 
 mod driver_module {
+    use super::*;
+
     use std::cell::RefCell;
     use std::ops::DerefMut;
     use std::path::{Component, PathBuf};
@@ -353,13 +351,13 @@ mod driver_module {
     use boa_engine::{Context, js_str};
     use boa_engine::{JsError, JsNativeError, JsResult};
 
-    use super::{RunFile, TaskOutput, get_context, push_outputs};
+    use driver_db::Uri;
+    use driver_engine::query;
+    use driver_query_fs::{ListDirectory, ReadFile};
+    use driver_query_hyper::GetUrl;
 
-    use crate::engine::Queryable;
-    use crate::engine::db::remote::Uri;
-    use crate::query::js::{image::JsImage, object::JsObject, path::JsPath, value::JsValue};
-    use crate::query::tera::TemplateOutput;
-    use crate::query::*;
+    use crate::minify_html::MinifyHtml;
+    use crate::tera::RunTera;
 
     pub fn slugify(value: String) -> JsResult<String> {
         Ok(slug::slugify(value))
@@ -368,8 +366,7 @@ mod driver_module {
     pub async fn read_file(path: JsPath) -> JsResult<JsObject> {
         let ctx = &get_context()?;
 
-        let object = ReadFile(path.0)
-            .query(ctx)
+        let object = query(ctx, ReadFile(path.0))
             .await
             .map_err(|e| JsNativeError::eval().with_message(format!("read_file: {e}")))?;
 
@@ -394,12 +391,15 @@ mod driver_module {
         let ctx = &get_context()?;
 
         let filename = filename.0;
-        let task = RunFile {
+        let task = RunJs {
             file: filename.clone(),
             arg: arg.clone(),
         };
 
-        let TaskOutput { value, outputs } = task.query(ctx).await.map_err(|e| {
+        let RunJsOutput {
+            export: value,
+            writes: outputs,
+        } = task.query(ctx).await.map_err(|e| {
             JsNativeError::eval().with_message(format!(
                 "error running {}({}):\n\t{}",
                 filename.display(),
@@ -417,12 +417,12 @@ mod driver_module {
         let ctx = &get_context()?;
 
         let filename = filename.0;
-        let task = RunTemplate {
+        let task = RunTera {
             file: filename.clone(),
             arg: arg.clone(),
         };
 
-        let TemplateOutput {
+        let RunTeraOutput {
             value: object,
             outputs,
         } = task.query(ctx).await.map_err(|e| {
@@ -471,8 +471,7 @@ mod driver_module {
         let uri = hyper::Uri::try_from(&url)
             .map_err(|e| JsNativeError::eval().with_message(format!("parsing url: {e}")))?;
 
-        let object = GetUrl(Uri(uri))
-            .query(ctx)
+        let object = query(ctx, GetUrl(Uri(uri)))
             .await
             .map_err(|e| JsNativeError::eval().with_message(format!("fetching url: {e}")))?;
         Ok(JsObject { object })
@@ -481,8 +480,7 @@ mod driver_module {
     pub async fn markdown_to_html(contents: JsObject) -> JsResult<JsObject> {
         let ctx = &get_context()?;
 
-        let object = MarkdownToHtml(contents.object.clone())
-            .query(ctx)
+        let object = query(ctx, MarkdownToHtml(contents.object.clone()))
             .await
             .map_err(|e| JsNativeError::eval().with_message(format!("markdown_to_html: {e}")))?;
         Ok(JsObject { object })
@@ -501,8 +499,7 @@ mod driver_module {
     pub async fn parse_image(object: JsObject) -> JsResult<JsImage> {
         let ctx = &get_context()?;
 
-        let image = ParseImage(object.object.clone())
-            .query(ctx)
+        let image = query(ParseImage(object.object.clone()))
             .await
             .map_err(|e| JsNativeError::eval().with_message(format!("parse_image: {e}")))?;
         Ok(JsImage { image })
@@ -551,8 +548,7 @@ mod driver_module {
             }
         };
 
-        let image = convert_image
-            .query(ctx)
+        let image = query(ctx, convert_image)
             .await
             .map_err(|e| JsNativeError::eval().with_message(format!("convert_image: {e}")))?;
         Ok(JsImage { image })
@@ -581,80 +577,74 @@ mod driver_module {
     }
 }
 
-query_key!(RunFile {
-    pub file: PathBuf,
-    pub arg: JsValue,
+driver_engine::key!(
+    #[input=|_| false]
+    struct RunJs {
+        pub file: PathBuf,
+        pub arg: JsValue,
+    }
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(Default))]
+pub struct RunJsOutput {
+    pub export: JsValue,
+    pub writes: WriteOutputs,
+}
+
+driver_engine::producer!(RunJs(self, ctx) where [ReadFile] -> driver_util::Result<RunJsOutput> {
+    println!("{}", self);
+
+    let file = self.file.clone();
+    let arg = self.arg.clone();
+
+    let object = query(ctx, ReadFile(self.file.clone())).await?;
+    let contents = object.contents_as_bytes(ctx)?;
+
+    let ctx = ctx.clone();
+    let (export, writes) = with_js_ctx(ctx.clone(), arg.clone(), async move |js_ctx| {
+        trace!("with_js_ctx start");
+        let out = with_query_context(ctx, async move || {
+            trace!("with_query_context start {}({})", file.display(), arg);
+
+            let source = boa_engine::Source::from_bytes(&contents).with_path(&file);
+            let module = boa_engine::Module::parse(source, None, js_ctx)?;
+            let promise = module.load_link_evaluate(js_ctx);
+            let executor = js_ctx.downcast_job_executor::<Executor>().unwrap();
+            trace!("starting to run jobs");
+            executor.run_jobs_async(&RefCell::new(js_ctx)).await?;
+
+            match promise.state() {
+                PromiseState::Pending => {
+                    return Err(driver_util::Error::new("module didn't execute!"));
+                }
+                PromiseState::Fulfilled(v) => assert_eq!(v, boa_engine::JsValue::undefined()),
+                PromiseState::Rejected(err) => {
+                    return Err(JsError::from_opaque(err).try_native(js_ctx)?.into());
+                }
+            }
+
+            let value = module.namespace(js_ctx).get(js_str!("default"), js_ctx)?;
+            let value = JsValue::try_from_js(&value, js_ctx)?;
+            trace!(
+                "with_query_context end {}({}) = {}",
+                file.display(),
+                arg,
+                value
+            );
+            Ok(value)
+        })
+        .await;
+
+        trace!("with_js_ctx end");
+        out
+    })
+    .await?;
+    Ok(RunJsOutput { export, writes })
 });
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(test, derive(Default))]
-pub struct TaskOutput {
-    pub value: JsValue,
-    pub outputs: WriteOutputs,
-}
-
-impl ToHash for TaskOutput {
-    fn run_hash(&self, hasher: &mut sha2::Sha256) {
-        hasher.update(b"TaskOutput(");
-        self.value.run_hash(hasher);
-        hasher.update(b")(");
-        self.outputs.run_hash(hasher);
-        hasher.update(b")");
-    }
-}
-
-impl Producer for RunFile {
-    type Output = crate::Result<TaskOutput>;
-
-    #[tracing::instrument(level = "debug", skip(ctx))]
-    async fn produce(&self, ctx: &QueryContext) -> Self::Output {
-        println!("run_js(\"{}\", {})", self.file.display(), self.arg);
-
-        let file = self.file.clone();
-        let arg = self.arg.clone();
-
-        let object = ReadFile(self.file.clone()).query(ctx).await?;
-        let contents = object.contents_as_bytes(ctx)?;
-
-        let ctx = ctx.clone();
-        let (value, outputs) = with_js_ctx(ctx.clone(), arg.clone(), async move |js_ctx| {
-            trace!("with_js_ctx start");
-            let out = with_query_context(ctx, async move || {
-                trace!("with_query_context start {}({})", file.display(), arg);
-
-                let source = boa_engine::Source::from_bytes(&contents).with_path(&file);
-                let module = boa_engine::Module::parse(source, None, js_ctx)?;
-                let promise = module.load_link_evaluate(js_ctx);
-                let executor = js_ctx.downcast_job_executor::<Executor>().unwrap();
-                trace!("starting to run jobs");
-                executor.run_jobs_async(&RefCell::new(js_ctx)).await?;
-
-                match promise.state() {
-                    PromiseState::Pending => {
-                        return Err(crate::Error::new("module didn't execute!"));
-                    }
-                    PromiseState::Fulfilled(v) => assert_eq!(v, boa_engine::JsValue::undefined()),
-                    PromiseState::Rejected(err) => {
-                        return Err(JsError::from_opaque(err).try_native(js_ctx)?.into());
-                    }
-                }
-
-                let value = module.namespace(js_ctx).get(js_str!("default"), js_ctx)?;
-                let value = JsValue::try_from_js(&value, js_ctx)?;
-                trace!(
-                    "with_query_context end {}({}) = {}",
-                    file.display(),
-                    arg,
-                    value
-                );
-                Ok(value)
-            })
-            .await;
-
-            trace!("with_js_ctx end");
-            out
-        })
-        .await?;
-        Ok(TaskOutput { value, outputs })
+impl std::fmt::Display for RunJs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "run_js(\"{}\", {})", self.file.display(), self.arg)
     }
 }

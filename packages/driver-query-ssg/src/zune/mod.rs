@@ -8,11 +8,7 @@ use zune_image::codecs::{
 };
 use zune_image::traits::{DecoderTrait, OperationsTrait};
 
-use crate::to_hash::ToHash;
-use crate::{
-    engine::{Producer, QueryContext, db::Object},
-    query_key,
-};
+use driver_db::Object;
 
 #[derive(
     Default, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug, Serialize, Deserialize,
@@ -23,14 +19,6 @@ pub enum ImageFormat {
     Png,
     #[default]
     Webp,
-}
-
-impl ToHash for ImageFormat {
-    fn run_hash(&self, hasher: &mut sha2::Sha256) {
-        hasher.update(b"ImageFormat(");
-        hasher.update([*self as u8]);
-        hasher.update(b")");
-    }
 }
 
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug, Serialize, Deserialize)]
@@ -46,15 +34,6 @@ impl ImageSize {
     }
 }
 
-impl ToHash for ImageSize {
-    fn run_hash(&self, hasher: &mut sha2::Sha256) {
-        hasher.update(b"ImageSize(");
-        hasher.update(self.width.to_le_bytes());
-        hasher.update(self.height.to_le_bytes());
-        hasher.update(b")");
-    }
-}
-
 /// Parsed data about an image, so that we can access cruicial information about it without having
 /// to re-parse the headers.
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
@@ -64,48 +43,43 @@ pub struct ImageObject {
     pub size: ImageSize,
 }
 
-impl ToHash for ImageObject {
-    fn run_hash(&self, hasher: &mut sha2::Sha256) {
-        hasher.update(b"ImageObject(");
-        self.object.run_hash(hasher);
-        self.format.run_hash(hasher);
-        self.size.run_hash(hasher);
-        hasher.update(b")");
-    }
-}
+driver_engine::key!(
+    #[input=|_| false]
+    struct ParseImage(pub Object);
+);
 
-query_key!(ParseImage(pub Object););
+driver_engine::producer!(ParseImage(self, ctx) -> driver_util::Result<ImageObject> {
+    let contents = ZCursor::new(self.0.contents_as_bytes(ctx)?);
+    let object = self.0.clone();
 
-impl Producer for ParseImage {
-    type Output = crate::Result<ImageObject>;
+    let metadata = zune_image::utils::decode_info(contents)
+        .ok_or_else(|| driver_util::Error::new("could not parse image metadata"))?;
 
-    async fn produce(&self, ctx: &QueryContext) -> Self::Output {
-        let contents = ZCursor::new(self.0.contents_as_bytes(ctx)?);
-        let object = self.0.clone();
+    let format = match metadata.image_format() {
+        Some(zune_image::codecs::ImageFormat::JPEG) => ImageFormat::Jpeg,
+        Some(zune_image::codecs::ImageFormat::JPEG_XL) => ImageFormat::Jxl,
+        Some(zune_image::codecs::ImageFormat::PNG) => ImageFormat::Png,
+        Some(zune_image::codecs::ImageFormat::WEBP) => ImageFormat::Webp,
+        Some(other) => {
+            return Err(driver_util::Error::new(&format!(
+                "invalid image format {other:?}"
+            )));
+        }
+        None => return Err(driver_util::Error::new("could not get image format")),
+    };
 
-        let metadata = zune_image::utils::decode_info(contents)
-            .ok_or_else(|| crate::Error::new("could not parse image metadata"))?;
+    let (width, height) = metadata.dimensions();
 
-        let format = match metadata.image_format() {
-            Some(zune_image::codecs::ImageFormat::JPEG) => ImageFormat::Jpeg,
-            Some(zune_image::codecs::ImageFormat::JPEG_XL) => ImageFormat::Jxl,
-            Some(zune_image::codecs::ImageFormat::PNG) => ImageFormat::Png,
-            Some(zune_image::codecs::ImageFormat::WEBP) => ImageFormat::Webp,
-            Some(other) => {
-                return Err(crate::Error::new(&format!(
-                    "invalid image format {other:?}"
-                )));
-            }
-            None => return Err(crate::Error::new("could not get image format")),
-        };
+    Ok(ImageObject {
+        object,
+        format,
+        size: ImageSize { width, height },
+    })
+});
 
-        let (width, height) = metadata.dimensions();
-
-        Ok(ImageObject {
-            object,
-            format,
-            size: ImageSize { width, height },
-        })
+impl Display for ParseImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "parse_image({})", self.0)
     }
 }
 
@@ -123,8 +97,9 @@ pub enum ImageFit {
     Cover,
 }
 
-query_key!(
-    ConvertImage {
+driver_engine::key!(
+    #[input=|_| false]
+    struct ConvertImage {
         pub input: ImageObject,
         /// If None, will preserve the format of the source image if possible, defaulting to Webp
         /// if not.
@@ -136,83 +111,78 @@ query_key!(
     }
 );
 
-impl Producer for ConvertImage {
-    type Output = crate::Result<ImageObject>;
+driver_engine::producer!(ConvertImage(self, ctx) -> driver_util::Result<ImageObject> {
+    // NOTE: I know that reading this into memory only to read it into more memory is wasteful,
+    // but this is the best way to not have a dependency on ctx while we do the main
+    // processing.
 
-    #[tracing::instrument(level = "debug", skip_all)]
-    async fn produce(&self, ctx: &QueryContext) -> Self::Output {
-        // NOTE: I know that reading this into memory only to read it into more memory is wasteful,
-        // but this is the best way to not have a dependency on ctx while we do the main
-        // processing.
+    let input_format = self.input.format;
+    let (source_width, source_height) = self.input.size.as_dimensions();
+    let input_contents = ZCursor::new(self.input.object.contents_as_bytes(ctx)?);
+    let decoder_options = DecoderOptions::new_fast();
 
-        let input_format = self.input.format;
-        let (source_width, source_height) = self.input.size.as_dimensions();
-        let input_contents = ZCursor::new(self.input.object.contents_as_bytes(ctx)?);
-        let decoder_options = DecoderOptions::new_fast();
+    let size = self.size;
+    let fit = self.fit.unwrap_or_default();
+    let format = self.format.unwrap_or_default();
 
-        let size = self.size;
-        let fit = self.fit.unwrap_or_default();
-        let format = self.format.unwrap_or_default();
-
-        let mut image = match input_format {
-            ImageFormat::Jpeg => DecoderTrait::decode(&mut JpegDecoder::new_with_options(
-                input_contents,
-                decoder_options,
-            ))?,
-            ImageFormat::Jxl => {
-                DecoderTrait::decode(&mut JxlDecoder::try_new(input_contents, decoder_options)?)?
-            }
-            ImageFormat::Png => DecoderTrait::decode(&mut PngDecoder::new_with_options(
-                input_contents,
-                decoder_options,
-            ))?,
-            ImageFormat::Webp => DecoderTrait::decode(&mut ZuneWebpDecoder::new(input_contents)?)?,
-        };
-
-        if image.dimensions() != (source_width, source_height) {
-            panic!("corrupted image dimensions");
+    let mut image = match input_format {
+        ImageFormat::Jpeg => DecoderTrait::decode(&mut JpegDecoder::new_with_options(
+            input_contents,
+            decoder_options,
+        ))?,
+        ImageFormat::Jxl => {
+            DecoderTrait::decode(&mut JxlDecoder::try_new(input_contents, decoder_options)?)?
         }
+        ImageFormat::Png => DecoderTrait::decode(&mut PngDecoder::new_with_options(
+            input_contents,
+            decoder_options,
+        ))?,
+        ImageFormat::Webp => DecoderTrait::decode(&mut ZuneWebpDecoder::new(input_contents)?)?,
+    };
 
-        let (target_width, target_height) = size
-            .as_ref()
-            .map(ImageSize::as_dimensions)
-            .unwrap_or((source_width, source_height));
-        let (dest_width, dest_height) = match fit {
-            ImageFit::Fill => (target_width, target_height),
-            ImageFit::Contain => (
-                std::cmp::min(target_width, source_width * target_height / source_height),
-                std::cmp::min(target_height, source_height * target_width / source_width),
-            ),
-            ImageFit::Cover => (
-                std::cmp::max(target_width, source_width * target_height / source_height),
-                std::cmp::max(target_height, source_height * target_width / source_width),
-            ),
-        };
-
-        if source_width != dest_width || source_height != dest_height {
-            // TODO: I should probably allow customizing the resize method; however, this
-            // is probably fine and seems to give the overall best results.
-            let resize_op = zune_imageprocs::resize::Resize::new(
-                dest_width,
-                dest_height,
-                zune_imageprocs::resize::ResizeMethod::Lanczos3,
-            );
-            resize_op.execute(&mut image)?;
-        }
-
-        let object = image.write_to_vec(format.into())?;
-        let object = ctx.db().objects.store(object)?;
-
-        Ok(ImageObject {
-            object,
-            format,
-            size: ImageSize {
-                width: dest_width,
-                height: dest_height,
-            },
-        })
+    if image.dimensions() != (source_width, source_height) {
+        panic!("corrupted image dimensions");
     }
-}
+
+    let (target_width, target_height) = size
+        .as_ref()
+        .map(ImageSize::as_dimensions)
+        .unwrap_or((source_width, source_height));
+    let (dest_width, dest_height) = match fit {
+        ImageFit::Fill => (target_width, target_height),
+        ImageFit::Contain => (
+            std::cmp::min(target_width, source_width * target_height / source_height),
+            std::cmp::min(target_height, source_height * target_width / source_width),
+        ),
+        ImageFit::Cover => (
+            std::cmp::max(target_width, source_width * target_height / source_height),
+            std::cmp::max(target_height, source_height * target_width / source_width),
+        ),
+    };
+
+    if source_width != dest_width || source_height != dest_height {
+        // TODO: I should probably allow customizing the resize method; however, this
+        // is probably fine and seems to give the overall best results.
+        let resize_op = zune_imageprocs::resize::Resize::new(
+            dest_width,
+            dest_height,
+            zune_imageprocs::resize::ResizeMethod::Lanczos3,
+        );
+        resize_op.execute(&mut image)?;
+    }
+
+    let object = image.write_to_vec(format.into())?;
+    let object = ctx.store(object)?;
+
+    Ok(ImageObject {
+        object,
+        format,
+        size: ImageSize {
+            width: dest_width,
+            height: dest_height,
+        },
+    })
+});
 
 impl Display for ImageSize {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -249,5 +219,48 @@ impl Display for ImageFormat {
             ImageFormat::Png => "png",
             ImageFormat::Webp => "webp",
         })
+    }
+}
+
+impl Display for ImageObject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{{ object: {}, format: \"{}\", size: {} }}",
+            self.object, self.format, self.size,
+        )
+    }
+}
+
+impl Display for ConvertImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("convert_image(")?;
+        Display::fmt(&self.input, f)?;
+        f.write_str(", {{")?;
+
+        let mut had_some = false;
+        let mut prefix = || {
+            let out = f.write_str(if had_some { ", " } else { " " });
+            had_some = true;
+            out
+        };
+
+        if let Some(format) = self.format.as_ref() {
+            prefix()?;
+            write!(f, "format: \"{}\"", format)?;
+        }
+        if let Some(size) = self.size.as_ref() {
+            prefix()?;
+            write!(f, "size: {}", size)?;
+        }
+        if let Some(fit) = self.fit.as_ref() {
+            prefix()?;
+            write!(f, "fit: \"{}\"", fit)?;
+        }
+
+        if had_some {
+            f.write_str(" ")?;
+        }
+        f.write_str("}})")
     }
 }

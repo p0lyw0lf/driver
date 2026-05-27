@@ -89,6 +89,6 @@ impl Objects {
 impl std::fmt::Display for Object {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Format as lowercase hex
-        write!(f, "{:x}", self.0)
+        write!(f, "objects/{:x}", self.0)
     }
 }

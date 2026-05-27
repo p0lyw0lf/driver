@@ -1,5 +1,5 @@
-mod boa;
-mod comrak;
-mod minify_html;
-mod tera;
-mod zune;
+pub mod boa;
+pub mod comrak;
+pub mod minify_html;
+pub mod tera;
+pub mod zune;

@@ -5,9 +5,9 @@ use boa_engine::{
 use boa_gc::{Finalize, GcRef, Trace};
 use serde::{Deserialize, Serialize};
 
-use crate::query::image::{ImageFit, ImageFormat, ImageObject, ImageSize};
-use crate::query::js::JsObject;
-use crate::query::js::macros::class_wrap;
+use crate::boa::JsObject;
+use crate::boa::macros::class_wrap;
+use crate::zune::{ImageFit, ImageFormat, ImageObject, ImageSize};
 
 impl TryIntoJs for ImageFormat {
     fn try_into_js(&self, context: &mut Context) -> JsResult<JsValue> {

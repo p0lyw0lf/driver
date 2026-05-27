@@ -5,10 +5,8 @@ use boa_engine::value::TryIntoJs;
 use boa_engine::{Context, JsResult, value::TryFromJs};
 use boa_engine::{JsError, JsNativeError};
 use serde::{Deserialize, Serialize};
-use sha2::Digest;
 
-use crate::query::js::JsObject;
-use crate::to_hash::ToHash;
+use crate::boa::JsObject;
 
 /// All the simple javascript values that can be serialized/deserialized losslessly
 #[derive(Default, Hash, PartialEq, Eq, PartialOrd, Ord, Debug, Clone, Serialize, Deserialize)]
@@ -105,76 +103,35 @@ impl TryIntoJs for JsValue {
     }
 }
 
-impl ToHash for JsValue {
-    fn run_hash(&self, hasher: &mut sha2::Sha256) {
-        match self {
-            JsValue::Undefined => hasher.update(b"RustValue::Undefined"),
-            JsValue::Null => hasher.update(b"RustValue::Null"),
-            JsValue::Bool(b) => {
-                hasher.update(b"RustValue::Bool(");
-                hasher.update([if *b { 255 } else { 0 }]);
-                hasher.update(b")");
-            }
-            JsValue::Int(i) => {
-                hasher.update(b"RustValue::Int(");
-                hasher.update(i.to_le_bytes());
-                hasher.update(b")");
-            }
-            JsValue::String(s) => {
-                hasher.update(b"RustValue::String(");
-                hasher.update(s.as_bytes());
-                hasher.update(b")");
-            }
-            JsValue::Array(vs) => {
-                hasher.update(b"RustValue::Array(");
-                for v in vs.iter() {
-                    v.run_hash(hasher);
-                }
-                hasher.update(b")");
-            }
-            JsValue::Store(store_object) => {
-                hasher.update(b"RustValue::Store(");
-                store_object.object.run_hash(hasher);
-                hasher.update(b")");
-            }
-            JsValue::Object(btree_map) => {
-                hasher.update(b"RustValue::Object(");
-                btree_map.run_hash(hasher);
-                hasher.update(b")");
-            }
-        }
-    }
-}
-
 impl std::fmt::Display for JsValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            JsValue::Undefined => write!(f, "undefined"),
-            JsValue::Null => write!(f, "null"),
-            JsValue::Bool(b) => write!(f, "{}", if *b { "true" } else { "false" }),
-            JsValue::Int(i) => write!(f, "{}", i),
+            JsValue::Undefined => f.write_str("undefined"),
+            JsValue::Null => f.write_str("null"),
+            JsValue::Bool(b) => f.write_str(if *b { "true" } else { "false" }),
+            JsValue::Int(i) => std::fmt::Display::fmt(i, f),
             JsValue::String(s) => write!(f, "\"{}\"", s),
             JsValue::Array(vs) => {
-                write!(f, "[")?;
+                f.write_str("[")?;
                 for (i, v) in vs.iter().enumerate() {
                     if i > 0 {
-                        write!(f, ", ")?;
+                        f.write_str(", ")?;
                     }
-                    write!(f, "{}", v)?;
+                    std::fmt::Display::fmt(v, f)?;
                 }
-                write!(f, "]")?;
+                f.write_str("]")?;
                 Ok(())
             }
-            JsValue::Store(store_object) => write!(f, "objects/{}", store_object.object),
+            JsValue::Store(store_object) => std::fmt::Display::fmt(&store_object.object, f),
             JsValue::Object(btree_map) => {
-                write!(f, "{{")?;
+                f.write_str("{{")?;
                 for (i, (k, v)) in btree_map.iter().enumerate() {
                     if i > 0 {
-                        write!(f, ", ")?;
+                        f.write_str(", ")?;
                     }
                     write!(f, "\"{}\": {}", k, v)?;
                 }
-                write!(f, "}}")?;
+                f.write_str("}}")?;
                 Ok(())
             }
         }
