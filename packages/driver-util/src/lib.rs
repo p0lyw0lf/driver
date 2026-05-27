@@ -4,7 +4,8 @@ mod error;
 pub use error::Error;
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub mod serde;
+mod serde;
+pub use serde::SerializedMap;
 
 mod key;
 pub use key::Key;

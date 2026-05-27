@@ -27,7 +27,7 @@
 //!     n_1 + n_2
 //! });
 //!
-//! driver_engine::query_key!(Key { Fib } with Output);
+//! driver_engine::query!(Key { Fib } with Output);
 //!
 //! let ctx = Context::<Key>::create_empty_root_for_testing_only();
 //! let output = futures_lite::future::block_on(query(&ctx, Fib(10)));
@@ -48,4 +48,5 @@ pub use producer::Producer;
 pub use producer::ProducerBase;
 pub use producer::query;
 
+/// Re-export for convenience
 pub use driver_util::key;

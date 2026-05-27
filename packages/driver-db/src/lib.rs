@@ -13,3 +13,6 @@ pub use options::Options;
 mod remote;
 pub use remote::RemoteObject;
 pub use remote::RemoteObjects;
+
+/// Re-export for convenience
+pub use smol_hyper_client::Uri;

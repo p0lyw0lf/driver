@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use smol_hyper_client::{Client, USER_AGENT as USER_AGENT_VALUE, Uri};
 
 use crate::{Object, Objects, Options};
-use driver_util::serde::SerializedMap;
+use driver_util::SerializedMap;
 
 type EmptyBody = http_body_util::Empty<hyper::body::Bytes>;
 type MyClient = Client<EmptyBody>;

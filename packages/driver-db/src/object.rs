@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
 
 use crate::Options;
-use driver_util::serde::SerializedMap;
+use driver_util::SerializedMap;
 
 /// A store for all strings/blobs that would otherwise be too large to persist to disk multiple
 /// times. "Uniquely" keyed by the hashes of the strings/blobs it stores.

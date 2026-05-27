@@ -1,21 +1,17 @@
-use serde::Deserialize;
-use serde::Serialize;
+use driver_db::Object;
+use smol_hyper_client::Uri;
 
-use crate::engine::{Producer, QueryContext, db::Object, db::remote::Uri};
-use crate::query_key;
+driver_engine::key!(
+    #[input=|_| true]
+    struct GetUrl(pub Uri);
+);
 
-query_key!(GetUrl(pub Uri););
+driver_engine::producer!(GetUrl(self, ctx) -> driver_util::Result<Object> {
+    ctx.fetch(self.0.clone()).await
+});
 
-impl Producer for GetUrl {
-    type Output = crate::Result<Object>;
-
-    #[tracing::instrument(level = "debug", skip_all)]
-    async fn produce(&self, ctx: &QueryContext) -> Self::Output {
-        Ok(ctx
-            .db()
-            .remotes
-            .fetch(&ctx.db().objects, self.0.clone())
-            .await?
-            .object)
+impl std::fmt::Display for GetUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "get_url(\"{}\")", self.0)
     }
 }

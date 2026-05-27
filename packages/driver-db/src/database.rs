@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use serde::{Deserialize, Serialize};
 
 use crate::{Objects, Options, RemoteObjects};
-use driver_util::serde::SerializedMap;
+use driver_util::SerializedMap;
 
 /// Tracks the range [changed_at, verified_at], to confirm the value is corresponds to is the same
 /// for that entire range of revisions.

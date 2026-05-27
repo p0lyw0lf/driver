@@ -10,7 +10,7 @@ pub trait ProducerBase: driver_util::Key {
 /// `Key` type parameter is so that a single `Self` can generate multiple implementations for
 /// different "container keys" that it works in tandem with.
 ///
-/// See `query` for an example/more information.
+/// See module documentation for an example/more information.
 pub trait Producer<Key: ProducerBase>: ProducerBase {
     fn produce(&self, ctx: &Context<Key>) -> impl Future<Output = Self::Output>;
 }
@@ -19,7 +19,7 @@ pub trait Producer<Key: ProducerBase>: ProducerBase {
 ///
 /// Formatted mostly like a normal function declaration, except in the brackets we put all the
 /// subqueries we use inside this function, in order to generate the appropriate trait bounds. See
-/// `query()` for an example.
+/// module documentation for an example.
 #[macro_export]
 macro_rules! producer {
     ($name:ident ($self:ident, $ctx:ident) $(where [ $( $subkey:ident ),* ])? -> $output:ty { $($tt:tt)* }) => {
@@ -42,6 +42,8 @@ macro_rules! producer {
 /// The main function that library authors should use in order to consume other incrementally-computed
 /// values. It MUST be used instead of directly calling `.produce()`, both inside `produce()`
 /// implementations and outside of them.
+///
+/// See module documentation for example usage.
 pub async fn query<KSmall, KLarge>(ctx: &Context<KLarge>, key: KSmall) -> KSmall::Output
 where
     KSmall: ProducerBase + Into<KLarge>,
@@ -68,7 +70,7 @@ where
 ///
 /// See module documentation for an example.
 #[macro_export]
-macro_rules! query_key {
+macro_rules! query {
     ($name:ident { $(
         $key:ident
     ),* } with $output:ident) => {

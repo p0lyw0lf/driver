@@ -1,4 +1,4 @@
-use super::{CurrentThreadExecutor, Executor};
+use super::Executor;
 
 impl<F> hyper::rt::Executor<F> for Executor
 where

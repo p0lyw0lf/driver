@@ -5,9 +5,8 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 
 use scc::hash_map::HashMap;
-use serde::Deserialize;
-use serde::Serialize;
 use serde::ser::SerializeMap;
+use serde::{Deserialize, Serialize};
 
 /// Newtype for scc::HashMap that allows for serializing/deserializing, so long as the & is
 /// actually an &mut or owned value.

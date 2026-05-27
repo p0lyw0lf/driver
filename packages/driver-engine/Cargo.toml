@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-async-tpc-executor = { path = "../async-tpc-executor" }
+async-tpc-executor = { path = "../async-tpc-executor", features = ["hyper"] }
 driver-db = { path = "../driver-db" }
 driver-util = { path = "../driver-util" }
 tracing = "0.1"

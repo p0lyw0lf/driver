@@ -5,12 +5,13 @@ use std::{fmt::Debug, hash::Hash};
 use tracing::{info, trace};
 
 use async_tpc_executor::Executor;
-use driver_db::{Database, Entry, Options};
+use driver_db::{Database, Entry, Object, Options};
 
 use crate::{Producer, ProducerBase};
 
 #[derive(Debug)]
 struct State<Key: Hash + Ord + Eq, Output> {
+    options: Options,
     db: Database<Key, Output>,
     executor: Executor,
 }
@@ -22,6 +23,11 @@ pub struct Context<Key: ProducerBase> {
 }
 
 impl<Key: ProducerBase> Context<Key> {
+    /// Read the options associated with the context.
+    pub fn options(&self) -> &Options {
+        &self.state.options
+    }
+
     /// Get the database associated with the context.
     pub fn db(&self) -> &Database<Key, Key::Output> {
         &self.state.db
@@ -31,13 +37,28 @@ impl<Key: ProducerBase> Context<Key> {
     pub fn executor(&self) -> &Executor {
         &self.state.executor
     }
+
+    /// Stores the given content into the database.
+    pub fn store(&self, content: Vec<u8>) -> driver_util::Result<Object> {
+        self.db().objects.store(self.options(), content)
+    }
+
+    /// Fetches the remote URL.
+    pub async fn fetch(&self, uri: driver_db::Uri) -> driver_util::Result<Object> {
+        Ok(self
+            .db()
+            .remotes
+            .fetch(self.executor(), self.options(), &self.db().objects, uri)
+            .await?
+            .object)
+    }
 }
 
 impl<Key: Producer<Key>> Context<Key> {
     /// Starts a new root context. Users SHOULD call `.destroy_root()` before dropping it. MUST be
     /// called outside of any async context.
-    pub fn create_root(options: &Options) -> Self {
-        let db = Database::restore(options);
+    pub fn create_root(options: Options) -> Self {
+        let db = Database::restore(&options);
 
         // Bust cache immediately
         // TODO: should only bust the input queries here; right now this busts "everything" which
@@ -48,32 +69,40 @@ impl<Key: Producer<Key>> Context<Key> {
 
         Self {
             parent: None,
-            state: Arc::new(State { db, executor }),
+            state: Arc::new(State {
+                options,
+                db,
+                executor,
+            }),
         }
     }
 
     /// Stops a root context. MUST only be called:
     /// - on contexts directly created by `Context::create_root()`
-    /// - with the same `options` as that `create_root()` call.
     /// - outside of any async context.
     ///
     /// TODO: I should probably find a more type-safe way to enforce this API...
-    pub fn destroy_root(self, options: &Options) -> driver_util::Result<()> {
+    pub fn destroy_root(self) -> driver_util::Result<()> {
         let Self { parent: _, state } = self;
         let state = Arc::into_inner(state).expect("was still running");
         state.executor.stop();
-        state.db.save(options)
+        state.db.save(&state.options)
     }
 
     /// Creates a root context with an empty database and a single-threaded executor. Only meant
     /// for testing, you probably want to use `Context::create_root()` instead.
     pub fn create_empty_root_for_testing_only() -> Self {
+        let options = Options::default();
         let db = Database::empty();
         let executor = Executor::start_n_threads(1);
 
         Self {
             parent: None,
-            state: Arc::new(State { db, executor }),
+            state: Arc::new(State {
+                options,
+                db,
+                executor,
+            }),
         }
     }
 
