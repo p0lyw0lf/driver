@@ -7,7 +7,7 @@ use tracing::{info, trace};
 use async_tpc_executor::Executor;
 use driver_db::{Database, Entry, Options};
 
-use crate::Producer;
+use crate::{Producer, ProducerBase};
 
 #[derive(Debug)]
 struct State<Key: Hash + Ord + Eq, Output> {
@@ -16,12 +16,12 @@ struct State<Key: Hash + Ord + Eq, Output> {
 }
 
 #[derive(Debug, Clone)]
-pub struct Context<Key: Hash + Ord + Eq, Output> {
+pub struct Context<Key: ProducerBase> {
     pub(crate) parent: Option<Key>,
-    state: Arc<State<Key, Output>>,
+    state: Arc<State<Key, Key::Output>>,
 }
 
-impl<Key, Output> Context<Key, Output> {
+impl<Key: ProducerBase> Context<Key> {
     /// Get the database associated with the context.
     pub fn db(&self) -> &Database<Key, Key::Output> {
         &self.state.db
@@ -33,7 +33,7 @@ impl<Key, Output> Context<Key, Output> {
     }
 }
 
-impl<Key: Producer<Key>> Context<Key, Key::Output> {
+impl<Key: Producer<Key>> Context<Key> {
     /// Starts a new root context. Users SHOULD call `.destroy_root()` before dropping it. MUST be
     /// called outside of any async context.
     pub fn create_root(options: &Options) -> Self {

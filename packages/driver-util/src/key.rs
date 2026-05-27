@@ -113,6 +113,8 @@ macro_rules! key {
                 match self { $(
                     Self::$key(x) => return x.is_input(),
                 )* };
+                // Just in case the enum is empty
+                #[allow(unreachable_code)]
                 false
             }
         }
@@ -122,6 +124,8 @@ macro_rules! key {
                 match self { $(
                     Self::$key(x) => return std::fmt::Display::fmt(x, f),
                 )* };
+                // Just in case the enum is empty
+                #[allow(unreachable_code)]
                 Ok(())
             }
         }

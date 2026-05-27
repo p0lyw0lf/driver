@@ -1,20 +1,18 @@
 use crate::Context;
 
-/// A trait used to provide "virtual" access to a context, so as to resolve some pretty gnarly
-/// recursive trait definitions
+/// A trait that registers a key with the potential to produce exactly **one** output type. Not
+/// part of `Producer` in order to resolve some nasty trait recursion things.
+pub trait ProducerBase: driver_util::Key {
+    type Output: driver_util::Output;
+}
 
 /// The main trait that library authors should implement to support incremental compilation. The
 /// `Key` type parameter is so that a single `Self` can generate multiple implementations for
 /// different "container keys" that it works in tandem with.
 ///
-///
-/// The trait bounds on the `produce()` function are needed because otherwise we run into an
-/// infinite loop trying to resolve `Key: Producer<Key>`.
-///
 /// See `query` for an example/more information.
-pub trait Producer: driver_util::Key {
-    type Output: driver_util::Output + Sized + 'static;
-    fn produce(&self, ctx: &Context<Key, Output>) -> impl Future<Output = Self::Output>;
+pub trait Producer<Key: ProducerBase>: ProducerBase {
+    fn produce(&self, ctx: &Context<Key>) -> impl Future<Output = Self::Output>;
 }
 
 /// Helper macro to alleviate some of the boilerplate of writing `Producer` implementations.
@@ -24,107 +22,70 @@ pub trait Producer: driver_util::Key {
 /// `query()` for an example.
 #[macro_export]
 macro_rules! producer {
-    ($name:ident ($self:ident, $ctx:ident) $([ $( $subkey:ident ),* ])? -> $output:ident $tt:tt) => {
-        impl<Key: driver_util::Key, Output: driver_util::Output> $crate::Producer<Key, Output> for $name
+    ($name:ident ($self:ident, $ctx:ident) $(where [ $( $subkey:ident ),* ])? -> $output:ty { $($tt:tt)* }) => {
+        impl $crate::ProducerBase for $name {
+            type Output = $output;
+        }
+        impl<Key> $crate::Producer<Key> for $name
         where
+            Key: $crate::Producer<Key>,
         $($(
             $subkey: Into<Key>,
-            $subkey: $crate::Producer<Key, Output>,
-            Output: TryInto<<$subkey as $crate::Producer<Key, Output>>::Output>,
+            Key::Output: TryInto<<$subkey as $crate::ProducerBase>::Output>,
         )*)?
         {
-            type Output = $output;
-            async fn produce(&$self, $ctx: &$crate::Context<Key, Output>) -> $output $tt
+            async fn produce(&$self, $ctx: &$crate::Context<Key>) -> $output { $($tt)* }
         }
     }
 }
 
 /// The main function that library authors should use in order to consume other incrementally-computed
-/// values. It MUST be used instead of directly calling `.produce()`.
-pub async fn query<K, Key: driver_util::Key, Output: driver_util::Output>(
-    ctx: &Context<Key, Output>,
-    key: K,
-) -> K::Output
+/// values. It MUST be used instead of directly calling `.produce()`, both inside `produce()`
+/// implementations and outside of them.
+pub async fn query<KSmall, KLarge>(ctx: &Context<KLarge>, key: KSmall) -> KSmall::Output
 where
-    K: Producer<Key, Output>,
+    KSmall: ProducerBase + Into<KLarge>,
+    KLarge: Producer<KLarge>,
+    KLarge::Output: TryInto<KSmall::Output>,
 {
-    /*
-        let value = ctx
-            .executor()
-            .execute_pinned({
-                let ctx = ctx.clone();
-                let key = self.into();
-                move || ctx.query_internal(key)
-            })
-            .await;
-        value.try_into().expect("query produced wrong type somehow")
-    */
-    todo!()
-}
-
-#[cfg(test)]
-mod test {
-    #[test]
-    fn fib() {
-        use crate::{Context, query};
-
-        crate::key!(
-            #[input=|_| false]
-            struct Fib(u32);
-        );
-        crate::producer!(Fib(self, ctx) [Fib] -> u32 {
-            /*
-            let n = self.0;
-            if n == 0 || n == 1 {
-                return 1;
-            }
-
-            let n_1 = query(ctx, Fib(n-1)).await;
-            let n_2 = query(ctx, Fib(n-2)).await;
-
-            n_1 + n_2
-            */
-            100
-        });
-
-        let ctx = Context::<Fib, _>::create_empty_root_for_testing_only();
-        let output = futures_lite::future::block_on(query(&ctx, Fib(10)));
-        assert_eq!(output, 100);
-
-        impl std::fmt::Display for Fib {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "Fib({})", self.0)
-            }
-        }
-    }
+    let value = ctx
+        .executor()
+        .execute_pinned({
+            let ctx = ctx.clone();
+            let key = key.into();
+            move || ctx.query_internal(key)
+        })
+        .await;
+    // IMPORTANT: We must do `.ok()` first to get rid of the error, because providing `Debug`
+    // bounds leads to some very strange weirdness: https://github.com/rust-lang/rust/issues/156998
+    value
+        .try_into()
+        .ok()
+        .expect("query produced wrong type somehow")
 }
 
 /// Turns a collection of producers into an enum that is compatible with `Queryable`.
 ///
-/// Example:
-///
-/// ```rust
-///
-/// ```
+/// See module documentation for an example.
 #[macro_export]
 macro_rules! query_key {
     ($name:ident { $(
-        $key:ident ,
-    )* } with $output:ident) => {
+        $key:ident
+    ),* } with $output:ident) => {
         $crate::key!(enum $name { $($key,)* });
 
+        #[derive(PartialEq, Eq, Clone, Debug, serde::Serialize, serde::Deserialize)]
         pub enum $output { $(
-            $key(<$key as $crate::Producer>::Output),
+            $key(<$key as $crate::ProducerBase>::Output),
         )* }
 
-        impl<Key> $crate::Producer<Key> for $name
-        where
-            Key: $crate::Producer<Key>,
-            $name: Into<Key>,
-        {
+        impl $crate::ProducerBase for $name {
             type Output = $output;
-            async fn produce(&self, ctx: &$crate::Context<Key>) -> Self::Output {
-                // Dispatch to appropriate producer based on enum tag, wrapping output in the same.
+        }
+
+        impl $crate::Producer<$name> for $name {
+            /// Dispatch to appropriate producer based on enum tag, wrapping output in the same.
+            async fn produce(&self, ctx: &$crate::Context<Self>) -> $output {
                 match self { $(
                     // Doesn't have to use `query`, because it's kept track of the same way.
                     Self::$key(key) => $output::$key(key.produce(ctx).await),
@@ -132,16 +93,16 @@ macro_rules! query_key {
             }
         }
 
-        // Allow for "downcasting" from the output back to the original outputs.
         $(
-        impl TryFrom<$output> for <$key as $crate::Producer>::Output {
+        /// Allows for "downcasting" from the collected output back to the original outputs.
+        impl TryFrom<$output> for <$key as $crate::ProducerBase>::Output {
             type Error = ();
             fn try_from(output: $output) -> Result<Self, Self::Error> {
-                if let $output::$key(output) = output {
-                    Ok(output)
-                } else {
-                    Err(())
-                }
+                #[allow(irrefutable_let_patterns)]
+                let $output::$key(output) = output else {
+                    return Err(());
+                };
+                Ok(output)
             }
         }
         )*
