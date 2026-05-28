@@ -1,0 +1,19 @@
+[package]
+name = "driver-db"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+driver-util = { path = "../driver-util" }
+smol-hyper-client = { path = "../smol-hyper-client" }
+generic-array = { version = "0.14", features = ["serde"] }
+http-body-util = "0.1"
+hyper = { version = "1.9", features = ["client", "http1"] }
+jiff = { version = "0.2", features = ["serde"] }
+oneshot = { version = "0.2", features = ["async"] }
+postcard = { version = "1.1", features = ["use-std"] }
+scc = "3.6"
+serde = { version = "1.0", features = ["derive"] }
+sha2 = "0.10"
+tracing = "0.1"
+zstd = "0.13"

@@ -1,0 +1,11 @@
+[package]
+name = "driver-query-fs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+driver-engine = { path = "../driver-engine" }
+driver-util = { path = "../driver-util" }
+async-fs = "2.2"
+ignore = "0.4"
+serde = "1"

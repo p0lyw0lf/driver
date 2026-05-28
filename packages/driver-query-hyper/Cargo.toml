@@ -1,0 +1,10 @@
+[package]
+name = "driver-query-hyper"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+driver-engine = { path = "../driver-engine" }
+driver-util = { path = "../driver-util" }
+smol-hyper-client = { path = "../smol-hyper-client" }
+serde = "1"

@@ -1555,6 +1555,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b75356056920673b02621b35afd0f7dda9306d03c79a30f5c56c44cf256e3de"
 
 [[package]]
+name = "async-task-local"
+version = "0.1.0"
+
+[[package]]
+name = "async-tpc-executor"
+version = "0.1.0"
+dependencies = [
+ "async-broadcast",
+ "async-task",
+ "flume",
+ "futures-concurrency",
+ "futures-lite",
+ "hyper",
+ "num_cpus",
+ "oneshot",
+]
+
+[[package]]
 name = "atomic-polyfill"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2398,10 +2416,102 @@ name = "driver"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "driver-engine",
+ "driver-query-ssg",
+ "driver-util",
+ "futures-concurrency",
  "futures-lite",
- "query",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "driver-db"
+version = "0.1.0"
+dependencies = [
+ "driver-util",
+ "generic-array",
+ "http-body-util",
+ "hyper",
+ "jiff",
+ "oneshot",
+ "postcard",
+ "scc",
+ "serde",
+ "sha2",
+ "smol-hyper-client",
+ "tracing",
+ "zstd",
+]
+
+[[package]]
+name = "driver-engine"
+version = "0.1.0"
+dependencies = [
+ "async-tpc-executor",
+ "driver-db",
+ "driver-util",
+ "futures-lite",
+ "serde",
+ "tracing",
+]
+
+[[package]]
+name = "driver-query-fs"
+version = "0.1.0"
+dependencies = [
+ "async-fs",
+ "driver-engine",
+ "driver-util",
+ "ignore",
+ "serde",
+]
+
+[[package]]
+name = "driver-query-hyper"
+version = "0.1.0"
+dependencies = [
+ "driver-engine",
+ "driver-util",
+ "serde",
+ "smol-hyper-client",
+]
+
+[[package]]
+name = "driver-query-ssg"
+version = "0.1.0"
+dependencies = [
+ "arborium",
+ "async-task-local",
+ "boa_engine",
+ "boa_gc",
+ "comrak",
+ "driver-engine",
+ "driver-query-fs",
+ "driver-query-hyper",
+ "driver-util",
+ "futures-concurrency",
+ "futures-lite",
+ "katex-rs",
+ "minify-html",
+ "relative-path",
+ "scc",
+ "serde",
+ "slug",
+ "tera",
+ "tracing",
+ "zstd",
+ "zune-core",
+ "zune-image",
+ "zune-imageprocs",
+]
+
+[[package]]
+name = "driver-util"
+version = "0.1.0"
+dependencies = [
+ "scc",
+ "serde",
 ]
 
 [[package]]
@@ -2418,12 +2528,6 @@ checksum = "cd1511a7b6a56299bd043a9c167a6d2bfb37bf84a6dfceaba651168adfb43c87"
 dependencies = [
  "dtoa",
 ]
-
-[[package]]
-name = "dyn-clone"
-version = "1.0.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "dynify"
@@ -4623,50 +4727,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5a041e753da8b807c9255f28de81879c78c876392ff2469cde94799b2896b9d"
 
 [[package]]
-name = "query"
-version = "0.1.0"
-dependencies = [
- "arborium",
- "async-broadcast",
- "async-executor",
- "async-fs",
- "async-native-tls",
- "async-net",
- "async-task",
- "boa_engine",
- "boa_gc",
- "comrak",
- "dyn-clone",
- "either",
- "flume",
- "futures-concurrency",
- "futures-lite",
- "generic-array",
- "http-body-util",
- "hyper",
- "ignore",
- "jiff",
- "katex-rs",
- "minify-html",
- "num_cpus",
- "oneshot",
- "postcard",
- "relative-path",
- "scc",
- "serde",
- "sha2",
- "slug",
- "smol-hyper",
- "task-local",
- "tera",
- "tracing",
- "zstd",
- "zune-core",
- "zune-image",
- "zune-imageprocs",
-]
-
-[[package]]
 name = "quick-error"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5186,6 +5246,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "smol-hyper-client"
+version = "0.1.0"
+dependencies = [
+ "async-native-tls",
+ "async-net",
+ "futures-lite",
+ "futures-util",
+ "hyper",
+ "serde",
+ "smol-hyper",
+ "thiserror",
+]
+
+[[package]]
 name = "spin"
 version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5305,10 +5379,6 @@ name = "tap"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
-
-[[package]]
-name = "task-local"
-version = "0.1.0"
 
 [[package]]
 name = "tempfile"

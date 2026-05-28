@@ -1,0 +1,434 @@
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::task::Poll;
+
+use futures_lite::future;
+use relative_path::{RelativePath, RelativePathBuf};
+use serde::{Deserialize, Serialize};
+use tera::Tera;
+
+use driver_engine::{Object, query};
+use driver_query_fs::{ListDirectory, ReadFile};
+
+use crate::QueryContext;
+use crate::boa::{JsObject, JsValue, RunJs, WriteOutputs};
+
+driver_engine::key!(
+    #[input=|_| false]
+    struct RunTera {
+        pub file: PathBuf,
+        pub arg: JsValue,
+    }
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunTeraOutput {
+    pub export: Object,
+    pub writes: WriteOutputs,
+}
+
+driver_engine::producer!(RunTera(self, ctx) as (crate::QueryKey) -> driver_util::Result<RunTeraOutput> {
+    println!("run_tera(\"{}\", {})", self.file.display(), self.arg);
+    let input = query(ctx, ReadFile(self.file.clone())).await?;
+    render_tera_async(ctx, &input, &self.file, &self.arg).await
+});
+
+impl std::fmt::Display for RunTera {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "run_tera(\"{}\", {})", self.file.display(), self.arg)
+    }
+}
+
+enum State<T> {
+    NotStarted,
+    Running,
+    Complete(T),
+}
+
+fn render_tera_async(
+    ctx: &QueryContext,
+    input: &Object,
+    file: &Path,
+    arg: &JsValue,
+) -> impl Future<Output = driver_util::Result<RunTeraOutput>> {
+    // The main reason why I can't just block is because the blocking tera template will itself
+    // call back into the async executor wanting other threads to complete, with potential for
+    // deadlock if all such threads are occupied by tera template renders. So instead, I need
+    // to spawn a thread for each template, which isn't ideal.
+    // I'll be on the lookout for if tera will support async filters eventually...
+    let state = Arc::new(Mutex::new(
+        State::<driver_util::Result<RunTeraOutput>>::NotStarted,
+    ));
+    future::poll_fn(move |poll_ctx| {
+        // First, check if we are already running/finished. This ensures we only spawn one
+        // thread of computation.
+        {
+            let mut state = state.lock().unwrap();
+            match &*state {
+                State::NotStarted => {
+                    *state = State::Running;
+                }
+                State::Running => {
+                    return Poll::Pending;
+                }
+                State::Complete(output) => {
+                    return Poll::Ready(output.clone());
+                }
+            }
+        }
+
+        // If we passed the check, spawn the thread
+        let ctx = ctx.clone();
+        let input = input.clone();
+        let file = PathBuf::from(file);
+        let arg = arg.clone();
+        let state = state.clone();
+        let waker = poll_ctx.waker().clone();
+        std::thread::spawn(move || {
+            let output = render_tera(&ctx, &input, &file, &arg);
+            {
+                *state.lock().unwrap() = State::Complete(output);
+            }
+            waker.wake();
+        });
+        Poll::Pending
+    })
+}
+
+fn render_tera(
+    ctx: &QueryContext,
+    input: &Object,
+    file: &Path,
+    arg: &JsValue,
+) -> driver_util::Result<RunTeraOutput> {
+    let input = ctx.load_string(input)?;
+    let writes = Arc::new(Mutex::new(WriteOutputs::new()));
+
+    let output = {
+        let mut tera = Tera::default();
+        let key = format!("{}({})", file.display(), arg);
+        register_functions(&mut tera, ctx, key, writes.clone());
+
+        let name = format!("{}", file.display());
+        tera.add_raw_template(&name, &input)?;
+        let context = js_to_tera_context(arg)?;
+        tera.render(&name, &context)?
+    };
+    let writes = Arc::into_inner(writes)
+        .expect("should be finished rendering")
+        .into_inner()
+        .expect("mutex is poisoned");
+    let object = ctx.store(output.into_bytes())?;
+
+    Ok(RunTeraOutput {
+        export: object,
+        writes,
+    })
+}
+
+macro_rules! get_arg {
+    ($name:ident <- $args: expr) => {
+        let $name = $args.get(stringify!($name)).ok_or_else(|| {
+            tera::Error::from(concat!(
+                "\"",
+                stringify!($name),
+                "\" parameter must be specified"
+            ))
+        })?;
+    };
+    ($name:ident : $fn:ident <- $args: expr) => {
+        let $name = $args
+            .get(stringify!($name))
+            .ok_or_else(|| {
+                tera::Error::from(concat!(
+                    "\"",
+                    stringify!($name),
+                    "\" parameter must be specified"
+                ))
+            })?
+            .$fn()
+            .ok_or_else(|| {
+                tera::Error::from(concat!("\"", stringify!($name), "\" must be a string"))
+            })?;
+    };
+}
+
+fn register_functions(
+    tera: &mut Tera,
+    ctx: &QueryContext,
+    key: String,
+    writes: Arc<Mutex<WriteOutputs>>,
+) {
+    macro_rules! wrap_function {
+        (move ($key:ident, $($i:ident),*) |$args:ident| $body:tt) => {{
+            let key = $key.clone();
+            $(
+                let $i = $i.clone();
+            )*
+            move |$args: &HashMap<String, tera::Value>| -> tera::Result<tera::Value> {
+                let out = $body;
+                if let Err(ref e) = out {
+                    eprintln!("error templating {key}:\n\t{e}");
+                }
+                out
+            }
+        }};
+    }
+
+    macro_rules! wrap_filter {
+        (move ($key:ident, $($i:ident),*) |$arg:ident, $args:ident| $body:tt) => {{
+            let key = $key.clone();
+            $(
+                let $i = $i.clone();
+            )*
+            move |$arg: &tera::Value,
+                  $args: &HashMap<String, tera::Value>|
+                  -> tera::Result<tera::Value> {
+                let out = $body;
+                if let Err(ref e) = out {
+                    eprintln!("error templating {key}:\n\t{e}");
+                }
+                out
+            }
+        }};
+    }
+
+    tera.register_function(
+        "read",
+        wrap_function!(move(key, ctx) |args| {
+            get_arg!(file: as_str <- args);
+            let file = resolve_path(file)?;
+            let object = future::block_on(query(&ctx, ReadFile(file))).map_err(|e| e.to_string())?;
+                js_to_tera_value(&JsValue::Store(JsObject { object }))
+        }),
+    );
+
+    tera.register_function(
+        "list",
+        wrap_function!(move(key, ctx) |args| {
+                get_arg!(dir: as_str <- args);
+                let dir = resolve_path(dir)?;
+                let files =
+                    future::block_on(query(&ctx, ListDirectory(dir))).map_err(|e| e.to_string())?;
+                Ok(files
+                    .into_iter()
+                    .map(|f| format!("{}", f.display()))
+                    .collect::<Vec<String>>()
+                    .into())
+            }
+        ),
+    );
+
+    tera.register_function(
+        "file_type",
+        wrap_function!(move(key,) |args| {
+            get_arg!(entry: as_str <- args);
+            let entry = resolve_path(entry)?;
+
+            let metadata = std::fs::metadata(entry).map_err(|e| e.to_string())?;
+
+            Ok(if metadata.is_file() {
+                "file"
+            } else if metadata.is_dir() {
+                "dir"
+            } else if metadata.is_symlink() {
+                "symlink"
+            } else {
+                "unknown"
+            }
+            .into())
+        }),
+    );
+
+    tera.register_function(
+        "run_js",
+        wrap_function!(move(key, ctx, writes) |args| {
+            get_arg!(file: as_str <- args);
+            let file = resolve_path(file)?;
+            let arg = tera_to_js_context(args, "file")?;
+
+            let output = future::block_on(query(
+                &ctx,
+                RunJs {
+                    file: file.clone(),
+                    arg: arg.clone(),
+                }
+            ))
+            .map_err(|e| {
+                let e = format!("error running {}({}):\n\t{}", file.display(), arg, e);
+                eprintln!("{e}");
+                e
+            })?;
+            {
+                writes.lock().unwrap().extend(output.writes);
+            }
+            let output = js_to_tera_value(&output.export)?;
+
+            Ok(output)
+        }),
+    );
+
+    tera.register_function(
+        "run_tera",
+        wrap_function!(move(key, ctx, writes) |args| {
+            get_arg!(template: as_str <- args);
+            let file = resolve_path(template)?;
+            let arg = tera_to_js_context(args, "template")?;
+
+            let output = future::block_on(
+                query(&ctx, RunTera {
+                    file: file.clone(),
+                    arg: arg.clone(),
+                })
+            )
+            .map_err(|e| format!("error templating {}({}):\n\t{}", file.display(), arg, e))?;
+            {
+                writes.lock().unwrap().extend(output.writes);
+            };
+            let output = js_to_tera_value(&JsValue::Store(JsObject { object: output.export }))?;
+
+            Ok(output)
+        }),
+    );
+
+    tera.register_filter(
+        "store",
+        wrap_filter!(move(key, ctx) |arg, _args| {
+            let tera::Value::String(s) = arg else {
+                return Err("store must take in str".into());
+            };
+            let object = ctx
+                .store(s.clone().into_bytes())
+                .map_err(|e| e.to_string())?;
+            js_to_tera_value(&JsValue::Store(JsObject { object }))
+        }),
+    );
+
+    tera.register_filter(
+        "unstore",
+        wrap_filter!(move(key, ctx) |arg, _args| {
+            let tera::Value::Object(obj) = arg else {
+                return Err("unstore must take in object".into());
+            };
+            let object = tera_to_js_store_object(obj)?;
+            let output = ctx.load_string(&object).map_err(|e| e.to_string())?;
+            Ok(tera::Value::String(output))
+        }),
+    );
+}
+
+/// Resolves a path to normalized relative to the cwd
+fn resolve_path(path: &str) -> tera::Result<PathBuf> {
+    Ok(RelativePathBuf::from_path(".")
+        .map_err(|e| e.to_string())?
+        .join_normalized(RelativePath::new(path))
+        .to_path("."))
+}
+
+fn js_to_tera_context(value: &JsValue) -> driver_util::Result<tera::Context> {
+    match value {
+        JsValue::Object(obj) => {
+            let mut ctx = tera::Context::new();
+            for (key, value) in obj.iter() {
+                let value = js_to_tera_value(value)?;
+                ctx.insert(key, &value);
+            }
+
+            Ok(ctx)
+        }
+        JsValue::Null | JsValue::Undefined => Ok(tera::Context::default()),
+        _ => Err(driver_util::Error::new("template arg must be object")),
+    }
+}
+
+fn tera_to_js_context(args: &HashMap<String, tera::Value>, ignore: &str) -> tera::Result<JsValue> {
+    let mut arg = BTreeMap::new();
+    for (key, value) in args.iter() {
+        if key == ignore {
+            continue;
+        }
+        let value = tera_to_js_value(value)?;
+        let _ = arg.insert(key.clone(), value);
+    }
+    Ok(if arg.is_empty() {
+        JsValue::Null
+    } else if arg.len() == 1
+        && let Some(value) = arg.get("arg")
+    {
+        value.clone()
+    } else {
+        JsValue::Object(arg)
+    })
+}
+
+const STORE_OBJECT_MAGIC: &str = "__store_object";
+
+fn js_to_tera_value(value: &JsValue) -> tera::Result<tera::Value> {
+    Ok(match value {
+        JsValue::Undefined => tera::Value::Null,
+        JsValue::Null => tera::Value::Null,
+        JsValue::Bool(b) => tera::Value::Bool(*b),
+        JsValue::Int(i) => tera::Value::Number((*i).into()),
+        JsValue::String(s) => tera::Value::String(s.clone()),
+        JsValue::Array(arr) => {
+            tera::Value::Array(arr.iter().map(js_to_tera_value).collect::<Result<_, _>>()?)
+        }
+        JsValue::Object(obj) => tera::Value::Object(
+            obj.iter()
+                .map(|(key, value)| -> tera::Result<_> {
+                    Ok((key.clone(), js_to_tera_value(value)?))
+                })
+                .collect::<Result<_, _>>()?,
+        ),
+        JsValue::Store(s) => {
+            let mut map = tera::Map::new();
+            map.insert(
+                STORE_OBJECT_MAGIC.to_string(),
+                tera::to_value(s.object.clone())?,
+            );
+            tera::Value::Object(map)
+        }
+    })
+}
+
+fn tera_to_js_value(value: &tera::Value) -> tera::Result<JsValue> {
+    Ok(match value {
+        tera::Value::Null => JsValue::Null,
+        tera::Value::Bool(b) => JsValue::Bool(*b),
+        tera::Value::Number(number) => JsValue::Int(
+            number
+                .as_i64()
+                .ok_or("can only take i32")?
+                .try_into()
+                .map_err(|_| "can only take i32")?,
+        ),
+        tera::Value::String(s) => JsValue::String(s.clone()),
+        tera::Value::Array(arr) => {
+            JsValue::Array(arr.iter().map(tera_to_js_value).collect::<Result<_, _>>()?)
+        }
+        tera::Value::Object(obj) => match tera_to_js_store_object(obj) {
+            Ok(object) => JsValue::Store(JsObject { object }),
+            Err(_) => JsValue::Object(
+                obj.into_iter()
+                    .map(|(key, value)| -> tera::Result<_> {
+                        Ok((key.clone(), tera_to_js_value(value)?))
+                    })
+                    .collect::<Result<_, _>>()?,
+            ),
+        },
+    })
+}
+
+fn tera_to_js_store_object(obj: &tera::Map<String, tera::Value>) -> tera::Result<Object> {
+    match obj.get(STORE_OBJECT_MAGIC) {
+        Some(hash) => {
+            let hash = tera::from_value(hash.clone())?;
+            // SAFETY: we have no choice but to trust this. The user has purposefully messed us
+            // up otherwise, worst case we will find there is no backing file.
+            let object = unsafe { Object::from_hash(hash) };
+            Ok(object)
+        }
+        None => Err("not a store object".into()),
+    }
+}

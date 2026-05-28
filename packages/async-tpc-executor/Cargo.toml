@@ -1,0 +1,17 @@
+[package]
+name = "async-tpc-executor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-broadcast = "0.7"
+async-task = "4.7"
+flume = "0.12"
+futures-concurrency = "7.7"
+futures-lite = "2.6"
+hyper = { version = "1.9", optional = true, default-features = false }
+num_cpus = "1.17"
+oneshot = { version = "0.2", features = ["async"] }
+
+[features]
+hyper = ["dep:hyper"]

@@ -1,7 +1,15 @@
 [workspace]
 resolver = "1"
 members = [
-  "driver",
-  "query",
-  "task-local",
+  "packages/async-task-local",
+  "packages/async-tpc-executor",
+  "packages/driver-db",
+  "packages/driver-engine",
+  "packages/driver-query-fs",
+  "packages/driver-query-hyper",
+  "packages/driver-query-ssg",
+  "packages/driver-util",
+  "packages/smol-hyper-client",
+
+  "bin/driver",
 ]
