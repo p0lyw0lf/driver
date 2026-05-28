@@ -56,6 +56,7 @@ pub async fn query<KSmall, KLarge>(ctx: &Context<KLarge>, key: KSmall) -> KSmall
 where
     KSmall: ProducerBase + Into<KLarge>,
     KLarge: Producer<KLarge>,
+    KLarge::Output: Downcastable,
 {
     let value = ctx
         .executor()
@@ -66,11 +67,12 @@ where
         })
         .await;
 
-    // TODO: Rust seems to only let us do safe downcasts thru a Box<dyn Any>. I wish there were a
-    // better way to downcast in-place...
-    let value: Box<dyn std::any::Any> = Box::new(value);
-    let value = value.downcast().expect("query produced wrong type somehow");
-    *value
+    value.downcast().expect("query produced wrong type somehow")
+}
+
+pub trait Downcastable {
+    /// Allows for downcasting this output into an output type of one of its subkeys.
+    fn downcast<T: 'static>(self) -> Option<T>;
 }
 
 /// Turns a collection of producers into an enum that is compatible with `Queryable`.
@@ -99,6 +101,30 @@ macro_rules! query {
                     // Doesn't have to use `query`, because it's kept track of the same way.
                     Self::$key(key) => $output::$key(key.produce(ctx).await),
                 )* }
+            }
+        }
+
+        impl $crate::Downcastable for $output {
+            /// Doesn't allocate, probably unsafe but who caressss
+            fn downcast<T: 'static>(self) -> Option<T> {
+                match self {
+                $(
+                    Self::$key(output) if std::any::Any::type_id(&output) == std::any::TypeId::of::<T>() => {
+                        // SAFETY: The types match exactly, transmute in-place.
+                        unsafe {
+                            // We're about to lose ownership after casting to a safe pointer &
+                            // dropping, but we want the value read afterwards to presist. So we
+                            // need to stop this drop from happening.
+                            let output = std::mem::ManuallyDrop::new(output);
+                            // This cast is _probably_ unsafe UB, but that's why we have this block
+                            // I guess (:
+                            let output = std::ptr::read((&*output as *const <$key as $crate::ProducerBase>::Output).cast::<T>());
+                            Some(output)
+                        }
+                    }
+                )*
+                    _ => None,
+                }
             }
         }
     }

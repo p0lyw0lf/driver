@@ -44,6 +44,7 @@ mod context;
 pub use context::Context;
 
 mod producer;
+pub use producer::Downcastable;
 pub use producer::Producer;
 pub use producer::ProducerBase;
 pub use producer::query;
