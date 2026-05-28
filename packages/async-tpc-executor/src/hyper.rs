@@ -6,6 +6,6 @@ where
     F::Output: Send + 'static,
 {
     fn execute(&self, fut: F) {
-        let _ = self.spawn_unpinned(fut);
+        self.spawn_unpinned(fut)
     }
 }

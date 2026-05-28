@@ -114,18 +114,17 @@ impl Executor {
             .expect("pinned output receive error")
     }
 
-    fn spawn_unpinned<Fut>(&self, fut: Fut) -> oneshot::Receiver<Fut::Output>
+    /// Pushes a new unit of work onto the global queue, where any available thread can execute it,
+    /// without waiting for the future to output anything.
+    pub fn spawn_unpinned<Fut>(&self, fut: Fut)
     where
         Fut: Future + Send + 'static,
         Fut::Output: Send + 'static,
     {
-        let (send, recv) = oneshot::channel();
         let work = UnitOfWork::Unpinned(Box::into_pin(Box::new(async {
-            let output = fut.await;
-            send.send(output).expect("unpinned output send error");
+            let _ = fut.await;
         }) as SendBoxedFuture));
         self.send_work.send(work).expect("unpinned work send error");
-        recv
     }
 
     /// Pushes a new unit of work onto the global queue, where any available thread can execute it.
@@ -134,9 +133,15 @@ impl Executor {
         Fut: Future + Send + 'static,
         Fut::Output: Send + 'static,
     {
-        self.spawn_unpinned(fut)
-            .await
-            .expect("unpinned output receive error")
+        let (send, recv) = oneshot::channel();
+
+        let work = UnitOfWork::Unpinned(Box::into_pin(Box::new(async {
+            let output = fut.await;
+            send.send(output).expect("unpinned output send error");
+        }) as SendBoxedFuture));
+        self.send_work.send(work).expect("unpinned work send error");
+
+        recv.await.expect("unpinned output receive error")
     }
 
     /// MUST NOT be run in an async context.
