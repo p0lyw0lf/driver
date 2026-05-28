@@ -12,7 +12,7 @@ impl Options {
         Self {
             cache_path: dir.join("cache.zst"),
             remotes_path: dir.join("remotes.zst"),
-            objects_path: dir.join("objects"),
+            objects_path: dir.to_path_buf(),
         }
     }
 }

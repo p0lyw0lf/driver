@@ -49,11 +49,7 @@ fn real_main() -> driver_util::Result<()> {
 
     let dist = PathBuf::from(matches.get_one("dist").unwrap_or(&"./dist".to_string()));
     let cache = PathBuf::from(matches.get_one("cache").unwrap_or(&"./.driver".to_string()));
-    let options = driver_engine::Options {
-        cache_path: cache.join("cache.zst"),
-        remotes_path: cache.join("remotes.zst"),
-        objects_path: cache.join("objects"),
-    };
+    let options = driver_engine::Options::with_base_dir(&cache);
 
     let root = time("restored database", || QueryContext::create_root(options));
 
