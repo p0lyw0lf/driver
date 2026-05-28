@@ -22,8 +22,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use tracing::trace;
 
-use driver_db::Object;
-use driver_engine::query;
+use driver_engine::{Object, query};
 use driver_query_fs::ReadFile;
 
 use crate::QueryContext;
@@ -355,8 +354,7 @@ mod driver_module {
     use boa_engine::{Context, js_str};
     use boa_engine::{JsError, JsNativeError, JsResult};
 
-    use driver_db::Uri;
-    use driver_engine::query;
+    use driver_engine::Uri;
     use driver_query_fs::{ListDirectory, ReadFile};
     use driver_query_hyper::GetUrl;
 

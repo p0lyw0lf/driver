@@ -1,12 +1,15 @@
 use std::ops::Deref;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use clap::{Arg, ArgAction, Command, arg, command};
 use futures_lite::future;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer, fmt};
+
+use driver_query_ssg::QueryContext;
+
+mod fs;
 
 fn main() {
     match real_main() {
@@ -25,7 +28,7 @@ fn time<T>(message: &'static str, f: impl FnOnce() -> T) -> T {
     out
 }
 
-fn real_main() -> query::Result<()> {
+fn real_main() -> driver_util::Result<()> {
     let fmt_layer = fmt::layer()
         .with_ansi(false)
         .without_time()
@@ -46,22 +49,20 @@ fn real_main() -> query::Result<()> {
 
     let dist = PathBuf::from(matches.get_one("dist").unwrap_or(&"./dist".to_string()));
     let cache = PathBuf::from(matches.get_one("cache").unwrap_or(&"./.driver".to_string()));
-    let options = query::Options {
-        output_path: dist,
+    let options = driver_engine::Options {
         cache_path: cache.join("cache.zst"),
         remotes_path: cache.join("remotes.zst"),
         objects_path: cache.join("objects"),
     };
 
-    let rt = time("restored database", || {
-        Arc::new(query::Executor::start(options))
-    });
+    let root = time("restored database", || QueryContext::create_root(options));
 
     if let Some(run_matches) = matches.subcommand_matches("run") {
         let filename = run_matches
             .get_one::<String>("script")
             .expect("<script> must be provided.");
-        let write_options = query::WriteOptions {
+        let write_options = fs::WriteOptions {
+            output_path: dist,
             no_delete_missing: run_matches.get_flag("no-delete-missing"),
         };
         let args = run_matches
@@ -70,22 +71,18 @@ fn real_main() -> query::Result<()> {
             .map(|s| s.deref());
 
         let output = time("ran query", || {
-            future::block_on(query::run(rt.clone(), filename.into(), args))
+            future::block_on(fs::run(&root, filename.into(), args))
         })?;
         time("wrote output", || {
-            future::block_on(output.write(&rt, &write_options))
+            future::block_on(output.write(&root, &write_options))
         })?;
     }
 
     if matches.subcommand_matches("print-graph").is_some() {
-        println!("{}", rt.display_dep_graph());
+        println!("{}", root.db().display_dep_graph());
     }
 
-    time("saved database", || {
-        let rt = Arc::into_inner(rt).expect("was still running");
-        rt.stop()?;
-        query::Result::Ok(())
-    })?;
+    time("saved database", || root.destroy_root())?;
 
     Ok(())
 }

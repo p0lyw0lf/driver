@@ -1,5 +1,4 @@
-use driver_db::Object;
-use smol_hyper_client::Uri;
+use driver_engine::{Object, Uri};
 
 driver_engine::key!(
     #[input=|_| true]

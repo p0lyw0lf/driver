@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-driver-db = { path = "../driver-db" }
 driver-engine = { path = "../driver-engine" }
 driver-util = { path = "../driver-util" }
 smol-hyper-client = { path = "../smol-hyper-client" }

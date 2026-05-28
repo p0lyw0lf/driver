@@ -1,63 +1,76 @@
-pub struct Output {
+use std::path::{Path, PathBuf};
+
+use driver_engine::{Object, query};
+use driver_query_ssg::boa::{RunJs, WriteOutputs, parse_args};
+use driver_query_ssg::{QueryContext, QueryOutput};
+use futures_concurrency::future::TryJoin as _;
+
+pub struct RunOutput {
     prev: Option<WriteOutputs>,
     curr: WriteOutputs,
 }
 
 pub async fn run<'a>(
-    rt: Arc<Executor>,
+    root: &QueryContext,
     file: PathBuf,
     args: impl IntoIterator<Item = &'a str>,
-) -> crate::Result<Output> {
-    let key = RunFile {
+) -> driver_util::Result<RunOutput> {
+    let key = RunJs {
         file,
-        arg: query::js::parse_args(args),
+        arg: parse_args(args),
     };
     // SAFETY: we are the one place this function is allowed to be called.
-    let prev = match unsafe { rt.db.get_value(key.clone()).await } {
+    let prev = match root.db().get_value(&key.clone().into()).await {
         None => None,
-        Some(Ok(v)) => Some(v.outputs),
-        Some(Err(e)) => return Err(e),
+        Some(QueryOutput::RunJs(Ok(v))) => Some(v.writes),
+        Some(QueryOutput::RunJs(Err(e))) => return Err(e),
+        Some(other) => {
+            return Err(driver_util::Error::new(&format!(
+                "expected RunJs, got {other:?}"
+            )));
+        }
     };
 
-    let output = rt
-        .query(key.into(), None)
-        .await
-        .downcast::<<RunFile as Producer>::Output>()
-        .expect("invalid type");
-    let output = (*output)?;
-    Ok(Output {
+    let output = query(root, key).await?;
+    Ok(RunOutput {
         prev,
-        curr: output.outputs,
+        curr: output.writes,
     })
 }
 
 #[derive(Default)]
 pub struct WriteOptions {
+    /// The directory we are going to write to.
+    pub output_path: PathBuf,
     /// If this is specified, we only write new files, never delete old ones.
     pub no_delete_missing: bool,
 }
 
-impl Output {
-    pub async fn write(self, rt: &Executor, options: &WriteOptions) -> crate::Result<()> {
-        let root = &rt.options.output_path;
+impl RunOutput {
+    pub async fn write(
+        self,
+        root: &QueryContext,
+        options: &WriteOptions,
+    ) -> driver_util::Result<()> {
+        let base = &options.output_path;
         match self.prev {
             None => {
                 // Ignore errors removing directory; it's just a safety measure
-                async_fs::remove_dir_all(root).await.unwrap_or_default();
-                write(rt, root, self.curr.iter()).await
+                std::fs::remove_dir_all(base).unwrap_or_default();
+                write(root, base, self.curr.iter()).await
             }
             Some(prev) => {
                 let ((), ()) = (
                     write(
-                        rt,
                         root,
+                        base,
                         self.curr.iter().filter(|(path, object)| {
                             prev.get(*path)
                                 .is_none_or(|prev_object| &prev_object != object)
                         }),
                     ),
                     remove(
-                        root,
+                        base,
                         prev.iter().filter_map(|(path, _)| {
                             if options.no_delete_missing || self.curr.contains_key(path) {
                                 None
@@ -76,31 +89,31 @@ impl Output {
 }
 
 async fn write(
-    rt: &Executor,
-    root: &Path,
+    root: &QueryContext,
+    base: &Path,
     iter: impl Iterator<Item = (&PathBuf, &Object)>,
-) -> crate::Result<()> {
+) -> driver_util::Result<()> {
     let mut futs = Vec::new();
     for (path, object) in iter {
-        let full_path = root.join(path);
+        let full_path = base.join(path);
         futs.push(async move {
-            async_fs::create_dir_all(full_path.parent().unwrap()).await?;
-            rt.db.objects.copy(object, &full_path).await?;
-            crate::Result::Ok(())
+            std::fs::create_dir_all(full_path.parent().unwrap())?;
+            root.db().objects.copy(root.options(), object, &full_path)?;
+            driver_util::Result::Ok(())
         });
     }
     let _ = futs.try_join().await?;
     Ok(())
 }
 
-async fn remove(root: &Path, iter: impl Iterator<Item = &PathBuf>) -> crate::Result<()> {
+async fn remove(base: &Path, iter: impl Iterator<Item = &PathBuf>) -> driver_util::Result<()> {
     let mut futs = Vec::new();
     for path in iter {
-        let full_path = root.join(path);
+        let full_path = base.join(path);
         // TODO: should we be removing empty directories too? How?
         futs.push(async move {
-            async_fs::remove_file(&full_path).await?;
-            crate::Result::Ok(())
+            std::fs::remove_file(&full_path)?;
+            driver_util::Result::Ok(())
         });
     }
     let _ = futs.try_join().await?;

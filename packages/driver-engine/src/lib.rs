@@ -49,4 +49,7 @@ pub use producer::ProducerBase;
 pub use producer::query;
 
 /// Re-export for convenience
+pub use driver_db::Object;
+pub use driver_db::Options;
+pub use driver_db::Uri;
 pub use driver_util::key;

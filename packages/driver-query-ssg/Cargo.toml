@@ -5,7 +5,6 @@ edition = "2024"
 
 [dependencies]
 async-task-local = { path = "../async-task-local" }
-driver-db = { path = "../driver-db" }
 driver-engine = { path = "../driver-engine" }
 driver-query-fs = { path = "../driver-query-fs" }
 driver-query-hyper = { path = "../driver-query-hyper" }

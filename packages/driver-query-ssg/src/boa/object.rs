@@ -3,9 +3,10 @@ use boa_engine::{JsData, JsNativeError, JsResult};
 use boa_gc::{Finalize, GcRef, Trace};
 use serde::{Deserialize, Serialize};
 
+use driver_engine::Object;
+
 use crate::boa::get_context;
 use crate::boa::macros::class_wrap;
-use driver_db::Object;
 
 #[derive(
     Debug,

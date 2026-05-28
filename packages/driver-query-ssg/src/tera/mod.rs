@@ -8,8 +8,7 @@ use relative_path::{RelativePath, RelativePathBuf};
 use serde::{Deserialize, Serialize};
 use tera::Tera;
 
-use driver_db::Object;
-use driver_engine::query;
+use driver_engine::{Object, query};
 use driver_query_fs::{ListDirectory, ReadFile};
 
 use crate::QueryContext;

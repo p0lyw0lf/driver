@@ -5,7 +5,6 @@ edition = "2024"
 
 [dependencies]
 driver-engine = { path = "../driver-engine" }
-driver-db = { path = "../driver-db" }
 driver-util = { path = "../driver-util" }
 async-fs = "2.2"
 ignore = "0.4"

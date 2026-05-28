@@ -7,7 +7,7 @@ use zune_image::codecs::{
 };
 use zune_image::traits::{DecoderTrait, OperationsTrait};
 
-use driver_db::Object;
+use driver_engine::Object;
 
 #[derive(
     Default, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug, Serialize, Deserialize,
