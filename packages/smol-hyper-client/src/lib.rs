@@ -63,7 +63,7 @@ where
         }
     }
 
-    /// Mostly taken from https://github.com/smol-rs/smol/blob/4af083b2078f2e4d6b9810abb0e6ed4186729ef9/examples/hyper-client.rs
+    /// Mostly taken from <https://github.com/smol-rs/smol/blob/4af083b2078f2e4d6b9810abb0e6ed4186729ef9/examples/hyper-client.rs>
     pub async fn request<E>(
         &self,
         executor: &E,

@@ -82,7 +82,7 @@ impl Display for ParseImage {
     }
 }
 
-/// https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/object-fit
+/// <https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/object-fit>
 #[derive(
     Default, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug, Serialize, Deserialize,
 )]

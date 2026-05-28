@@ -45,7 +45,7 @@ pub struct RemoteObject {
     /// The time at which we fetched the object.
     fetched: Timestamp,
     /// How long after `fetched` can we continue to treat the object as "fresh" (don't need to
-    /// fetch again)? Calculated according to https://httpwg.org/specs/rfc9111.html#calculating.freshness.lifetime,
+    /// fetch again)? Calculated according to <https://httpwg.org/specs/rfc9111.html#calculating.freshness.lifetime>,
     /// based on the HTTP responose headers.
     freshness_lifetime: Span,
     /// When submitting to the cache server, we provide an ETag header so it can say "not modified"
@@ -193,7 +193,7 @@ impl ResponseHeaders {
         }
     }
 
-    /// Runs the algorithm described at https://httpwg.org/specs/rfc9111.html#rfc.section.4.2.1
+    /// Runs the algorithm described at <https://httpwg.org/specs/rfc9111.html#rfc.section.4.2.1>
     fn calculate_freshness_lifetime(
         headers: &HeaderMap,
         fetched: Timestamp,
@@ -239,7 +239,7 @@ impl ResponseHeaders {
     }
 }
 
-/// Implements the formatting specification from https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/If-Modified-Since
+/// Implements the formatting specification from <https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/If-Modified-Since>
 fn format_header_date(timestamp: Timestamp) -> driver_util::Result<HeaderValue> {
     let gmt = timestamp.in_tz("Etc/GMT")?;
 
