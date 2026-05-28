@@ -1,5 +1,5 @@
 use boa_engine::object::builtins::JsUint8Array;
-use boa_engine::{JsData, JsResult};
+use boa_engine::{JsData, JsNativeError, JsResult};
 use boa_gc::{Finalize, GcRef, Trace};
 use serde::{Deserialize, Serialize};
 
@@ -27,16 +27,26 @@ pub struct JsObject {
 }
 
 impl JsObject {
-    /// SAFETY: only safe to call when in a javascript context
+    /// # Safety
+    /// Only safe to call when in a javascript context
     pub unsafe fn contents_as_bytes(self) -> JsResult<Vec<u8>> {
         let ctx = &get_context()?;
-        self.object.contents_as_bytes(ctx)
+        ctx.load_bytes(&self.object).map_err(|e| {
+            JsNativeError::eval()
+                .with_message(format!("loading {}: {}", self.object, e))
+                .into()
+        })
     }
 
-    /// SAFETY: only safe to call when in a javascript context
+    /// # Safety
+    /// Only safe to call when in a javascript context
     pub unsafe fn contents_as_string(self) -> JsResult<String> {
         let ctx = &get_context()?;
-        self.object.contents_as_string(ctx)
+        ctx.load_string(&self.object).map_err(|e| {
+            JsNativeError::eval()
+                .with_message(format!("loading {}: {}", self.object, e))
+                .into()
+        })
     }
 }
 

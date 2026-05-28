@@ -26,6 +26,8 @@ use driver_db::Object;
 use driver_engine::query;
 use driver_query_fs::ReadFile;
 
+use crate::QueryContext;
+
 mod image;
 mod macros;
 mod object;
@@ -249,18 +251,20 @@ impl ModuleLoader for MemoizedModuleLoader {
             return Ok(module.get().clone());
         }
 
-        let source_bytes = ReadFile(path.clone())
-            .query(&self.ctx)
+        let source_object = query(&self.ctx, ReadFile(path.clone()))
             .await
             .map_err(|e| {
                 JsNativeError::eval()
                     .with_message(format!("reading imported module '{}': {}", short_path, e))
-            })?
-            .contents_as_bytes(&self.ctx)?;
+            })?;
+        let source_bytes = self.ctx.load_bytes(&source_object).map_err(|e| {
+            JsNativeError::eval().with_message(format!("loading {} for {}", e, path.display()))
+        })?;
+
         let source = boa_engine::Source::from_bytes(&source_bytes).with_path(&path);
         let module =
             boa_engine::Module::parse(source, None, &mut js_ctx.borrow_mut()).map_err(|err| {
-                eprintln!("error in module {err}");
+                eprintln!("error in module: {err}");
                 JsNativeError::syntax()
                     .with_message(format!("could not parse module '{short_path}'"))
                     .with_cause(err)
@@ -356,8 +360,10 @@ mod driver_module {
     use driver_query_fs::{ListDirectory, ReadFile};
     use driver_query_hyper::GetUrl;
 
+    use crate::comrak::MarkdownToHtml;
     use crate::minify_html::MinifyHtml;
-    use crate::tera::RunTera;
+    use crate::tera::{RunTera, RunTeraOutput};
+    use crate::zune::{ConvertImage, ParseImage};
 
     pub fn slugify(value: String) -> JsResult<String> {
         Ok(slug::slugify(value))
@@ -376,8 +382,7 @@ mod driver_module {
     pub async fn list_directory(dirname: JsPath) -> JsResult<Vec<String>> {
         let ctx = &get_context()?;
 
-        let contents = ListDirectory(dirname.0)
-            .query(ctx)
+        let contents = query(ctx, ListDirectory(dirname.0))
             .await
             .map_err(|e| JsNativeError::eval().with_message(format!("list_directory: {e}")))?
             .into_iter()
@@ -399,7 +404,7 @@ mod driver_module {
         let RunJsOutput {
             export: value,
             writes: outputs,
-        } = task.query(ctx).await.map_err(|e| {
+        } = query(ctx, task).await.map_err(|e| {
             JsNativeError::eval().with_message(format!(
                 "error running {}({}):\n\t{}",
                 filename.display(),
@@ -423,9 +428,9 @@ mod driver_module {
         };
 
         let RunTeraOutput {
-            value: object,
-            outputs,
-        } = task.query(ctx).await.map_err(|e| {
+            export: object,
+            writes,
+        } = query(ctx, task).await.map_err(|e| {
             JsNativeError::eval().with_message(format!(
                 "error templating {}({}):\n\t{}",
                 filename.display(),
@@ -434,7 +439,7 @@ mod driver_module {
             ))
         })?;
 
-        unsafe { push_outputs(outputs) }?;
+        unsafe { push_outputs(writes) }?;
 
         Ok(JsValue::Store(JsObject { object }))
     }
@@ -459,16 +464,16 @@ mod driver_module {
     pub fn store(value: String) -> JsResult<JsObject> {
         let ctx = &get_context()?;
 
-        let object =
-            ctx.db().objects.store(value.into_bytes()).map_err(|err| {
-                JsNativeError::eval().with_message(format!("loading object: {err}"))
-            })?;
+        let object = ctx
+            .store(value.into_bytes())
+            .map_err(|err| JsNativeError::eval().with_message(format!("loading {err}")))?;
         Ok(JsObject { object })
     }
 
     pub async fn get_url(url: String) -> JsResult<JsObject> {
         let ctx = &get_context()?;
-        let uri = hyper::Uri::try_from(&url)
+        let uri = url
+            .try_into()
             .map_err(|e| JsNativeError::eval().with_message(format!("parsing url: {e}")))?;
 
         let object = query(ctx, GetUrl(Uri(uri)))
@@ -489,8 +494,7 @@ mod driver_module {
     pub async fn minify_html(contents: JsObject) -> JsResult<JsObject> {
         let ctx = &get_context()?;
 
-        let object = MinifyHtml(contents.object.clone())
-            .query(ctx)
+        let object = query(ctx, MinifyHtml(contents.object.clone()))
             .await
             .map_err(|e| JsNativeError::eval().with_message(format!("minify_html: {e}")))?;
         Ok(JsObject { object })
@@ -499,7 +503,7 @@ mod driver_module {
     pub async fn parse_image(object: JsObject) -> JsResult<JsImage> {
         let ctx = &get_context()?;
 
-        let image = query(ParseImage(object.object.clone()))
+        let image = query(ctx, ParseImage(object.object.clone()))
             .await
             .map_err(|e| JsNativeError::eval().with_message(format!("parse_image: {e}")))?;
         Ok(JsImage { image })
@@ -592,14 +596,14 @@ pub struct RunJsOutput {
     pub writes: WriteOutputs,
 }
 
-driver_engine::producer!(RunJs(self, ctx) where [ReadFile] -> driver_util::Result<RunJsOutput> {
+driver_engine::producer!(RunJs(self, ctx) as (crate::QueryKey) -> driver_util::Result<RunJsOutput> {
     println!("{}", self);
 
     let file = self.file.clone();
     let arg = self.arg.clone();
 
     let object = query(ctx, ReadFile(self.file.clone())).await?;
-    let contents = object.contents_as_bytes(ctx)?;
+    let contents = ctx.load_bytes(&object)?;
 
     let ctx = ctx.clone();
     let (export, writes) = with_js_ctx(ctx.clone(), arg.clone(), async move |js_ctx| {

@@ -6,13 +6,13 @@ use std::task::Poll;
 use futures_lite::future;
 use relative_path::{RelativePath, RelativePathBuf};
 use serde::{Deserialize, Serialize};
-use sha2::Digest;
 use tera::Tera;
 
 use driver_db::Object;
 use driver_engine::query;
 use driver_query_fs::{ListDirectory, ReadFile};
 
+use crate::QueryContext;
 use crate::boa::{JsObject, JsValue, RunJs, WriteOutputs};
 
 driver_engine::key!(
@@ -29,7 +29,7 @@ pub struct RunTeraOutput {
     pub writes: WriteOutputs,
 }
 
-driver_engine::producer!(RunTera(self, ctx) where [ReadFile] -> driver_util::Result<RunTeraOutput> {
+driver_engine::producer!(RunTera(self, ctx) as (crate::QueryKey) -> driver_util::Result<RunTeraOutput> {
     println!("run_tera(\"{}\", {})", self.file.display(), self.arg);
     let input = query(ctx, ReadFile(self.file.clone())).await?;
     render_tera_async(ctx, &input, &self.file, &self.arg).await
@@ -52,14 +52,14 @@ fn render_tera_async(
     input: &Object,
     file: &Path,
     arg: &JsValue,
-) -> impl Future<Output = driver_util::Result<TemplateOutput>> {
+) -> impl Future<Output = driver_util::Result<RunTeraOutput>> {
     // The main reason why I can't just block is because the blocking tera template will itself
     // call back into the async executor wanting other threads to complete, with potential for
     // deadlock if all such threads are occupied by tera template renders. So instead, I need
     // to spawn a thread for each template, which isn't ideal.
     // I'll be on the lookout for if tera will support async filters eventually...
     let state = Arc::new(Mutex::new(
-        State::<driver_util::Result<TemplateOutput>>::NotStarted,
+        State::<driver_util::Result<RunTeraOutput>>::NotStarted,
     ));
     future::poll_fn(move |poll_ctx| {
         // First, check if we are already running/finished. This ensures we only spawn one
@@ -102,29 +102,29 @@ fn render_tera(
     input: &Object,
     file: &Path,
     arg: &JsValue,
-) -> driver_util::Result<TemplateOutput> {
-    let input = input.contents_as_string(ctx)?;
-    let outputs = Arc::new(Mutex::new(WriteOutputs::new()));
+) -> driver_util::Result<RunTeraOutput> {
+    let input = ctx.load_string(input)?;
+    let writes = Arc::new(Mutex::new(WriteOutputs::new()));
 
     let output = {
         let mut tera = Tera::default();
         let key = format!("{}({})", file.display(), arg);
-        register_functions(&mut tera, ctx, key, outputs.clone());
+        register_functions(&mut tera, ctx, key, writes.clone());
 
         let name = format!("{}", file.display());
         tera.add_raw_template(&name, &input)?;
         let context = js_to_tera_context(arg)?;
         tera.render(&name, &context)?
     };
-    let outputs = Arc::into_inner(outputs)
+    let writes = Arc::into_inner(writes)
         .expect("should be finished rendering")
         .into_inner()
         .expect("mutex is poisoned");
-    let object = ctx.db().objects.store(output.into_bytes())?;
+    let object = ctx.store(output.into_bytes())?;
 
-    Ok(TemplateOutput {
-        value: object,
-        outputs,
+    Ok(RunTeraOutput {
+        export: object,
+        writes,
     })
 }
 
@@ -159,7 +159,7 @@ fn register_functions(
     tera: &mut Tera,
     ctx: &QueryContext,
     key: String,
-    outputs: Arc<Mutex<WriteOutputs>>,
+    writes: Arc<Mutex<WriteOutputs>>,
 ) {
     macro_rules! wrap_function {
         (move ($key:ident, $($i:ident),*) |$args:ident| $body:tt) => {{
@@ -200,7 +200,7 @@ fn register_functions(
         wrap_function!(move(key, ctx) |args| {
             get_arg!(file: as_str <- args);
             let file = resolve_path(file)?;
-            let object = future::block_on(ReadFile(file).query(&ctx)).map_err(|e| e.to_string())?;
+            let object = future::block_on(query(&ctx, ReadFile(file))).map_err(|e| e.to_string())?;
                 js_to_tera_value(&JsValue::Store(JsObject { object }))
         }),
     );
@@ -211,7 +211,7 @@ fn register_functions(
                 get_arg!(dir: as_str <- args);
                 let dir = resolve_path(dir)?;
                 let files =
-                    future::block_on(ListDirectory(dir).query(&ctx)).map_err(|e| e.to_string())?;
+                    future::block_on(query(&ctx, ListDirectory(dir))).map_err(|e| e.to_string())?;
                 Ok(files
                     .into_iter()
                     .map(|f| format!("{}", f.display()))
@@ -244,7 +244,7 @@ fn register_functions(
 
     tera.register_function(
         "run_js",
-        wrap_function!(move(key, ctx, outputs) |args| {
+        wrap_function!(move(key, ctx, writes) |args| {
             get_arg!(file: as_str <- args);
             let file = resolve_path(file)?;
             let arg = tera_to_js_context(args, "file")?;
@@ -262,9 +262,9 @@ fn register_functions(
                 e
             })?;
             {
-                outputs.lock().unwrap().extend(output.outputs);
+                writes.lock().unwrap().extend(output.writes);
             }
-            let output = js_to_tera_value(&output.value)?;
+            let output = js_to_tera_value(&output.export)?;
 
             Ok(output)
         }),
@@ -272,23 +272,22 @@ fn register_functions(
 
     tera.register_function(
         "run_tera",
-        wrap_function!(move(key, ctx, outputs) |args| {
+        wrap_function!(move(key, ctx, writes) |args| {
             get_arg!(template: as_str <- args);
             let file = resolve_path(template)?;
             let arg = tera_to_js_context(args, "template")?;
 
             let output = future::block_on(
-                RunTemplate {
+                query(&ctx, RunTera {
                     file: file.clone(),
                     arg: arg.clone(),
-                }
-                .query(&ctx),
+                })
             )
             .map_err(|e| format!("error templating {}({}):\n\t{}", file.display(), arg, e))?;
             {
-                outputs.lock().unwrap().extend(output.outputs);
+                writes.lock().unwrap().extend(output.writes);
             };
-            let output = js_to_tera_value(&JsValue::Store(JsObject { object: output.value }))?;
+            let output = js_to_tera_value(&JsValue::Store(JsObject { object: output.export }))?;
 
             Ok(output)
         }),
@@ -301,8 +300,6 @@ fn register_functions(
                 return Err("store must take in str".into());
             };
             let object = ctx
-                .db()
-                .objects
                 .store(s.clone().into_bytes())
                 .map_err(|e| e.to_string())?;
             js_to_tera_value(&JsValue::Store(JsObject { object }))
@@ -316,7 +313,7 @@ fn register_functions(
                 return Err("unstore must take in object".into());
             };
             let object = tera_to_js_store_object(obj)?;
-            let output = object.contents_as_string(&ctx).map_err(|e| e.to_string())?;
+            let output = ctx.load_string(&object).map_err(|e| e.to_string())?;
             Ok(tera::Value::String(output))
         }),
     );

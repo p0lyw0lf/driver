@@ -52,6 +52,18 @@ impl<Key: ProducerBase> Context<Key> {
             .await?
             .object)
     }
+
+    /// Loads the given object as bytes
+    pub fn load_bytes(&self, object: &Object) -> driver_util::Result<Vec<u8>> {
+        self.db().objects.load(self.options(), object.clone())
+    }
+
+    /// Loads the given object as a UTF-8 string
+    pub fn load_string(&self, object: &Object) -> driver_util::Result<String> {
+        let bytes = self.load_bytes(object)?;
+        let string = String::from_utf8(bytes)?;
+        Ok(string)
+    }
 }
 
 impl<Key: Producer<Key>> Context<Key> {

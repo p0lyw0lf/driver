@@ -111,7 +111,7 @@ impl comrak::adapters::SyntaxHighlighterAdapter for ArboriumHighlighter {
 }
 
 driver_engine::producer!(MarkdownToHtml(self, ctx) -> driver_util::Result<Object> {
-    let contents = self.0.contents_as_string(ctx)?;
+    let contents = ctx.load_string(&self.0)?;
 
     thread_local! {
         static OPTIONS: Options = Options::default();

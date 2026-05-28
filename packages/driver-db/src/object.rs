@@ -13,9 +13,19 @@ pub struct Objects {
     cache: SerializedMap<Object, Vec<u8>>,
 }
 
+type Hash = sha2::digest::Output<sha2::Sha256>;
+
 /// Newtype for a hash that represents it's an object in the store.
 #[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
-pub struct Object(sha2::digest::Output<sha2::Sha256>);
+pub struct Object(Hash);
+
+impl Object {
+    /// # Safety
+    /// This function MUST only be used for constructing objects from those saved to disk.
+    pub unsafe fn from_hash(hash: Hash) -> Self {
+        Self(hash)
+    }
+}
 
 impl Objects {
     pub fn new() -> Self {

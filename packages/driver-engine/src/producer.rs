@@ -31,12 +31,20 @@ macro_rules! producer {
             Key: $crate::Producer<Key>,
         $($(
             $subkey: Into<Key>,
-            Key::Output: TryInto<<$subkey as $crate::ProducerBase>::Output>,
         )*)?
         {
             async fn produce(&$self, $ctx: &$crate::Context<Key>) -> $output { $($tt)* }
         }
-    }
+    };
+
+    ($name:ident ($self:ident, $ctx:ident) as ($query_key:ty) -> $output:ty { $($tt:tt)* }) => {
+        impl $crate::ProducerBase for $name {
+            type Output = $output;
+        }
+        impl $crate::Producer<$query_key> for $name {
+            async fn produce(&$self, $ctx: &$crate::Context<$query_key>) -> $output { $($tt)* }
+        }
+    };
 }
 
 /// The main function that library authors should use in order to consume other incrementally-computed
@@ -48,7 +56,6 @@ pub async fn query<KSmall, KLarge>(ctx: &Context<KLarge>, key: KSmall) -> KSmall
 where
     KSmall: ProducerBase + Into<KLarge>,
     KLarge: Producer<KLarge>,
-    KLarge::Output: TryInto<KSmall::Output>,
 {
     let value = ctx
         .executor()
@@ -58,12 +65,12 @@ where
             move || ctx.query_internal(key)
         })
         .await;
-    // IMPORTANT: We must do `.ok()` first to get rid of the error, because providing `Debug`
-    // bounds leads to some very strange weirdness: https://github.com/rust-lang/rust/issues/156998
-    value
-        .try_into()
-        .ok()
-        .expect("query produced wrong type somehow")
+
+    // TODO: Rust seems to only let us do safe downcasts thru a Box<dyn Any>. I wish there were a
+    // better way to downcast in-place...
+    let value: Box<dyn std::any::Any> = Box::new(value);
+    let value = value.downcast().expect("query produced wrong type somehow");
+    *value
 }
 
 /// Turns a collection of producers into an enum that is compatible with `Queryable`.
@@ -73,7 +80,7 @@ where
 macro_rules! query {
     ($name:ident { $(
         $key:ident
-    ),* } with $output:ident) => {
+    ),* $(,)? } with $output:ident) => {
         $crate::key!(enum $name { $($key,)* });
 
         #[derive(PartialEq, Eq, Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -94,19 +101,5 @@ macro_rules! query {
                 )* }
             }
         }
-
-        $(
-        /// Allows for "downcasting" from the collected output back to the original outputs.
-        impl TryFrom<$output> for <$key as $crate::ProducerBase>::Output {
-            type Error = ();
-            fn try_from(output: $output) -> Result<Self, Self::Error> {
-                #[allow(irrefutable_let_patterns)]
-                let $output::$key(output) = output else {
-                    return Err(());
-                };
-                Ok(output)
-            }
-        }
-        )*
     }
 }

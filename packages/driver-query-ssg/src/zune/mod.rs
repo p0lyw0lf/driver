@@ -1,7 +1,6 @@
 use std::fmt::Display;
 
 use serde::{Deserialize, Serialize};
-use sha2::Digest;
 use zune_core::{bytestream::ZCursor, options::DecoderOptions};
 use zune_image::codecs::{
     jpeg::JpegDecoder, jpeg_xl::JxlDecoder, png::PngDecoder, webp::ZuneWebpDecoder,
@@ -49,7 +48,7 @@ driver_engine::key!(
 );
 
 driver_engine::producer!(ParseImage(self, ctx) -> driver_util::Result<ImageObject> {
-    let contents = ZCursor::new(self.0.contents_as_bytes(ctx)?);
+    let contents = ZCursor::new(ctx.load_bytes(&self.0)?);
     let object = self.0.clone();
 
     let metadata = zune_image::utils::decode_info(contents)
@@ -118,7 +117,7 @@ driver_engine::producer!(ConvertImage(self, ctx) -> driver_util::Result<ImageObj
 
     let input_format = self.input.format;
     let (source_width, source_height) = self.input.size.as_dimensions();
-    let input_contents = ZCursor::new(self.input.object.contents_as_bytes(ctx)?);
+    let input_contents = ZCursor::new(ctx.load_bytes(&self.input.object)?);
     let decoder_options = DecoderOptions::new_fast();
 
     let size = self.size;
@@ -239,22 +238,22 @@ impl Display for ConvertImage {
         f.write_str(", {{")?;
 
         let mut had_some = false;
-        let mut prefix = || {
+        let mut prefix = |f: &mut std::fmt::Formatter<'_>| {
             let out = f.write_str(if had_some { ", " } else { " " });
             had_some = true;
             out
         };
 
         if let Some(format) = self.format.as_ref() {
-            prefix()?;
+            prefix(f)?;
             write!(f, "format: \"{}\"", format)?;
         }
         if let Some(size) = self.size.as_ref() {
-            prefix()?;
+            prefix(f)?;
             write!(f, "size: {}", size)?;
         }
         if let Some(fit) = self.fit.as_ref() {
-            prefix()?;
+            prefix(f)?;
             write!(f, "fit: \"{}\"", fit)?;
         }
 

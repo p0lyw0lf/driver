@@ -6,7 +6,7 @@ driver_engine::key!(
 );
 
 driver_engine::producer!(MinifyHtml(self, ctx) -> driver_util::Result<Object> {
-    let contents = self.0.contents_as_string(ctx)?;
+    let contents = ctx.load_string(&self.0)?;
     let cfg = minify_html::Cfg {
         keep_closing_tags: true,
         keep_comments: true,
