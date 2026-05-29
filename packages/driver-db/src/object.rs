@@ -16,7 +16,7 @@ pub struct Objects {
 type Hash = sha2::digest::Output<sha2::Sha256>;
 
 /// Newtype for a hash that represents it's an object in the store.
-#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
+#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Object(Hash);
 
 impl Object {
@@ -92,7 +92,7 @@ impl Objects {
     }
 
     fn object_filename(&self, options: &Options, object: &Object) -> PathBuf {
-        options.objects_path.join(object.to_string())
+        options.objects_path.join(format!("{:?}", object))
     }
 }
 
@@ -100,5 +100,12 @@ impl std::fmt::Display for Object {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Format as lowercase hex
         write!(f, "objects/{:x}", self.0)
+    }
+}
+
+impl std::fmt::Debug for Object {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Format as lowercase hex, without the objects/ prefix
+        write!(f, "{:x}", self.0)
     }
 }

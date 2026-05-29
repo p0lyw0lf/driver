@@ -180,7 +180,7 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Core<Key, Output> {
 
     /// Gets the value associated with an entry. MUST ONLY be used to compute diffs between past
     /// known values and queried values; MUST NOT be relied on as an accurate "this is up to date".
-    pub async fn get_value(&self, key: &Key) -> Option<Output> {
+    pub fn get_value(&self, key: &Key) -> Option<Output> {
         match self.cache.get_sync(key)?.get() {
             LogicalValue::Materialized(value) => Some(value.value.clone()),
             LogicalValue::Computing(_) => {
@@ -383,5 +383,44 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Database<Key, Output> {
         }
 
         GraphDisplayer(&self.dep_graph)
+    }
+
+    pub fn display_dep_graph_with_outputs(&self) -> impl Display + '_ {
+        struct GraphAndOutputDisplayer<'a, Key: Hash + Ord + Eq, Output>(&'a Core<Key, Output>);
+
+        impl<'a, Key: driver_util::Key, Output: driver_util::Output> Display
+            for GraphAndOutputDisplayer<'a, Key, Output>
+        {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let mut keys = Vec::<Key>::with_capacity(self.0.dep_graph.len());
+                let mut entry = self.0.dep_graph.begin_sync();
+                while let Some(e) = entry {
+                    keys.push(e.key().clone());
+                    entry = e.next_sync();
+                }
+
+                keys.sort();
+
+                for key in keys {
+                    write!(f, "{} -> {:?}: ", key, self.0.get_value(&key))?;
+
+                    if let Some(deps) = self.0.dep_graph.get_sync(&key)
+                        && !deps.is_empty()
+                    {
+                        writeln!(f, "[")?;
+                        for dep in deps.iter() {
+                            writeln!(f, "\t{} -> {:?},", dep, self.0.get_value(dep))?;
+                        }
+                        writeln!(f, "]")?;
+                    } else {
+                        writeln!(f, "None")?;
+                    };
+                }
+
+                Ok(())
+            }
+        }
+
+        GraphAndOutputDisplayer(&self.core)
     }
 }

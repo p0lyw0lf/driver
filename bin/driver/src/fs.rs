@@ -20,7 +20,7 @@ pub async fn run<'a>(
         arg: parse_args(args),
     };
     // SAFETY: we are the one place this function is allowed to be called.
-    let prev = match root.db().get_value(&key.clone().into()).await {
+    let prev = match root.db().get_value(&key.clone().into()) {
         None => None,
         Some(QueryOutput::RunJs(Ok(v))) => Some(v.writes),
         Some(QueryOutput::RunJs(Err(e))) => return Err(e),

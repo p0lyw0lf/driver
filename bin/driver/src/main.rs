@@ -44,7 +44,7 @@ fn real_main() -> driver_util::Result<()> {
             .arg(arg!(--"no-delete-missing" "Only adds new output files, never deletes old ones"))
             .arg(arg!(<script> "The file to run"))
             .arg(Arg::new("remaining").last(true).action(ArgAction::Append)))
-        .subcommand(Command::new("print-graph"))
+        .subcommand(Command::new("print-graph").arg(arg!(--"with-outputs" "In addition to printing each dependency key, also print each dependency output")))
         .get_matches();
 
     let dist = PathBuf::from(matches.get_one("dist").unwrap_or(&"./dist".to_string()));
@@ -74,8 +74,12 @@ fn real_main() -> driver_util::Result<()> {
         })?;
     }
 
-    if matches.subcommand_matches("print-graph").is_some() {
-        println!("{}", root.db().display_dep_graph());
+    if let Some(print_matches) = matches.subcommand_matches("print-graph") {
+        if print_matches.get_flag("with-outputs") {
+            println!("{}", root.db().display_dep_graph_with_outputs());
+        } else {
+            println!("{}", root.db().display_dep_graph());
+        }
     }
 
     time("saved database", || root.destroy_root())?;
