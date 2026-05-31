@@ -107,8 +107,7 @@ fn render_tera(
 
     let output = {
         let mut tera = Tera::default();
-        let key = format!("{}({})", file.display(), arg);
-        register_functions(&mut tera, ctx, key, writes.clone());
+        register_functions(&mut tera, ctx, writes.clone());
 
         let name = format!("{}", file.display());
         tera.add_raw_template(&name, &input)?;
@@ -154,63 +153,50 @@ macro_rules! get_arg {
     };
 }
 
-fn register_functions(
-    tera: &mut Tera,
-    ctx: &QueryContext,
-    key: String,
-    writes: Arc<Mutex<WriteOutputs>>,
-) {
+fn register_functions(tera: &mut Tera, ctx: &QueryContext, writes: Arc<Mutex<WriteOutputs>>) {
     macro_rules! wrap_function {
-        (move ($key:ident, $($i:ident),*) |$args:ident| $body:tt) => {{
-            let key = $key.clone();
+        (move ($($i:ident),*) |$args:ident| $body:tt) => {{
             $(
                 let $i = $i.clone();
             )*
             move |$args: &HashMap<String, tera::Value>| -> tera::Result<tera::Value> {
-                let out = $body;
-                if let Err(ref e) = out {
-                    eprintln!("error templating {key}:\n\t{e}");
-                }
-                out
+                $body
             }
         }};
     }
 
     macro_rules! wrap_filter {
-        (move ($key:ident, $($i:ident),*) |$arg:ident, $args:ident| $body:tt) => {{
-            let key = $key.clone();
+        (move ($($i:ident),*) |$arg:ident, $args:ident| $body:tt) => {{
             $(
                 let $i = $i.clone();
             )*
             move |$arg: &tera::Value,
                   $args: &HashMap<String, tera::Value>|
                   -> tera::Result<tera::Value> {
-                let out = $body;
-                if let Err(ref e) = out {
-                    eprintln!("error templating {key}:\n\t{e}");
-                }
-                out
+                $body
             }
         }};
     }
 
     tera.register_function(
         "read",
-        wrap_function!(move(key, ctx) |args| {
+        wrap_function!(move(ctx) |args| {
             get_arg!(file: as_str <- args);
             let file = resolve_path(file)?;
-            let object = future::block_on(query(&ctx, ReadFile(file))).map_err(|e| e.to_string())?;
-                js_to_tera_value(&JsValue::Store(JsObject { object }))
+            let read_file = ReadFile(file);
+            let object = future::block_on(query(&ctx, read_file.clone())).map_err(|e| format!("{read_file}: {e}"))?;
+            js_to_tera_value(&JsValue::Store(JsObject { object }))
         }),
     );
 
     tera.register_function(
         "list",
-        wrap_function!(move(key, ctx) |args| {
+        wrap_function!(move(ctx) |args| {
                 get_arg!(dir: as_str <- args);
                 let dir = resolve_path(dir)?;
+                let list_directory = ListDirectory(dir);
                 let files =
-                    future::block_on(query(&ctx, ListDirectory(dir))).map_err(|e| e.to_string())?;
+                    future::block_on(query(&ctx, list_directory.clone())).map_err(|e| format!("{list_directory}: {e}"))?;
                 Ok(files
                     .into_iter()
                     .map(|f| format!("{}", f.display()))
@@ -222,7 +208,7 @@ fn register_functions(
 
     tera.register_function(
         "file_type",
-        wrap_function!(move(key,) |args| {
+        wrap_function!(move() |args| {
             get_arg!(entry: as_str <- args);
             let entry = resolve_path(entry)?;
 
@@ -243,23 +229,19 @@ fn register_functions(
 
     tera.register_function(
         "run_js",
-        wrap_function!(move(key, ctx, writes) |args| {
+        wrap_function!(move(ctx, writes) |args| {
             get_arg!(file: as_str <- args);
             let file = resolve_path(file)?;
             let arg = tera_to_js_context(args, "file")?;
 
-            let output = future::block_on(query(
-                &ctx,
-                RunJs {
-                    file: file.clone(),
-                    arg: arg.clone(),
-                }
-            ))
-            .map_err(|e| {
-                let e = format!("error running {}({}):\n\t{}", file.display(), arg, e);
-                eprintln!("{e}");
-                e
-            })?;
+            let run_js = RunJs {
+                file: file.clone(),
+                arg: arg.clone(),
+            };
+            let output = future::block_on(
+                query(&ctx, run_js.clone())
+            )
+            .map_err(|e| format!("{run_js}:\n\t{e}"))?;
             {
                 writes.lock().unwrap().extend(output.writes);
             }
@@ -271,18 +253,19 @@ fn register_functions(
 
     tera.register_function(
         "run_tera",
-        wrap_function!(move(key, ctx, writes) |args| {
+        wrap_function!(move(ctx, writes) |args| {
             get_arg!(template: as_str <- args);
             let file = resolve_path(template)?;
             let arg = tera_to_js_context(args, "template")?;
 
+            let run_tera = RunTera {
+                file: file.clone(),
+                arg: arg.clone(),
+            };
             let output = future::block_on(
-                query(&ctx, RunTera {
-                    file: file.clone(),
-                    arg: arg.clone(),
-                })
+                query(&ctx, run_tera.clone())
             )
-            .map_err(|e| format!("error templating {}({}):\n\t{}", file.display(), arg, e))?;
+            .map_err(|e| format!("{run_tera}:\n\t{e}"))?;
             {
                 writes.lock().unwrap().extend(output.writes);
             };
@@ -294,7 +277,7 @@ fn register_functions(
 
     tera.register_filter(
         "store",
-        wrap_filter!(move(key, ctx) |arg, _args| {
+        wrap_filter!(move(ctx) |arg, _args| {
             let tera::Value::String(s) = arg else {
                 return Err("store must take in str".into());
             };
@@ -307,7 +290,7 @@ fn register_functions(
 
     tera.register_filter(
         "unstore",
-        wrap_filter!(move(key, ctx) |arg, _args| {
+        wrap_filter!(move(ctx) |arg, _args| {
             let tera::Value::Object(obj) = arg else {
                 return Err("unstore must take in object".into());
             };

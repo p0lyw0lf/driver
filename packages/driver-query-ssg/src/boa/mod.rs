@@ -370,9 +370,10 @@ mod driver_module {
     pub async fn read_file(path: JsPath) -> JsResult<JsObject> {
         let ctx = &get_context()?;
 
-        let object = query(ctx, ReadFile(path.0))
+        let read_file = ReadFile(path.0);
+        let object = query(ctx, read_file.clone())
             .await
-            .map_err(|e| JsNativeError::eval().with_message(format!("read_file: {e}")))?;
+            .map_err(|e| JsNativeError::eval().with_message(format!("{read_file}: {e}")))?;
 
         Ok(JsObject { object })
     }
@@ -380,9 +381,10 @@ mod driver_module {
     pub async fn list_directory(dirname: JsPath) -> JsResult<Vec<String>> {
         let ctx = &get_context()?;
 
-        let contents = query(ctx, ListDirectory(dirname.0))
+        let list_directory = ListDirectory(dirname.0);
+        let contents = query(ctx, list_directory.clone())
             .await
-            .map_err(|e| JsNativeError::eval().with_message(format!("list_directory: {e}")))?
+            .map_err(|e| JsNativeError::eval().with_message(format!("{list_directory}: {e}")))?
             .into_iter()
             .map(|entry| entry.display().to_string())
             .collect();
@@ -402,14 +404,9 @@ mod driver_module {
         let RunJsOutput {
             export: value,
             writes: outputs,
-        } = query(ctx, task).await.map_err(|e| {
-            JsNativeError::eval().with_message(format!(
-                "error running {}({}):\n\t{}",
-                filename.display(),
-                arg,
-                e
-            ))
-        })?;
+        } = query(ctx, task.clone())
+            .await
+            .map_err(|e| JsNativeError::eval().with_message(format!("{task}:\n\t{e}")))?;
 
         unsafe { push_outputs(outputs) }?;
 
@@ -428,14 +425,9 @@ mod driver_module {
         let RunTeraOutput {
             export: object,
             writes,
-        } = query(ctx, task).await.map_err(|e| {
-            JsNativeError::eval().with_message(format!(
-                "error templating {}({}):\n\t{}",
-                filename.display(),
-                arg,
-                e
-            ))
-        })?;
+        } = query(ctx, task.clone())
+            .await
+            .map_err(|e| JsNativeError::eval().with_message(format!("{task}:\n\t{e}",)))?;
 
         unsafe { push_outputs(writes) }?;
 
@@ -474,36 +466,40 @@ mod driver_module {
             .try_into()
             .map_err(|e| JsNativeError::eval().with_message(format!("parsing url: {e}")))?;
 
-        let object = query(ctx, GetUrl(Uri(uri)))
+        let get_url = GetUrl(Uri(uri));
+        let object = query(ctx, get_url.clone())
             .await
-            .map_err(|e| JsNativeError::eval().with_message(format!("fetching url: {e}")))?;
+            .map_err(|e| JsNativeError::eval().with_message(format!("{get_url}: {e}")))?;
         Ok(JsObject { object })
     }
 
     pub async fn markdown_to_html(contents: JsObject) -> JsResult<JsObject> {
         let ctx = &get_context()?;
 
-        let object = query(ctx, MarkdownToHtml(contents.object.clone()))
+        let markdown_to_html = MarkdownToHtml(contents.object.clone());
+        let object = query(ctx, markdown_to_html.clone())
             .await
-            .map_err(|e| JsNativeError::eval().with_message(format!("markdown_to_html: {e}")))?;
+            .map_err(|e| JsNativeError::eval().with_message(format!("{markdown_to_html}: {e}")))?;
         Ok(JsObject { object })
     }
 
     pub async fn minify_html(contents: JsObject) -> JsResult<JsObject> {
         let ctx = &get_context()?;
 
-        let object = query(ctx, MinifyHtml(contents.object.clone()))
+        let minify_html = MinifyHtml(contents.object.clone());
+        let object = query(ctx, minify_html.clone())
             .await
-            .map_err(|e| JsNativeError::eval().with_message(format!("minify_html: {e}")))?;
+            .map_err(|e| JsNativeError::eval().with_message(format!("{minify_html}: {e}")))?;
         Ok(JsObject { object })
     }
 
     pub async fn parse_image(object: JsObject) -> JsResult<JsImage> {
         let ctx = &get_context()?;
 
-        let image = query(ctx, ParseImage(object.object.clone()))
+        let parse_image = ParseImage(object.object.clone());
+        let image = query(ctx, parse_image.clone())
             .await
-            .map_err(|e| JsNativeError::eval().with_message(format!("parse_image: {e}")))?;
+            .map_err(|e| JsNativeError::eval().with_message(format!("{parse_image}: {e}")))?;
         Ok(JsImage { image })
     }
 
@@ -550,9 +546,9 @@ mod driver_module {
             }
         };
 
-        let image = query(ctx, convert_image)
+        let image = query(ctx, convert_image.clone())
             .await
-            .map_err(|e| JsNativeError::eval().with_message(format!("convert_image: {e}")))?;
+            .map_err(|e| JsNativeError::eval().with_message(format!("{convert_image}: {e}")))?;
         Ok(JsImage { image })
     }
 
