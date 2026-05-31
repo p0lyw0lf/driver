@@ -537,12 +537,30 @@ mod driver_module {
             } else {
                 None
             };
+            let encoder_options = if opts.has_property(js_str!("encoder_options"), js_ctx)? {
+                Some(TryFromJs::try_from_js(
+                    &opts.get(js_str!("encoder_options"), js_ctx)?,
+                    js_ctx,
+                )?)
+            } else {
+                None
+            };
+            let resize_method = if opts.has_property(js_str!("resize_method"), js_ctx)? {
+                Some(TryFromJs::try_from_js(
+                    &opts.get(js_str!("resize_method"), js_ctx)?,
+                    js_ctx,
+                )?)
+            } else {
+                None
+            };
 
             ConvertImage {
                 input: image.image.clone(),
                 format,
                 size,
                 fit,
+                encoder_options,
+                resize_method,
             }
         };
 

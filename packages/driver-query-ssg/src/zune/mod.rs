@@ -1,7 +1,8 @@
 use std::fmt::Display;
 
 use serde::{Deserialize, Serialize};
-use zune_core::{bytestream::ZCursor, options::DecoderOptions};
+use zune_core::bytestream::ZCursor;
+use zune_core::options::DecoderOptions;
 use zune_image::codecs::{
     jpeg::JpegDecoder, jpeg_xl::JxlDecoder, png::PngDecoder, webp::ZuneWebpDecoder,
 };
@@ -96,6 +97,72 @@ pub enum ImageFit {
     Cover,
 }
 
+/// Struct that sets things for [`zune_core::options::EncoderOptions`] in a serializable way.
+#[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
+pub struct EncoderOptions {
+    /// Clamped from 0-100. Interpretation differs per-codec.
+    pub quality: u8,
+    /// Interpretation differs per-codec.
+    pub effort: u8,
+    /// Whether to not preserve metadata across image transformations
+    pub strip_metadata: bool,
+}
+
+impl Default for EncoderOptions {
+    fn default() -> Self {
+        Self {
+            quality: 80,
+            effort: 4,
+            strip_metadata: true,
+        }
+    }
+}
+
+impl From<EncoderOptions> for zune_core::options::EncoderOptions {
+    fn from(value: EncoderOptions) -> Self {
+        zune_core::options::EncoderOptions::default()
+            .set_quality(value.quality)
+            .set_effort(value.effort)
+            .set_strip_metadata(value.strip_metadata)
+    }
+}
+
+/// Enum for supported [`zune_imageprocs::resize::ResizeMethod`]s
+#[derive(
+    Default, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug, Serialize, Deserialize,
+)]
+pub enum ResizeMethod {
+    /// Lanczos with a=3 (highest quality, slowest)
+    #[default]
+    Lanczos3,
+    /// Lanczos with a=2
+    Lanczos2,
+    /// Bicubic interpolation (Mitchell-Netravali, B=1/3, C=1/3)
+    Bicubic,
+    /// B-Spline (B=1, C=0)
+    BSpline,
+    /// Hermite filter (B=0, C=0)
+    Hermite,
+    /// Sinc with window radius 3
+    Sinc,
+    /// Bilinear (for completeness, 2x2 kernel)
+    Bilinear,
+}
+
+impl From<ResizeMethod> for zune_imageprocs::resize::ResizeMethod {
+    fn from(value: ResizeMethod) -> Self {
+        match value {
+            ResizeMethod::Lanczos3 => zune_imageprocs::resize::ResizeMethod::Lanczos3,
+            ResizeMethod::Lanczos2 => zune_imageprocs::resize::ResizeMethod::Lanczos2,
+            ResizeMethod::Bicubic => zune_imageprocs::resize::ResizeMethod::Bicubic,
+            ResizeMethod::BSpline => zune_imageprocs::resize::ResizeMethod::BSpline,
+            ResizeMethod::Hermite => zune_imageprocs::resize::ResizeMethod::Hermite,
+            ResizeMethod::Sinc => zune_imageprocs::resize::ResizeMethod::Sinc,
+            ResizeMethod::Bilinear => zune_imageprocs::resize::ResizeMethod::Bilinear,
+        }
+    }
+}
+
 driver_engine::key!(
     #[input=|_| false]
     struct ConvertImage {
@@ -107,6 +174,10 @@ driver_engine::key!(
         pub size: Option<ImageSize>,
         /// If None, will use ImageFit::Contain
         pub fit: Option<ImageFit>,
+        /// If None, will use Zune's defaults
+        pub encoder_options: Option<EncoderOptions>,
+        /// If None, will use Lanczos3
+        pub resize_method: Option<ResizeMethod>,
     }
 );
 
@@ -123,6 +194,31 @@ driver_engine::producer!(ConvertImage(self, ctx) -> driver_util::Result<ImageObj
     let size = self.size;
     let fit = self.fit.unwrap_or_default();
     let format = self.format.unwrap_or_default();
+
+    let (target_width, target_height) = size
+        .as_ref()
+        .map(ImageSize::as_dimensions)
+        .unwrap_or((source_width, source_height));
+    let (dest_width, dest_height) = match fit {
+        ImageFit::Fill => (target_width, target_height),
+        ImageFit::Contain => (
+            std::cmp::min(target_width, source_width * target_height / source_height),
+            std::cmp::min(target_height, source_height * target_width / source_width),
+        ),
+        ImageFit::Cover => (
+            std::cmp::max(target_width, source_width * target_height / source_height),
+            std::cmp::max(target_height, source_height * target_width / source_width),
+        ),
+    };
+
+    let changed_size = source_width != dest_width || source_height != dest_height;
+    let changed_format = input_format != format;
+    let changed_encode = self.encoder_options.is_some();
+
+    if !changed_size && !changed_format && !changed_encode {
+        // If the image didn't change, just return the original image again
+        return Ok(self.input.clone());
+    }
 
     let mut image = match input_format {
         ImageFormat::Jpeg => DecoderTrait::decode(&mut JpegDecoder::new_with_options(
@@ -143,34 +239,21 @@ driver_engine::producer!(ConvertImage(self, ctx) -> driver_util::Result<ImageObj
         panic!("corrupted image dimensions");
     }
 
-    let (target_width, target_height) = size
-        .as_ref()
-        .map(ImageSize::as_dimensions)
-        .unwrap_or((source_width, source_height));
-    let (dest_width, dest_height) = match fit {
-        ImageFit::Fill => (target_width, target_height),
-        ImageFit::Contain => (
-            std::cmp::min(target_width, source_width * target_height / source_height),
-            std::cmp::min(target_height, source_height * target_width / source_width),
-        ),
-        ImageFit::Cover => (
-            std::cmp::max(target_width, source_width * target_height / source_height),
-            std::cmp::max(target_height, source_height * target_width / source_width),
-        ),
-    };
-
-    if source_width != dest_width || source_height != dest_height {
-        // TODO: I should probably allow customizing the resize method; however, this
-        // is probably fine and seems to give the overall best results.
+    if changed_size {
         let resize_op = zune_imageprocs::resize::Resize::new(
             dest_width,
             dest_height,
-            zune_imageprocs::resize::ResizeMethod::Lanczos3,
+            self.resize_method.unwrap_or_default().into(),
         );
         resize_op.execute(&mut image)?;
     }
 
-    let object = image.write_to_vec(format.into())?;
+    let object = {
+        let mut sink = vec![];
+        let format: zune_image::codecs::ImageFormat = format.into();
+        format.encode(&image, self.encoder_options.clone().unwrap_or_default().into(), &mut sink)?;
+        sink
+    };
     let object = ctx.store(object)?;
 
     Ok(ImageObject {
@@ -231,6 +314,30 @@ impl Display for ImageObject {
     }
 }
 
+impl Display for EncoderOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{{ quality: {}, effort: {}, strip_metadata: {} }}",
+            self.quality, self.effort, self.strip_metadata
+        )
+    }
+}
+
+impl Display for ResizeMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ResizeMethod::Lanczos3 => "lanczos3",
+            ResizeMethod::Lanczos2 => "lanczos2",
+            ResizeMethod::Bicubic => "bicubic",
+            ResizeMethod::BSpline => "bspline",
+            ResizeMethod::Hermite => "hermite",
+            ResizeMethod::Sinc => "sinc",
+            ResizeMethod::Bilinear => "bilinear",
+        })
+    }
+}
+
 impl Display for ConvertImage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("convert_image(")?;
@@ -255,6 +362,14 @@ impl Display for ConvertImage {
         if let Some(fit) = self.fit.as_ref() {
             prefix(f)?;
             write!(f, "fit: \"{}\"", fit)?;
+        }
+        if let Some(encoder_options) = self.encoder_options.as_ref() {
+            prefix(f)?;
+            write!(f, "encoder_options: {}", encoder_options)?;
+        }
+        if let Some(resize_method) = self.resize_method.as_ref() {
+            prefix(f)?;
+            write!(f, "resize_method: \"{}\"", resize_method)?;
         }
 
         if had_some {
