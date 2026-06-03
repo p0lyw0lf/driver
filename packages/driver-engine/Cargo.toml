@@ -7,6 +7,7 @@ edition = "2024"
 async-tpc-executor = { path = "../async-tpc-executor", features = ["hyper"] }
 driver-db = { path = "../driver-db" }
 driver-util = { path = "../driver-util" }
+memmap2 = "0.9"
 tracing = "0.1"
 
 [dev-dependencies]

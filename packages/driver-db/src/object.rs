@@ -76,6 +76,21 @@ impl Objects {
         })
     }
 
+    pub fn load_mmap(
+        &self,
+        options: &Options,
+        object: &Object,
+    ) -> driver_util::Result<memmap2::Mmap> {
+        let filename = self.object_filename(options, object);
+        let file = std::fs::File::open(&filename)?;
+        // SAFETY: We don't do anything crazy with these files, if the user does then that's their
+        // problem.
+        // Ok but this is _actually_ unsafe tho, like "attacker can cause bad UB that crashes this
+        // process" unsafe prolly, so I _shouldn't_ just rely on this, but meh I am laze :(
+        let mmap = unsafe { memmap2::Mmap::map(&file) }?;
+        Ok(mmap)
+    }
+
     /// This will create a hardlink from the file in the object store to the specified output path
     pub fn copy(
         &self,

@@ -1,15 +1,17 @@
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::ops::Deref;
 use std::path::PathBuf;
 
-use clap::{Arg, ArgAction, Command, arg, command};
+use clap::{Arg, ArgAction, Command, arg, command, value_parser};
 use futures_lite::future;
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, Layer, fmt};
 
 use driver_query_ssg::QueryContext;
 
 mod fs;
+mod http;
 
 fn main() {
     match real_main() {
@@ -29,25 +31,35 @@ fn time<T>(message: &'static str, f: impl FnOnce() -> T) -> T {
 }
 
 fn real_main() -> driver_util::Result<()> {
-    let fmt_layer = fmt::layer()
-        .with_ansi(false)
-        .without_time()
-        .with_filter(EnvFilter::from_default_env());
-
-    tracing_subscriber::registry().with(fmt_layer).init();
+    tracing_subscriber::registry()
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| ["warn"].join(",").into()))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .without_time(),
+        )
+        .init();
 
     let _ = include_str!("../Cargo.toml");
     let matches = command!()
-        .arg(arg!(--dist <dir> "Where to output the files to. Default: ./dist"))
         .arg(arg!(--cache <dir> "Where to save the cache to. Default: ./.driver"))
         .subcommand(Command::new("run")
+            .long_about("Runs a Javascript file, writing all files it outputs")
+            .arg(arg!(--dist <dir> "Where to output the files to. Default: ./dist"))
             .arg(arg!(--"no-delete-missing" "Only adds new output files, never deletes old ones"))
-            .arg(arg!(<script> "The file to run"))
-            .arg(Arg::new("remaining").last(true).action(ArgAction::Append)))
+            .arg(arg!(<script> "The file to run").value_parser(value_parser!(PathBuf)))
+            .arg(Arg::new("remaining").last(true).action(ArgAction::Append)).long_about("These arguments are provided as an array of strings to the file being run."))
+        .subcommand(Command::new("serve")
+            .long_about("Runs an HTTP server, streaming files as responses directly")
+            .arg(arg!(-h --host <host> "The host to listen on. Default: localhost.").value_parser(value_parser!(IpAddr)))
+            .arg(arg!(-p --port <port> "The port to listen on. Default: chosen by OS.").value_parser(value_parser!(u16)))
+            .arg(arg!(<script> "The file to run").value_parser(value_parser!(PathBuf)))
+            .arg(Arg::new("remaining").last(true).action(ArgAction::Append)).long_about("\
+                The first argument provided to the script is the filename it should generate a default export for; \
+                these are appended afterwards."))
         .subcommand(Command::new("print-graph").arg(arg!(--"with-outputs" "In addition to printing each dependency key, also print each dependency output")))
         .get_matches();
 
-    let dist = PathBuf::from(matches.get_one("dist").unwrap_or(&"./dist".to_string()));
     let cache = PathBuf::from(matches.get_one("cache").unwrap_or(&"./.driver".to_string()));
     let options = driver_engine::Options::with_base_dir(&cache);
 
@@ -55,8 +67,9 @@ fn real_main() -> driver_util::Result<()> {
 
     if let Some(run_matches) = matches.subcommand_matches("run") {
         let filename = run_matches
-            .get_one::<String>("script")
+            .get_one::<PathBuf>("script")
             .expect("<script> must be provided.");
+        let dist = PathBuf::from(run_matches.get_one("dist").unwrap_or(&"./dist".to_string()));
         let write_options = fs::WriteOptions {
             output_path: dist,
             no_delete_missing: run_matches.get_flag("no-delete-missing"),
@@ -72,6 +85,28 @@ fn real_main() -> driver_util::Result<()> {
         time("wrote output", || {
             future::block_on(output.write(&root, &write_options))
         })?;
+    }
+
+    if let Some(serve_matches) = matches.subcommand_matches("serve") {
+        let filename = serve_matches
+            .get_one::<PathBuf>("script")
+            .expect("<script> must be provided.");
+
+        let bind_addr = {
+            let host = serve_matches
+                .get_one::<IpAddr>("host")
+                .unwrap_or(&IpAddr::V4(Ipv4Addr::LOCALHOST));
+            let port = serve_matches.get_one::<u16>("port").unwrap_or(&0);
+            SocketAddr::new(*host, *port)
+        };
+        let args = serve_matches
+            .get_many::<String>("remaining")
+            .unwrap_or_default()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
+
+        // TODO: file watcher that invalidates specific input queries for root
+        http::serve(bind_addr, &root, filename.clone(), args)?;
     }
 
     if let Some(print_matches) = matches.subcommand_matches("print-graph") {

@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 
+use futures_concurrency::future::TryJoin as _;
+
 use driver_engine::{Object, query};
 use driver_query_ssg::boa::{RunJs, WriteOutputs, parse_args};
 use driver_query_ssg::{QueryContext, QueryOutput};
-use futures_concurrency::future::TryJoin as _;
 
 pub struct RunOutput {
     prev: Option<WriteOutputs>,
@@ -71,12 +72,8 @@ impl RunOutput {
                     ),
                     remove(
                         base,
-                        prev.iter().filter_map(|(path, _)| {
-                            if options.no_delete_missing || self.curr.contains_key(path) {
-                                None
-                            } else {
-                                Some(path)
-                            }
+                        prev.keys().filter(|path| {
+                            !(options.no_delete_missing || self.curr.contains_key(*path))
                         }),
                     ),
                 )

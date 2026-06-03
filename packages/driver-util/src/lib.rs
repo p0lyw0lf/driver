@@ -2,6 +2,7 @@
 
 mod error;
 pub use error::Error;
+pub use error::StdError;
 pub type Result<T> = std::result::Result<T, Error>;
 
 mod serde;

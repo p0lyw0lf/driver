@@ -15,7 +15,7 @@ impl Error {
 
 impl Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        f.write_str(&self.0)
     }
 }
 
@@ -38,3 +38,23 @@ where
 
 // Can't be done, though I think that's OK?
 // impl std::error::Error for Error {}
+
+/// A wrapper type around [`Error`] that allows it to be used as an [`std::error::Error`].
+/// Not Serialize/Deserialize to discourage storing it anywhere; it SHOULD only be used for
+/// reporting.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StdError(Error);
+
+impl From<Error> for StdError {
+    fn from(value: Error) -> Self {
+        Self(value)
+    }
+}
+
+impl Display for StdError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.0, f)
+    }
+}
+
+impl std::error::Error for StdError {}

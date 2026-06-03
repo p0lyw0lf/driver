@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::{fmt::Debug, hash::Hash};
 
+use memmap2::Mmap;
 use tracing::{info, trace};
 
 use async_tpc_executor::Executor;
@@ -63,6 +64,11 @@ impl<Key: ProducerBase> Context<Key> {
         let bytes = self.load_bytes(object)?;
         let string = String::from_utf8(bytes)?;
         Ok(string)
+    }
+
+    /// Loads the given object as an [`Mmap`]
+    pub fn load_mmap(&self, object: &Object) -> driver_util::Result<Mmap> {
+        self.db().objects.load_mmap(self.options(), object)
     }
 }
 

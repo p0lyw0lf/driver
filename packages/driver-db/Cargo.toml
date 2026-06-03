@@ -10,6 +10,7 @@ generic-array = { version = "0.14", features = ["serde"] }
 http-body-util = "0.1"
 hyper = { version = "1.9", features = ["client", "http1"] }
 jiff = { version = "0.2", features = ["serde"] }
+memmap2 = "0.9"
 oneshot = { version = "0.2", features = ["async"] }
 postcard = { version = "1.1", features = ["use-std"] }
 scc = "3.6"
