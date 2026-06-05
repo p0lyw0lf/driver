@@ -107,6 +107,26 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Core<Key, Output> {
         Some(deps.get().iter().map(Clone::clone).collect())
     }
 
+    /// MUST be run outside an async context, with effectively an exclusive reference.
+    pub fn remove_keys_matching_prefixes(&self, prefixes: &[&String]) {
+        let mut keys_to_remove = vec![];
+
+        let mut entry = self.cache.begin_sync();
+        while let Some(e) = entry {
+            let key = e.key();
+            let key_str = key.to_string();
+            if prefixes.iter().any(|prefix| key_str.starts_with(*prefix)) {
+                keys_to_remove.push(key.clone());
+            }
+            entry = e.next_sync();
+        }
+
+        for key in keys_to_remove {
+            self.cache.remove_sync(&key);
+            self.dep_graph.remove_sync(&key);
+        }
+    }
+
     /// Running this acquires a lock on the given entry, meaning the current task will suspend
     /// until the entry is unlocked by the task that currently has it acquired. This is necessary
     /// for us to run each query exactly once per revision, otherwise we could be running the same

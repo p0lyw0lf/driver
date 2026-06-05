@@ -58,6 +58,10 @@ fn real_main() -> driver_util::Result<()> {
                 The first argument provided to the script is the filename it should generate a default export for; \
                 these are appended afterwards."))
         .subcommand(Command::new("print-graph").arg(arg!(--"with-outputs" "In addition to printing each dependency key, also print each dependency output")))
+        .subcommand(Command::new("forget").long_about("\
+            Allows for manual, targetted \"forgetting\" of certain query keys. \
+            Used to help test changes in the binary.")
+            .arg(arg!(--key <prefix> "A string prefix of all keys to delete from the database").action(ArgAction::Append)))
         .get_matches();
 
     let cache = PathBuf::from(matches.get_one("cache").unwrap_or(&"./.driver".to_string()));
@@ -115,6 +119,15 @@ fn real_main() -> driver_util::Result<()> {
         } else {
             println!("{}", root.db().display_dep_graph());
         }
+    }
+
+    if let Some(forget_matches) = matches.subcommand_matches("forget") {
+        let prefixes: Vec<&String> = forget_matches
+            .get_many("key")
+            .map(|keys| keys.collect())
+            .unwrap_or_default();
+
+        root.db().remove_keys_matching_prefixes(&prefixes);
     }
 
     time("saved database", || root.destroy_root())?;
