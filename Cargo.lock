@@ -2444,7 +2444,6 @@ name = "driver-db"
 version = "0.1.0"
 dependencies = [
  "driver-util",
- "generic-array",
  "http-body-util",
  "hyper",
  "jiff",
@@ -2527,8 +2526,10 @@ dependencies = [
 name = "driver-util"
 version = "0.1.0"
 dependencies = [
+ "generic-array",
  "scc",
  "serde",
+ "sha2",
 ]
 
 [[package]]

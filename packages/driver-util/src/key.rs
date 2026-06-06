@@ -14,6 +14,7 @@ pub trait Key:
     + Display
     + serde::Serialize
     + for<'de> serde::Deserialize<'de>
+    + crate::ObjectTrace
 {
     /// Returns whether a given key is an "input" or not. Being an input key has a special
     /// connotation: input keys are assumed to not have any dependencies, and are instead _only_
@@ -30,7 +31,7 @@ pub trait Key:
 /// Example:
 ///
 /// ```rust
-/// use driver_util::{key, Key as _};
+/// use driver_util::{key, Key as _, no_objects};
 ///
 /// key!(#[input=|_| true] struct Foo;);
 /// key!(#[input=|_| false] struct Bar(i32););
@@ -49,16 +50,19 @@ pub trait Key:
 /// assert_eq!(Qux::Baz(Baz { x: 6, y: 9 }).is_input(), false);
 /// assert_eq!(Qux::Baz(Baz { x: 7, y: 7 }).is_input(), true);
 ///
+/// no_objects!(Foo);
 /// impl std::fmt::Display for Foo {
 ///     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 ///         f.write_str("Foo")
 ///     }
 /// }
+/// no_objects!(Bar);
 /// impl std::fmt::Display for Bar {
 ///     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 ///         write!(f, "Bar({})", self.0)
 ///     }
 /// }
+/// no_objects!(Baz);
 /// impl std::fmt::Display for Baz {
 ///     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 ///         write!(f, "Baz {{ x: {}, y: {} }}", self.x, self.y)
@@ -119,6 +123,14 @@ macro_rules! key {
             }
         }
 
+        impl $crate::ObjectTrace for $name {
+            fn trace(&self) -> impl Iterator<Item = &'_ $crate::Object> {
+                match self { $(
+                    Self::$key(x) => Box::new(x.trace()) as Box<dyn Iterator<Item = &'_ $crate::Object>>,
+                )* }
+            }
+        }
+
         impl std::fmt::Display for $name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 match self { $(
@@ -127,6 +139,18 @@ macro_rules! key {
                 // Just in case the enum is empty
                 #[allow(unreachable_code)]
                 Ok(())
+            }
+        }
+    };
+}
+
+/// Generates a default implementation of [`crate::ObjectTrace`] for the given type.
+#[macro_export]
+macro_rules! no_objects {
+    ($ty:ty) => {
+        impl $crate::ObjectTrace for $ty {
+            fn trace(&self) -> impl Iterator<Item = &'_ $crate::Object> {
+                std::iter::empty()
             }
         }
     };

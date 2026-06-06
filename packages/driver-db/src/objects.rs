@@ -1,10 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
 
 use crate::Options;
-use driver_util::SerializedMap;
+use driver_util::{Object, SerializedMap};
 
 /// A store for all strings/blobs that would otherwise be too large to persist to disk multiple
 /// times. "Uniquely" keyed by the hashes of the strings/blobs it stores.
@@ -13,27 +12,15 @@ pub struct Objects {
     cache: SerializedMap<Object, Vec<u8>>,
 }
 
-type Hash = sha2::digest::Output<sha2::Sha256>;
-
-/// Newtype for a hash that represents it's an object in the store.
-#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct Object(Hash);
-
-impl Object {
-    /// # Safety
-    /// This function MUST only be used for constructing objects from those saved to disk.
-    pub unsafe fn from_hash(hash: Hash) -> Self {
-        Self(hash)
-    }
-}
-
 impl Objects {
     pub fn new() -> Self {
         Self::default()
     }
 
     pub fn store(&self, options: &Options, contents: Vec<u8>) -> driver_util::Result<Object> {
-        let object = Object(sha2::Sha256::digest(&contents[..]));
+        let hash = sha2::Sha256::digest(&contents[..]);
+        // SAFETY: we just calculated the hash
+        let object = unsafe { Object::from_hash(hash) };
         // SAFETY: we just calculated the hash
         unsafe { self.store_raw(options, object.clone(), contents)? };
         Ok(object)
@@ -108,19 +95,5 @@ impl Objects {
 
     fn object_filename(&self, options: &Options, object: &Object) -> PathBuf {
         options.objects_path.join(format!("{:?}", object))
-    }
-}
-
-impl std::fmt::Display for Object {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Format as lowercase hex
-        write!(f, "objects/{:x}", self.0)
-    }
-}
-
-impl std::fmt::Debug for Object {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Format as lowercase hex, without the objects/ prefix
-        write!(f, "{:x}", self.0)
     }
 }

@@ -11,5 +11,9 @@ pub use serde::SerializedMap;
 mod key;
 pub use key::Key;
 
+mod object;
+pub use object::Object;
+pub use object::ObjectTrace;
+
 mod output;
 pub use output::Output;
