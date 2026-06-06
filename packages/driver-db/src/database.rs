@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fmt::Display;
 use std::hash::Hash;
 use std::io::Read;
@@ -105,26 +105,6 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Core<Key, Output> {
     pub async fn dependencies(&self, parent: &Key) -> Option<Vec<Key>> {
         let deps = self.dep_graph.get_async(parent).await?;
         Some(deps.get().iter().map(Clone::clone).collect())
-    }
-
-    /// MUST be run outside an async context, with effectively an exclusive reference.
-    pub fn remove_keys_matching_prefixes(&self, prefixes: &[&String]) {
-        let mut keys_to_remove = vec![];
-
-        let mut entry = self.cache.begin_sync();
-        while let Some(e) = entry {
-            let key = e.key();
-            let key_str = key.to_string();
-            if prefixes.iter().any(|prefix| key_str.starts_with(*prefix)) {
-                keys_to_remove.push(key.clone());
-            }
-            entry = e.next_sync();
-        }
-
-        for key in keys_to_remove {
-            self.cache.remove_sync(&key);
-            self.dep_graph.remove_sync(&key);
-        }
     }
 
     /// Running this acquires a lock on the given entry, meaning the current task will suspend
@@ -357,15 +337,54 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Database<Key, Output> {
             objects,
         }
     }
+}
 
-    /// Intentionally creates an empty database. Meant for testing, you should probably be using
-    /// `Database::restore()` instead.
-    pub fn empty() -> Self {
-        Self {
-            core: Default::default(),
-            remotes: Default::default(),
-            objects: Objects::new(),
+/// Implementation of functions that MUST be run outside an async context, with effectively an
+/// exclusive reference. Sorry for not enforcing this in the types better...
+impl<Key: driver_util::Key, Output: driver_util::Output> Database<Key, Output> {
+    pub fn clear(&self) {
+        self.cache.clear_sync();
+        self.dep_graph.clear_sync();
+    }
+
+    pub fn remove_keys_matching_prefixes(&self, prefixes: &[&String]) {
+        let mut keys_to_remove = vec![];
+
+        let mut entry = self.cache.begin_sync();
+        while let Some(e) = entry {
+            let key = e.key();
+            let key_str = key.to_string();
+            if prefixes.iter().any(|prefix| key_str.starts_with(*prefix)) {
+                keys_to_remove.push(key.clone());
+            }
+            entry = e.next_sync();
         }
+
+        self.cache
+            .retain_sync(|key, _| !keys_to_remove.contains(key));
+        self.dep_graph
+            .retain_sync(|key, _| !keys_to_remove.contains(key));
+    }
+
+    pub fn clear_remote(&self) {
+        self.remotes.clear();
+    }
+
+    /// Removes all keys that don't have a parent; this corresponds to the "roots" of the graph that
+    /// could possibly used to produce output.
+    pub fn remove_root_keys(&self) {
+        let mut keys_to_keep = HashSet::new();
+
+        let mut entry = self.dep_graph.begin_sync();
+        while let Some(e) = entry {
+            let deps = e.get();
+            keys_to_keep.extend(deps.iter().cloned());
+            entry = e.next_sync();
+        }
+
+        self.cache.retain_sync(|key, _| keys_to_keep.contains(key));
+        self.dep_graph
+            .retain_sync(|key, _| keys_to_keep.contains(key));
     }
 
     pub fn display_dep_graph(&self) -> impl Display + '_ {
@@ -441,6 +460,19 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Database<Key, Output> {
             }
         }
 
-        GraphAndOutputDisplayer(&self.core)
+        GraphAndOutputDisplayer(self)
+    }
+}
+
+/// Testing utility functions
+impl<Key: driver_util::Key, Output: driver_util::Output> Database<Key, Output> {
+    /// Intentionally creates an empty database. Meant for testing, you should probably be using
+    /// [`Database::restore()`] instead.
+    pub fn empty() -> Self {
+        Self {
+            core: Default::default(),
+            remotes: Default::default(),
+            objects: Objects::new(),
+        }
     }
 }

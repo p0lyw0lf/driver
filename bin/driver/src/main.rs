@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::ops::Deref;
 use std::path::PathBuf;
 
@@ -42,30 +42,35 @@ fn real_main() -> driver_util::Result<()> {
 
     let _ = include_str!("../Cargo.toml");
     let matches = command!()
-        .arg(arg!(--cache <dir> "Where to save the cache to. Default: ./.driver"))
+        .arg(arg!(--cache <dir> "Where to save the cache.").value_parser(value_parser!(PathBuf)).default_value("./.driver"))
         .subcommand(Command::new("run")
             .long_about("Runs a Javascript file, writing all files it outputs")
-            .arg(arg!(--dist <dir> "Where to output the files to. Default: ./dist"))
+            .arg(arg!(--dist <dir> "Where to output the files.").value_parser(value_parser!(PathBuf)).default_value("./dist"))
             .arg(arg!(--"no-delete-missing" "Only adds new output files, never deletes old ones"))
             .arg(arg!(<script> "The file to run").value_parser(value_parser!(PathBuf)))
             .arg(Arg::new("remaining").last(true).action(ArgAction::Append)).long_about("These arguments are provided as an array of strings to the file being run."))
         .subcommand(Command::new("serve")
             .long_about("Runs an HTTP server, streaming files as responses directly")
-            .arg(arg!(-h --host <host> "The host to listen on. Default: localhost.").value_parser(value_parser!(IpAddr)))
-            .arg(arg!(-p --port <port> "The port to listen on. Default: chosen by OS.").value_parser(value_parser!(u16)))
+            .arg(arg!(-h --host <host> "The host to listen on.").value_parser(value_parser!(IpAddr)).default_value("127.0.0.1"))
+            .arg(arg!(-p --port <port> "The port to listen on. Default chosen by OS.").value_parser(value_parser!(u16)).default_value("0"))
             .arg(arg!(<script> "The file to run").value_parser(value_parser!(PathBuf)))
             .arg(Arg::new("remaining").last(true).action(ArgAction::Append)).long_about("\
                 The first argument provided to the script is the filename it should generate a default export for; \
                 these are appended afterwards."))
         .subcommand(Command::new("print-graph").arg(arg!(--"with-outputs" "In addition to printing each dependency key, also print each dependency output")))
-        .subcommand(Command::new("forget").long_about("\
-            Allows for manual, targetted \"forgetting\" of certain query keys. \
-            Used to help test changes in the binary.")
-            .arg(arg!(--key <prefix> "A string prefix of all keys to delete from the database").action(ArgAction::Append)))
+        .subcommand(Command::new("clean").about("Allows for cleaning the database and object store.")
+            .arg(arg!(--key <prefix> "Removes all keys starting with the given prefix from the database").action(ArgAction::Append))
+            .arg(arg!(--db "Cleans the entire database"))
+            .arg(arg!(--remotes "Cleans the remote cache"))
+            .arg(arg!(--dist [dir] "Cleans the output directory.").value_parser(value_parser!(PathBuf)).default_value("./dist"))
+            .arg(arg!(--gc "Keeps only objects in the object store that are referenced in either the db or remote cache"))
+        )
         .get_matches();
 
-    let cache = PathBuf::from(matches.get_one("cache").unwrap_or(&"./.driver".to_string()));
-    let options = driver_engine::Options::with_base_dir(&cache);
+    let cache = matches
+        .get_one::<PathBuf>("cache")
+        .expect("--cache must be provided");
+    let options = driver_engine::Options::with_base_dir(cache);
 
     let root = time("restored database", || QueryContext::create_root(options));
 
@@ -73,9 +78,11 @@ fn real_main() -> driver_util::Result<()> {
         let filename = run_matches
             .get_one::<PathBuf>("script")
             .expect("<script> must be provided.");
-        let dist = PathBuf::from(run_matches.get_one("dist").unwrap_or(&"./dist".to_string()));
+        let dist = run_matches
+            .get_one::<PathBuf>("dist")
+            .expect("--dist must be provided");
         let write_options = fs::WriteOptions {
-            output_path: dist,
+            output_path: dist.clone(),
             no_delete_missing: run_matches.get_flag("no-delete-missing"),
         };
         let args = run_matches
@@ -99,8 +106,10 @@ fn real_main() -> driver_util::Result<()> {
         let bind_addr = {
             let host = serve_matches
                 .get_one::<IpAddr>("host")
-                .unwrap_or(&IpAddr::V4(Ipv4Addr::LOCALHOST));
-            let port = serve_matches.get_one::<u16>("port").unwrap_or(&0);
+                .expect("--host must be provided");
+            let port = serve_matches
+                .get_one::<u16>("port")
+                .expect("--port must be provided");
             SocketAddr::new(*host, *port)
         };
         let args = serve_matches
@@ -121,13 +130,31 @@ fn real_main() -> driver_util::Result<()> {
         }
     }
 
-    if let Some(forget_matches) = matches.subcommand_matches("forget") {
-        let prefixes: Vec<&String> = forget_matches
-            .get_many("key")
-            .map(|keys| keys.collect())
-            .unwrap_or_default();
+    if let Some(forget_matches) = matches.subcommand_matches("clean") {
+        if forget_matches.get_flag("db") {
+            // Delete entire database
+            root.db().clear();
+        } else if let Some(prefixes) = forget_matches.get_many::<String>("key") {
+            let prefixes: Vec<&String> = prefixes.collect();
+            root.db().remove_keys_matching_prefixes(&prefixes);
+        }
 
-        root.db().remove_keys_matching_prefixes(&prefixes);
+        if forget_matches.get_flag("remotes") {
+            // Delete remote cache
+            root.db().clear_remote();
+        }
+
+        if let Some(dist) = forget_matches.get_one::<PathBuf>("dist") {
+            // Delete all keys with no parents (keys that we ran at the top level & produced output
+            // from) from the database.
+            root.db().remove_root_keys();
+            // Then, actually delete the output directory.
+            std::fs::remove_dir_all(dist)?;
+        }
+
+        if forget_matches.get_flag("gc") {
+            // TODO: gc algorithm
+        }
     }
 
     time("saved database", || root.destroy_root())?;
