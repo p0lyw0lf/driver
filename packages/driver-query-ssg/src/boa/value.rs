@@ -124,14 +124,14 @@ impl std::fmt::Display for JsValue {
             }
             JsValue::Store(store_object) => std::fmt::Display::fmt(&store_object.object, f),
             JsValue::Object(btree_map) => {
-                f.write_str("{{")?;
+                f.write_str("{")?;
                 for (i, (k, v)) in btree_map.iter().enumerate() {
                     if i > 0 {
                         f.write_str(", ")?;
                     }
                     write!(f, "\"{}\": {}", k, v)?;
                 }
-                f.write_str("}}")?;
+                f.write_str("}")?;
                 Ok(())
             }
         }

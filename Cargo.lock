@@ -2508,6 +2508,7 @@ dependencies = [
  "driver-util",
  "futures-concurrency",
  "futures-lite",
+ "kamadak-exif",
  "katex-rs",
  "minify-html",
  "relative-path",
@@ -6381,6 +6382,7 @@ version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "915f2f441a4fe4a113839e6e0832c91516f09137f6421b3ce834d3db3ff1b067"
 dependencies = [
+ "kamadak-exif",
  "moxcms",
  "zune-core",
  "zune-image",

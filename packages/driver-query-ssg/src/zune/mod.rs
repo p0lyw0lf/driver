@@ -10,6 +10,9 @@ use zune_image::traits::{DecoderTrait, OperationsTrait};
 
 use driver_engine::Object;
 
+mod auto_orient;
+mod rotate;
+
 #[derive(
     Default, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug, Serialize, Deserialize,
 )]
@@ -69,6 +72,14 @@ driver_engine::producer!(ParseImage(self, ctx) -> driver_util::Result<ImageObjec
     };
 
     let (width, height) = metadata.dimensions();
+    let (width, height) = if
+        let Some(data) = metadata.exif() &&
+        let Some(orientation) = auto_orient::Orientation::parse_from_exif(data) &&
+        orientation.swaps_dims() {
+        (height, width)
+    } else {
+        (width, height)
+    };
 
     Ok(ImageObject {
         object,
@@ -221,10 +232,12 @@ driver_engine::producer!(ConvertImage(self, ctx) -> driver_util::Result<ImageObj
     }
 
     let mut image = match input_format {
-        ImageFormat::Jpeg => DecoderTrait::decode(&mut JpegDecoder::new_with_options(
-            input_contents,
-            decoder_options,
-        ))?,
+        ImageFormat::Jpeg => {
+            DecoderTrait::decode(&mut JpegDecoder::new_with_options(
+                input_contents,
+                decoder_options,
+            ))?
+        },
         ImageFormat::Jxl => {
             DecoderTrait::decode(&mut JxlDecoder::try_new(input_contents, decoder_options)?)?
         }
@@ -234,6 +247,10 @@ driver_engine::producer!(ConvertImage(self, ctx) -> driver_util::Result<ImageObj
         ))?,
         ImageFormat::Webp => DecoderTrait::decode(&mut ZuneWebpDecoder::new(input_contents)?)?,
     };
+
+    // Always auto-orient images; there seems to be some problems writing to image formats not
+    // containing exif metadata unless we do this.
+    auto_orient::AutoOrient.execute(&mut image)?;
 
     if image.dimensions() != (source_width, source_height) {
         panic!("corrupted image dimensions");
@@ -342,7 +359,7 @@ impl Display for ConvertImage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("convert_image(")?;
         Display::fmt(&self.input, f)?;
-        f.write_str(", {{")?;
+        f.write_str(", {")?;
 
         let mut had_some = false;
         let mut prefix = |f: &mut std::fmt::Formatter<'_>| {
@@ -375,6 +392,6 @@ impl Display for ConvertImage {
         if had_some {
             f.write_str(" ")?;
         }
-        f.write_str("}})")
+        f.write_str("})")
     }
 }
