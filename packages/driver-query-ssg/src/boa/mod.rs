@@ -600,6 +600,7 @@ driver_engine::key!(
         pub arg: JsValue,
     }
 );
+driver_engine::object_trace!(RunJs => { arg });
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(Default))]
@@ -607,6 +608,10 @@ pub struct RunJsOutput {
     pub export: JsValue,
     pub writes: WriteOutputs,
 }
+driver_engine::object_trace!(RunJsOutput => {
+    export,
+    writes,
+});
 
 driver_engine::producer!(RunJs(self, ctx) as (crate::QueryKey) -> driver_util::Result<RunJsOutput> {
     println!("{}", self);

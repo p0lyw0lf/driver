@@ -115,7 +115,7 @@ macro_rules! key {
         impl $crate::Key for $name {
             fn is_input(&self) -> bool {
                 match self { $(
-                    Self::$key(x) => return x.is_input(),
+                    Self::$key(x) => return $crate::Key::is_input(x),
                 )* };
                 // Just in case the enum is empty
                 #[allow(unreachable_code)]
@@ -126,7 +126,7 @@ macro_rules! key {
         impl $crate::ObjectTrace for $name {
             fn trace(&self) -> impl Iterator<Item = &'_ $crate::Object> {
                 match self { $(
-                    Self::$key(x) => Box::new(x.trace()) as Box<dyn Iterator<Item = &'_ $crate::Object>>,
+                    Self::$key(x) => Box::new($crate::ObjectTrace::trace(x)) as Box<dyn Iterator<Item = &'_ $crate::Object>>,
                 )* }
             }
         }
@@ -151,6 +151,32 @@ macro_rules! no_objects {
         impl $crate::ObjectTrace for $ty {
             fn trace(&self) -> impl Iterator<Item = &'_ $crate::Object> {
                 std::iter::empty()
+            }
+        }
+    };
+}
+
+/// Generates an implementation of [`crate::ObjectTrace`] that recurs into the given fields for the
+/// type.
+#[macro_export]
+macro_rules! object_trace {
+    ($ty:ty => { $($field:ident),* $(,)? }) => {
+        impl $crate::ObjectTrace for $ty {
+            fn trace(&self) -> impl Iterator<Item = &'_ $crate::Object> {
+                std::iter::empty()
+                $(
+                    .chain($crate::ObjectTrace::trace(&self.$field))
+                )*
+            }
+        }
+    };
+    ($ty:ty => ( $($idx:tt),* $(,)? )) => {
+        impl $crate::ObjectTrace for $ty {
+            fn trace(&self) -> impl Iterator<Item = &'_ $crate::Object> {
+                std::iter::empty()
+                $(
+                    .chain($crate::ObjectTrace::trace(&self.$idx))
+                )*
             }
         }
     };

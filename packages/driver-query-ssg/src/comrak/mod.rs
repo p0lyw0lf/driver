@@ -4,6 +4,7 @@ driver_engine::key!(
     #[input=|_| false]
     struct MarkdownToHtml(pub Object);
 );
+driver_engine::object_trace!(MarkdownToHtml => (0));
 
 struct Options {
     comrak_options: comrak::Options<'static>,

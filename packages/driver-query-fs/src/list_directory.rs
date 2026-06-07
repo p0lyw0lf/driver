@@ -4,6 +4,7 @@ driver_engine::key!(
     #[input=|_| true]
     struct ListDirectory(pub PathBuf);
 );
+driver_engine::no_objects!(ListDirectory);
 
 driver_engine::producer!(ListDirectory(self, ctx) -> driver_util::Result<Vec<PathBuf>> {
     // TODO: make this async? Unclear if worth it, investigate later

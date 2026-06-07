@@ -4,6 +4,7 @@ driver_engine::key!(
     #[input=|_| true]
     struct GetUrl(pub Uri);
 );
+driver_engine::no_objects!(GetUrl);
 
 driver_engine::producer!(GetUrl(self, ctx) -> driver_util::Result<Object> {
     ctx.fetch(self.0.clone()).await

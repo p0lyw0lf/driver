@@ -4,6 +4,7 @@ driver_engine::key!(
     #[input=|_| false]
     struct MinifyHtml(pub Object);
 );
+driver_engine::object_trace!(MinifyHtml => (0));
 
 driver_engine::producer!(MinifyHtml(self, ctx) -> driver_util::Result<Object> {
     let contents = ctx.load_string(&self.0)?;

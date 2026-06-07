@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::no_objects;
+
 type Hash = sha2::digest::Output<sha2::Sha256>;
 
 /// Newtype for a hash that represents it's an object in the store.
@@ -66,3 +68,26 @@ where
         }
     }
 }
+
+impl<T> ObjectTrace for Vec<T>
+where
+    T: ObjectTrace,
+{
+    fn trace(&self) -> impl Iterator<Item = &'_ Object> {
+        self.iter().flat_map(|t| t.trace())
+    }
+}
+
+impl<K, V> ObjectTrace for std::collections::BTreeMap<K, V>
+where
+    K: ObjectTrace,
+    V: ObjectTrace,
+{
+    fn trace(&self) -> impl Iterator<Item = &'_ Object> {
+        self.iter().flat_map(|(k, v)| k.trace().chain(v.trace()))
+    }
+}
+
+// TODO: expand this list as needed
+no_objects!(String);
+no_objects!(std::path::PathBuf);

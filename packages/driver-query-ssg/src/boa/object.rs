@@ -26,6 +26,7 @@ pub struct JsObject {
     #[unsafe_ignore_trace]
     pub object: Object,
 }
+driver_engine::object_trace!(JsObject => { object });
 
 impl JsObject {
     /// # Safety

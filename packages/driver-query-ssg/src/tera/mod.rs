@@ -21,12 +21,17 @@ driver_engine::key!(
         pub arg: JsValue,
     }
 );
+driver_engine::object_trace!(RunTera => { arg });
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunTeraOutput {
     pub export: Object,
     pub writes: WriteOutputs,
 }
+driver_engine::object_trace!(RunTeraOutput => {
+    export,
+    writes,
+});
 
 driver_engine::producer!(RunTera(self, ctx) as (crate::QueryKey) -> driver_util::Result<RunTeraOutput> {
     println!("run_tera(\"{}\", {})", self.file.display(), self.arg);
@@ -371,6 +376,9 @@ fn js_to_tera_value(value: &JsValue) -> tera::Result<tera::Value> {
                 tera::to_value(s.object.clone())?,
             );
             tera::Value::Object(map)
+        }
+        JsValue::Image(_) => {
+            todo!("support passing image objects to tera")
         }
     })
 }

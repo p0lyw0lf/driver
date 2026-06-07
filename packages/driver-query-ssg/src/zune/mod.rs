@@ -45,11 +45,13 @@ pub struct ImageObject {
     pub format: ImageFormat,
     pub size: ImageSize,
 }
+driver_engine::object_trace!(ImageObject => { object });
 
 driver_engine::key!(
     #[input=|_| false]
     struct ParseImage(pub Object);
 );
+driver_engine::object_trace!(ParseImage => (0));
 
 driver_engine::producer!(ParseImage(self, ctx) -> driver_util::Result<ImageObject> {
     let contents = ZCursor::new(ctx.load_bytes(&self.0)?);
@@ -191,6 +193,7 @@ driver_engine::key!(
         pub resize_method: Option<ResizeMethod>,
     }
 );
+driver_engine::object_trace!(ConvertImage => { input });
 
 driver_engine::producer!(ConvertImage(self, ctx) -> driver_util::Result<ImageObject> {
     // NOTE: I know that reading this into memory only to read it into more memory is wasteful,

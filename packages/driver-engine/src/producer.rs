@@ -90,6 +90,14 @@ macro_rules! query {
             $key(<$key as $crate::ProducerBase>::Output),
         )* }
 
+        impl $crate::ObjectTrace for $output {
+            fn trace(&self) -> impl Iterator<Item = &'_ $crate::Object> {
+                match self { $(
+                    Self::$key(output) => Box::new($crate::ObjectTrace::trace(output)) as Box<dyn Iterator<Item = &'_ $crate::Object>>,
+                )* }
+            }
+        }
+
         impl $crate::ProducerBase for $name {
             type Output = $output;
         }

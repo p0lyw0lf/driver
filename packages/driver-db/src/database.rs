@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Objects, Options, RemoteObjects};
+use crate::{Object, Objects, Options, RemoteObjects};
 use driver_util::SerializedMap;
 
 /// Tracks the range [changed_at, verified_at], to confirm the value is corresponds to is the same
@@ -385,6 +385,16 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Database<Key, Output> {
         self.cache.retain_sync(|key, _| keys_to_keep.contains(key));
         self.dep_graph
             .retain_sync(|key, _| keys_to_keep.contains(key));
+    }
+
+    /// Removes all [`Object`]s that aren't referenced from the local or remote caches.
+    pub fn garbage_collect(&self) {}
+
+    /// Finds all [`Objects`]s that are referenced in the local and remote caches.
+    fn collect_objects(&self) -> Vec<Object> {
+        let mut objects = vec![];
+
+        objects
     }
 
     pub fn display_dep_graph(&self) -> impl Display + '_ {

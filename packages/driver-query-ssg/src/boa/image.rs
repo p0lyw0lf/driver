@@ -153,6 +153,7 @@ pub struct JsImage {
     #[unsafe_ignore_trace]
     pub image: ImageObject,
 }
+driver_engine::object_trace!(JsImage => { image });
 
 class_wrap!(class JsImage {
     length 0,
