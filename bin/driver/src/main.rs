@@ -153,7 +153,7 @@ fn real_main() -> driver_util::Result<()> {
         }
 
         if forget_matches.get_flag("gc") {
-            // TODO: gc algorithm
+            root.db().garbage_collect(root.options())?;
         }
     }
 

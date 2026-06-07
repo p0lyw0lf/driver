@@ -388,10 +388,10 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Database<Key, Output> {
     }
 
     /// Removes all [`Object`]s that aren't referenced from the local or remote caches.
-    pub fn garbage_collect(&self, options: &Options) {
+    pub fn garbage_collect(&self, options: &Options) -> driver_util::Result<()> {
         let objects = self.collect_objects();
         self.objects
-            .retain(options, |object| objects.contains(object));
+            .retain(options, |object| objects.contains(object))
     }
 
     /// Finds all [`Objects`]s that are referenced in the local and remote caches.

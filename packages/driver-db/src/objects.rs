@@ -99,11 +99,29 @@ impl Objects {
 
     /// MUST be called with the equivalent of an exclusive reference. Sorry the types don't work
     /// out...
-    pub(crate) fn retain(&self, options: &Options, f: impl Fn(&Object) -> bool) {
+    /// TODO: make this async probably? For faster deletion.
+    pub(crate) fn retain(
+        &self,
+        options: &Options,
+        f: impl Fn(&Object) -> bool,
+    ) -> driver_util::Result<()> {
         self.cache.clear_sync();
 
         // Read from the filesystem to get a list of all possible objects
+        for file in std::fs::read_dir(&options.objects_path)? {
+            let file = file?;
+            let path = file.path();
+            let hash = path.file_name().expect("object didn't have filename?");
+            let hash: [u8; 32] = hex::FromHex::from_hex(hash.as_encoded_bytes())?;
+            // SAFETY: Object was read from filesystem
+            let object = unsafe { Object::from_hash(hash.into()) };
 
-        todo!()
+            if !f(&object) {
+                // Delete the object
+                std::fs::remove_file(path)?;
+            }
+        }
+
+        Ok(())
     }
 }

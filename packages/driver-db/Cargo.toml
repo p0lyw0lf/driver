@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 driver-util = { path = "../driver-util" }
 smol-hyper-client = { path = "../smol-hyper-client" }
+hex = "0.4"
 http-body-util = "0.1"
 hyper = { version = "1.9", features = ["client", "http1"] }
 jiff = { version = "0.2", features = ["serde"] }
