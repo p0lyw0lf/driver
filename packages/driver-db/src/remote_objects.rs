@@ -26,7 +26,7 @@ fn default_client() -> MyClient {
 pub struct RemoteObjects {
     #[serde(skip, default = "default_client")]
     client: MyClient,
-    cache: SerializedMap<Uri, RemoteObject>,
+    pub(crate) cache: SerializedMap<Uri, RemoteObject>,
 }
 
 impl Default for RemoteObjects {
@@ -66,10 +66,6 @@ impl RemoteObject {
 }
 
 impl RemoteObjects {
-    pub fn clear(&self) {
-        self.cache.clear_sync();
-    }
-
     /// Fetches a remote URL and adds it to the local store if not present or too stale.
     /// If the URL is present in the cache and still fresh, uses that instead of fetching.
     pub async fn fetch<E>(

@@ -304,6 +304,26 @@ fn register_functions(tera: &mut Tera, ctx: &QueryContext, writes: Arc<Mutex<Wri
             Ok(tera::Value::String(output))
         }),
     );
+
+    tera.register_function(
+        "zip",
+        wrap_function!(move() |args| {
+            get_arg!(fst: as_array <- args);
+            get_arg!(snd: as_array <- args);
+
+            #[derive(Clone, Debug, Serialize, Deserialize)]
+            struct Tuple {
+                fst: tera::Value,
+                snd: tera::Value,
+            }
+
+            let output = fst.iter().cloned()
+                .zip(snd.iter().cloned())
+                .map(|(fst, snd)| serde_json::json!(Tuple { fst, snd }))
+                .collect();
+            Ok(tera::Value::Array(output))
+        }),
+    );
 }
 
 /// Resolves a path to normalized relative to the cwd

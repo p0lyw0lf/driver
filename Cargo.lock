@@ -2513,6 +2513,7 @@ dependencies = [
  "relative-path",
  "scc",
  "serde",
+ "serde_json",
  "slug",
  "tera",
  "tracing",

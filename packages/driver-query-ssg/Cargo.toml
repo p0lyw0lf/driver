@@ -21,6 +21,7 @@ minify-html = "0.18"
 relative-path = "2.0"
 scc = "3.6"
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 slug = "0.1"
 tera = "1"
 tracing = "0.1"

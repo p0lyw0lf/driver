@@ -96,4 +96,14 @@ impl Objects {
     fn object_filename(&self, options: &Options, object: &Object) -> PathBuf {
         options.objects_path.join(format!("{:?}", object))
     }
+
+    /// MUST be called with the equivalent of an exclusive reference. Sorry the types don't work
+    /// out...
+    pub(crate) fn retain(&self, options: &Options, f: impl Fn(&Object) -> bool) {
+        self.cache.clear_sync();
+
+        // Read from the filesystem to get a list of all possible objects
+
+        todo!()
+    }
 }

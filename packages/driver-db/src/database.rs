@@ -367,7 +367,7 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Database<Key, Output> {
     }
 
     pub fn clear_remote(&self) {
-        self.remotes.clear();
+        self.remotes.cache.clear_sync();
     }
 
     /// Removes all keys that don't have a parent; this corresponds to the "roots" of the graph that
@@ -388,11 +388,35 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Database<Key, Output> {
     }
 
     /// Removes all [`Object`]s that aren't referenced from the local or remote caches.
-    pub fn garbage_collect(&self) {}
+    pub fn garbage_collect(&self, options: &Options) {
+        let objects = self.collect_objects();
+        self.objects
+            .retain(options, |object| objects.contains(object));
+    }
 
     /// Finds all [`Objects`]s that are referenced in the local and remote caches.
-    fn collect_objects(&self) -> Vec<Object> {
-        let mut objects = vec![];
+    fn collect_objects(&self) -> HashSet<Object> {
+        let mut objects = HashSet::new();
+
+        self.cache.iter_sync(|key, value| {
+            objects.extend(key.trace().cloned());
+            objects.extend(
+                match value {
+                    LogicalValue::Materialized(value) => &value.value,
+                    LogicalValue::Computing(_) => {
+                        panic!("should not be computing {key}")
+                    }
+                }
+                .trace()
+                .cloned(),
+            );
+            true
+        });
+
+        self.remotes.cache.iter_sync(|_key, value| {
+            objects.insert(value.object.clone());
+            true
+        });
 
         objects
     }
