@@ -1,7 +1,12 @@
 [package]
 name = "async-task-local"
-version = "0.1.0"
+description = "A standard-library-only implementation of async task locals"
+repository = "https://github.com/p0lyw0lf/driver"
+license = "MIT"
+version = "1.0.0"
 edition = "2024"
+keywords = ["async", "await", "future"]
+categories = ["asynchronous"]
 
 [dependencies]
 
