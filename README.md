@@ -33,13 +33,15 @@ website, on my personal laptop.
 
 ## How?
 
-See [my website](https://github.com/p0lyw0lf/website) for an example of what
-using this engine looks like. Sorry the docs are kinda non-existent otherwise
-at the moment, but hey I wrote this project just for me really.
+See my [website](https://github.com/p0lyw0lf/website) for an example of what
+using this engine looks like, and [website-template](https://github.com/p0lyw0lf/website-template)
+for a bit more of an opinionated example Sorry the docs are kinda sparse at the
+moment, but hey I wrote this project just for me really.
 
 ## Read More
 
 I've posted about this a few times on my blog:
 
-- 2026-02-23: [So I've Been Thinking About Static Site Generators](https://wolfgirl.dev/blog/2026-02-23-so-ive-been-thinking-about-static-site-generators/)
+- 2026-06-16: [Async Task Locals From Scratch](https://wolfgirl.dev/blog/2026-06-16-async-task-locals-from-scratch/)
 - 2026-04-13: [NEW BLOG ENGINE WORKING!!](https://wolfgirl.dev/blog/2026-04-13-new-blog-engine-working-/)
+- 2026-02-23: [So I've Been Thinking About Static Site Generators](https://wolfgirl.dev/blog/2026-02-23-so-ive-been-thinking-about-static-site-generators/)
