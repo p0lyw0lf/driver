@@ -1,77 +1,183 @@
-use wasmtime::component::{Accessor, HasData, Resource, bindgen};
+use driver_util::Object;
+use wasmtime::component::{Accessor, HasSelf, Resource, bindgen};
 
 bindgen!({
     world: "guest",
 });
 use polywolf::driver::boundary::*;
 
-struct State;
-struct Environment;
+use super::value::{InlineValue, OutlineValue};
+use crate::QueryContext;
 
-impl HasData for Environment {
-    type Data<'a> = &'a mut State;
+struct State {
+    ctx: QueryContext,
+    blobs: Vec<Object>,
+    values: Vec<OutlineValue>,
 }
 
-impl HostBlob for Environment {
+impl State {
+    fn mk_blob(&mut self, blob: Object) -> Resource<Blob> {
+        self.blobs.push(blob);
+        let idx = self.blobs.len() - 1;
+        Resource::new_own(idx.try_into().expect("too many blobs"))
+    }
+
+    fn blob(&self, this: Resource<Blob>) -> &Object {
+        let idx = this.rep();
+        &self.blobs[idx as usize]
+    }
+
+    fn mk_value(&mut self, value: OutlineValue) -> Resource<Value> {
+        self.values.push(value);
+        let idx = self.values.len() - 1;
+        Resource::new_own(idx.try_into().expect("too many values"))
+    }
+
+    fn value(&self, this: Resource<Value>) -> &OutlineValue {
+        let idx = this.rep();
+        &self.values[idx as usize]
+    }
+
+    fn to_inline_value(&self, value: &OutlineValue) -> InlineValue {
+        match value {
+            OutlineValue::Null => InlineValue::Null,
+            OutlineValue::Bool(b) => InlineValue::Bool(*b),
+            OutlineValue::Int(i) => InlineValue::Int(*i),
+            OutlineValue::String(s) => InlineValue::String(s.clone()),
+            OutlineValue::Array(arr) => InlineValue::Array(
+                arr.iter()
+                    .map(|value| self.to_inline_value(self.value(value.clone().into())))
+                    .collect(),
+            ),
+            OutlineValue::Object(obj) => InlineValue::Object(
+                obj.iter()
+                    .map(|(key, value)| {
+                        (
+                            key.clone(),
+                            self.to_inline_value(self.value(value.clone().into())),
+                        )
+                    })
+                    .collect(),
+            ),
+            OutlineValue::Blob(blob) => InlineValue::Blob(blob.clone()),
+        }
+    }
+}
+
+impl HostBlob for State {
     fn store(&mut self, bytes: Vec<u8>) -> Resource<Blob> {
-        todo!()
+        let object = self.ctx.store(bytes).expect("storing blob");
+        self.mk_blob(object)
     }
 
     fn store_string(&mut self, s: String) -> Resource<Blob> {
-        todo!()
+        self.store(s.into_bytes())
     }
 
-    fn unstore(&mut self, this: Resource<Blob>) -> Vec<u8> {
-        todo!()
+    fn load(&mut self, this: Resource<Blob>) -> Vec<u8> {
+        let object = self.blob(this);
+        self.ctx.load_bytes(object).expect("loading blob")
     }
 
-    fn unstore_string(&mut self, this: Resource<Blob>) -> String {
-        todo!()
+    fn load_string(&mut self, this: Resource<Blob>) -> String {
+        let object = self.blob(this);
+        self.ctx
+            .load_string(object)
+            .expect("loading blob as string")
     }
 
     fn hash(&mut self, this: Resource<Blob>) -> String {
-        todo!()
+        let idx = this.rep();
+        let object = &self.blobs[idx as usize];
+        object.to_string()
     }
 
-    fn drop(&mut self, rep: Resource<Blob>) -> wasmtime::Result<()> {
-        todo!()
+    fn drop(&mut self, _this: Resource<Blob>) -> wasmtime::Result<()> {
+        // TODO-someday: compaction if the arena is ever really too large. I expect it won't be.
+        Ok(())
     }
 }
 
-impl HostValue for Environment {
+impl HostValue for State {
     fn kind(&mut self, this: Resource<Value>) -> ValueKind {
-        todo!()
+        let value = self.value(this);
+        match value {
+            OutlineValue::Null => ValueKind::Null,
+            OutlineValue::Bool(_) => ValueKind::Boolean,
+            OutlineValue::Int(_) => ValueKind::Int,
+            OutlineValue::String(_) => ValueKind::Str,
+            OutlineValue::Array(_) => ValueKind::Array,
+            OutlineValue::Object(_) => ValueKind::Object,
+            OutlineValue::Blob(_) => ValueKind::Blob,
+        }
     }
 
     fn as_boolean(&mut self, this: Resource<Value>) -> Option<bool> {
-        todo!()
+        let value = self.value(this);
+        match value {
+            OutlineValue::Bool(b) => Some(*b),
+            _ => None,
+        }
     }
 
     fn as_int(&mut self, this: Resource<Value>) -> Option<i32> {
-        todo!()
+        let value = self.value(this);
+        match value {
+            OutlineValue::Int(i) => Some(*i),
+            _ => None,
+        }
     }
 
     fn as_str(&mut self, this: Resource<Value>) -> Option<String> {
-        todo!()
+        let value = self.value(this);
+        match value {
+            OutlineValue::String(s) => Some(s.clone()),
+            _ => None,
+        }
     }
 
     fn as_array(&mut self, this: Resource<Value>) -> Option<Vec<Resource<Value>>> {
-        todo!()
+        let value = self.value(this);
+        match value {
+            OutlineValue::Array(arr) => {
+                Some(arr.iter().map(|value| value.clone().into()).collect())
+            }
+            _ => None,
+        }
     }
 
     fn as_object(&mut self, this: Resource<Value>) -> Option<Vec<(String, Resource<Value>)>> {
-        todo!()
+        let value = self.value(this);
+        match value {
+            OutlineValue::Object(obj) => Some(
+                obj.iter()
+                    .map(|(key, value)| (key.clone(), value.clone().into()))
+                    .collect(),
+            ),
+            _ => None,
+        }
     }
 
     fn as_blob(&mut self, this: Resource<Value>) -> Option<Resource<Blob>> {
-        todo!()
+        let value = self.value(this);
+        match value {
+            OutlineValue::Blob(blob) => Some(self.mk_blob(blob.clone())),
+            _ => None,
+        }
     }
 
-    fn drop(&mut self, rep: Resource<Value>) -> wasmtime::Result<()> {
+    fn drop(&mut self, _this: Resource<Value>) -> wasmtime::Result<()> {
+        // TODO-someday: compaction
+        Ok(())
+    }
+
+    fn of_null(&mut self) -> Resource<Value> {
+        let value = OutlineValue::Null;
         todo!()
     }
 
     fn of_boolean(&mut self, b: bool) -> Resource<Value> {
+        let value = OutlineValue::Bool(b);
         todo!()
     }
 
@@ -96,7 +202,7 @@ impl HostValue for Environment {
     }
 }
 
-impl Host for Environment {
+impl Host for State {
     fn print(&mut self, text: String) -> () {
         todo!()
     }
@@ -110,7 +216,7 @@ impl Host for Environment {
     }
 }
 
-impl<T> HostWithStore<T> for Environment {
+impl<T> HostWithStore<T> for HasSelf<State> {
     async fn read_file(accessor: &Accessor<T, Self>, path: Path) -> Result<Resource<Blob>, Error> {
         todo!()
     }

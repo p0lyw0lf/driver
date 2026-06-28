@@ -1,27 +1,4 @@
-use std::collections::BTreeMap;
 use std::ops::Deref;
-
-use boa_engine::value::TryIntoJs;
-use boa_engine::{Context, JsResult, value::TryFromJs};
-use boa_engine::{JsError, JsNativeError};
-use serde::{Deserialize, Serialize};
-
-use crate::boa::{JsImage, JsObject};
-
-/// All the simple javascript values that can be serialized/deserialized losslessly
-#[derive(Default, Hash, PartialEq, Eq, PartialOrd, Ord, Debug, Clone, Serialize, Deserialize)]
-pub enum JsValue {
-    #[default]
-    Undefined,
-    Null,
-    Bool(bool),
-    Int(i32),
-    String(String),
-    Array(Vec<JsValue>),
-    Object(BTreeMap<String, JsValue>),
-    Store(JsObject),
-    Image(JsImage),
-}
 
 impl TryFromJs for JsValue {
     fn try_from_js(value: &boa_engine::JsValue, js_ctx: &mut Context) -> JsResult<Self> {
@@ -102,62 +79,6 @@ impl TryIntoJs for JsValue {
                 }
                 Ok(object.into())
             }
-        }
-    }
-}
-
-impl std::fmt::Display for JsValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            JsValue::Undefined => f.write_str("undefined"),
-            JsValue::Null => f.write_str("null"),
-            JsValue::Bool(b) => f.write_str(if *b { "true" } else { "false" }),
-            JsValue::Int(i) => std::fmt::Display::fmt(i, f),
-            JsValue::String(s) => write!(f, "\"{}\"", s),
-            JsValue::Array(vs) => {
-                f.write_str("[")?;
-                for (i, v) in vs.iter().enumerate() {
-                    if i > 0 {
-                        f.write_str(", ")?;
-                    }
-                    std::fmt::Display::fmt(v, f)?;
-                }
-                f.write_str("]")?;
-                Ok(())
-            }
-            JsValue::Store(store_object) => std::fmt::Display::fmt(&store_object.object, f),
-            JsValue::Image(image) => std::fmt::Display::fmt(&image.image, f),
-            JsValue::Object(btree_map) => {
-                f.write_str("{")?;
-                for (i, (k, v)) in btree_map.iter().enumerate() {
-                    if i > 0 {
-                        f.write_str(", ")?;
-                    }
-                    write!(f, "\"{}\": {}", k, v)?;
-                }
-                f.write_str("}")?;
-                Ok(())
-            }
-        }
-    }
-}
-
-impl driver_util::ObjectTrace for JsValue {
-    fn trace(&self) -> impl Iterator<Item = &'_ driver_util::Object> {
-        fn mk_box<'a, T: 'a>(i: impl Iterator<Item = T> + 'a) -> Box<dyn Iterator<Item = T> + 'a> {
-            Box::new(i) as Box<dyn Iterator<Item = T> + 'a>
-        }
-
-        match self {
-            JsValue::Undefined => mk_box(std::iter::empty()),
-            JsValue::Null => mk_box(std::iter::empty()),
-            JsValue::Bool(_) => mk_box(std::iter::empty()),
-            JsValue::Int(_) => mk_box(std::iter::empty()),
-            JsValue::String(_) => mk_box(std::iter::empty()),
-            JsValue::Array(js_values) => mk_box(js_values.trace()),
-            JsValue::Object(btree_map) => mk_box(btree_map.trace()),
-            JsValue::Store(js_object) => mk_box(js_object.trace()),
-            JsValue::Image(js_image) => mk_box(js_image.trace()),
         }
     }
 }

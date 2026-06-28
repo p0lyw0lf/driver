@@ -4,8 +4,8 @@ interface boundary {
   resource blob {
     store: static func(bytes: list<u8>) -> blob;
     store-string: static func(s: string) -> blob;
-    unstore: func() -> list<u8>;
-    unstore-string: func() -> string;
+    load: func() -> list<u8>;
+    load-string: func() -> string;
 
     hash: func() -> string;
   }
@@ -31,6 +31,7 @@ interface boundary {
     as-object: func() -> option<list<tuple<string, value>>>;
     as-blob: func() -> option<blob>;
 
+    of-null: static func() -> value;
     of-boolean: static func(b: bool) -> value;
     of-int: static func(i: s32) -> value;
     of-str: static func(s: string) -> value;

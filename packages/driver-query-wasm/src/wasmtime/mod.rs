@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use driver_engine::Object;
 
 mod host;
+mod value;
 
 /// Turns command-line arguments into a javascript-compatible list.
 /// TODO: better types than `&str`.
