@@ -7,7 +7,7 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-use driver_query_ssg::QueryContext;
+use driver_query_wasm::QueryContext;
 
 mod fs;
 

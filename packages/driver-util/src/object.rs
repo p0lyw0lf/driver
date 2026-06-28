@@ -89,5 +89,6 @@ where
 }
 
 // TODO: expand this list as needed
+no_objects!(());
 no_objects!(String);
 no_objects!(std::path::PathBuf);

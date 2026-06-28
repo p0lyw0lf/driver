@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use futures_concurrency::future::TryJoin as _;
 
 use driver_engine::{Object, query};
-use driver_query_ssg::boa::{RunJs, WriteOutputs, parse_args};
-use driver_query_ssg::{QueryContext, QueryOutput};
+use driver_query_wasm::wasmtime::{RunWasm, WriteOutputs, parse_args};
+use driver_query_wasm::{QueryContext, QueryOutput};
 
 pub struct RunOutput {
     prev: Option<WriteOutputs>,
@@ -16,15 +16,16 @@ pub async fn run<'a>(
     file: PathBuf,
     args: impl IntoIterator<Item = &'a str>,
 ) -> driver_util::Result<RunOutput> {
-    let key = RunJs {
+    let key = RunWasm {
         file,
+        num: 0,
         arg: parse_args(args),
     };
     // SAFETY: we are the one place this function is allowed to be called.
     let prev = match root.db().get_value(&key.clone().into()) {
         None => None,
-        Some(QueryOutput::RunJs(Ok(v))) => Some(v.writes),
-        Some(QueryOutput::RunJs(Err(e))) => return Err(e),
+        Some(QueryOutput::RunWasm(Ok(v))) => Some(v.writes),
+        Some(QueryOutput::RunWasm(Err(e))) => return Err(e),
         Some(other) => {
             return Err(driver_util::Error::new(&format!(
                 "expected RunJs, got {other:?}"

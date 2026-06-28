@@ -532,6 +532,13 @@ dependencies = [
 [[package]]
 name = "driver-query-wasm"
 version = "0.1.0"
+dependencies = [
+ "driver-engine",
+ "driver-query-fs",
+ "driver-query-hyper",
+ "driver-util",
+ "serde",
+]
 
 [[package]]
 name = "driver-util"

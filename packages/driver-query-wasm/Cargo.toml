@@ -4,3 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+driver-engine = { path = "../driver-engine" }
+driver-query-fs = { path = "../driver-query-fs" }
+driver-query-hyper = { path = "../driver-query-hyper" }
+driver-util = { path = "../driver-util" }
+serde = { version = "1.0", features = ["derive"] }
