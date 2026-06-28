@@ -1,0 +1,49 @@
+package polywolf:driver;
+
+interface boundary {
+  resource blob {
+    store: static func(bytes: list<u8>) -> blob;
+    store-string: static func(s: string) -> blob;
+    unstore: func() -> list<u8>;
+    unstore-string: func() -> string;
+
+    hash: func() -> string;
+  }
+
+  variant value {
+    undefined,
+    null,
+    bool(bool),
+    int(s32),
+    string(string),
+    array(list<value>),
+    object(list<tuple<string, value>>),
+    blob(blob),
+  }
+
+  type error = string;
+  type path = string;
+
+  print: func(text: string);
+  slugify: func(s: string) -> string;
+
+  read-file: async func(path: path) -> result<blob, error>;
+  list-directory: async func(path: path) -> result<list<path>, error>;
+  file-type: async func(path: path) -> result<string, error>;
+
+  get-url: async func(url: string) -> result<blob, error>;
+
+  run: async func(wasm: path, func: u8, arg: value) -> result<value, error>;
+
+  write-output: func(path: path, contents: blob) -> option<error>;
+}
+
+world guest {
+  import host;
+
+  export main: async func(func: u8, arg: value) -> result<value, error>;
+}
+
+world host {
+  export boundary;
+}

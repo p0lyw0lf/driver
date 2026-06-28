@@ -7,9 +7,16 @@ members = [
   "packages/driver-engine",
   "packages/driver-query-fs",
   "packages/driver-query-hyper",
-  "packages/driver-query-ssg",
+  "packages/driver-query-wasm",
   "packages/driver-util",
+  # "packages/driver-wasm-api",
   "packages/smol-hyper-client",
 
   "bin/driver",
+
+  # "bin/wasm/boa",
+  # "bin/wasm/comrak",
+  # "bin/wasm/minify_html",
+  # "bin/wasm/tera",
+  # "bin/wasm/zune",
 ]

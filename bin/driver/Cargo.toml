@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 driver-engine = { path = "../../packages/driver-engine" }
-driver-query-ssg = { path = "../../packages/driver-query-ssg" }
+driver-query-wasm = { path = "../../packages/driver-query-wasm" }
 driver-util = { path = "../../packages/driver-util" }
 clap = { version = "4.5", features = ["cargo"] }
 futures-concurrency = "7.7"
