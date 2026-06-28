@@ -99,6 +99,12 @@ impl From<OutlineRef> for Resource<super::host::Value> {
     }
 }
 
+impl From<Resource<super::host::Value>> for OutlineRef {
+    fn from(value: Resource<super::host::Value>) -> Self {
+        Self(value)
+    }
+}
+
 impl PartialEq for OutlineRef {
     fn eq(&self, _other: &Self) -> bool {
         panic!("MUST NOT compare outline values")

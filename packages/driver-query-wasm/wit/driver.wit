@@ -37,7 +37,7 @@ interface boundary {
     of-str: static func(s: string) -> value;
     of-array: static func(arr: list<value>) -> value;
     of-object: static func(obj: list<tuple<string, value>>) -> value;
-    of-blob: func(b: blob) -> value;
+    of-blob: static func(b: blob) -> value;
   }
 
   type error = string;

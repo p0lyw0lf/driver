@@ -98,6 +98,7 @@ impl HostBlob for State {
     }
 }
 
+/// This is all just glue code. I might want to stuff it elsewhere just b/c it's so boring.
 impl HostValue for State {
     fn kind(&mut self, this: Resource<Value>) -> ValueKind {
         let value = self.value(this);
@@ -172,43 +173,47 @@ impl HostValue for State {
     }
 
     fn of_null(&mut self) -> Resource<Value> {
-        let value = OutlineValue::Null;
-        todo!()
+        self.mk_value(OutlineValue::Null)
     }
 
     fn of_boolean(&mut self, b: bool) -> Resource<Value> {
-        let value = OutlineValue::Bool(b);
-        todo!()
+        self.mk_value(OutlineValue::Bool(b))
     }
 
     fn of_int(&mut self, i: i32) -> Resource<Value> {
-        todo!()
+        self.mk_value(OutlineValue::Int(i))
     }
 
     fn of_str(&mut self, s: String) -> Resource<Value> {
-        todo!()
+        self.mk_value(OutlineValue::String(s))
     }
 
     fn of_array(&mut self, arr: Vec<Resource<Value>>) -> Resource<Value> {
-        todo!()
+        self.mk_value(OutlineValue::Array(
+            arr.into_iter().map(|value| value.into()).collect(),
+        ))
     }
 
     fn of_object(&mut self, obj: Vec<(String, Resource<Value>)>) -> Resource<Value> {
-        todo!()
+        self.mk_value(OutlineValue::Object(
+            obj.into_iter()
+                .map(|(key, value)| (key, value.into()))
+                .collect(),
+        ))
     }
 
-    fn of_blob(&mut self, this: Resource<Value>, b: Resource<Blob>) -> Resource<Value> {
-        todo!()
+    fn of_blob(&mut self, b: Resource<Blob>) -> Resource<Value> {
+        self.mk_value(OutlineValue::Blob(self.blob(b).clone()))
     }
 }
 
 impl Host for State {
-    fn print(&mut self, text: String) -> () {
-        todo!()
+    fn print(&mut self, text: String) {
+        println!("{}", text);
     }
 
     fn slugify(&mut self, s: String) -> String {
-        todo!()
+        slug::slugify(s)
     }
 
     fn write_output(&mut self, path: Path, contents: Resource<Blob>) -> Option<Error> {
