@@ -1,4 +1,3 @@
-use std::net::{IpAddr, SocketAddr};
 use std::ops::Deref;
 use std::path::PathBuf;
 
@@ -11,7 +10,6 @@ use tracing_subscriber::util::SubscriberInitExt;
 use driver_query_ssg::QueryContext;
 
 mod fs;
-mod http;
 
 fn main() {
     match real_main() {
@@ -49,14 +47,6 @@ fn real_main() -> driver_util::Result<()> {
             .arg(arg!(--"no-delete-missing" "Only adds new output files, never deletes old ones"))
             .arg(arg!(<script> "The file to run").value_parser(value_parser!(PathBuf)))
             .arg(Arg::new("remaining").last(true).action(ArgAction::Append)).long_about("These arguments are provided as an array of strings to the file being run."))
-        .subcommand(Command::new("serve")
-            .long_about("Runs an HTTP server, streaming files as responses directly")
-            .arg(arg!(-h --host <host> "The host to listen on.").value_parser(value_parser!(IpAddr)).default_value("127.0.0.1"))
-            .arg(arg!(-p --port <port> "The port to listen on. Default chosen by OS.").value_parser(value_parser!(u16)).default_value("0"))
-            .arg(arg!(<script> "The file to run").value_parser(value_parser!(PathBuf)))
-            .arg(Arg::new("remaining").last(true).action(ArgAction::Append)).long_about("\
-                The first argument provided to the script is the filename it should generate a default export for; \
-                these are appended afterwards."))
         .subcommand(Command::new("print-graph").arg(arg!(--"with-outputs" "In addition to printing each dependency key, also print each dependency output")))
         .subcommand(Command::new("clean").about("Allows for cleaning the database and object store.")
             .arg(arg!(--key <prefix> "Removes all keys starting with the given prefix from the database").action(ArgAction::Append))
@@ -96,30 +86,6 @@ fn real_main() -> driver_util::Result<()> {
         time("wrote output", || {
             future::block_on(output.write(&root, &write_options))
         })?;
-    }
-
-    if let Some(serve_matches) = matches.subcommand_matches("serve") {
-        let filename = serve_matches
-            .get_one::<PathBuf>("script")
-            .expect("<script> must be provided.");
-
-        let bind_addr = {
-            let host = serve_matches
-                .get_one::<IpAddr>("host")
-                .expect("--host must be provided");
-            let port = serve_matches
-                .get_one::<u16>("port")
-                .expect("--port must be provided");
-            SocketAddr::new(*host, *port)
-        };
-        let args = serve_matches
-            .get_many::<String>("remaining")
-            .unwrap_or_default()
-            .map(|s| s.to_string())
-            .collect::<Vec<_>>();
-
-        // TODO: file watcher that invalidates specific input queries for root
-        http::serve(bind_addr, &root, filename.clone(), args)?;
     }
 
     if let Some(print_matches) = matches.subcommand_matches("print-graph") {
