@@ -9,3 +9,35 @@ driver-query-fs = { path = "../driver-query-fs" }
 driver-query-hyper = { path = "../driver-query-hyper" }
 driver-util = { path = "../driver-util" }
 serde = { version = "1.0", features = ["derive"] }
+
+[dependencies.wasmtime]
+version = "46"
+default-features = false
+features = [
+  # 'anyhow',
+  'async',
+  'backtrace',
+  'cache',
+  'gc',
+  'gc-copying',
+  # 'gc-drc',
+  # 'gc-null',
+  'wat',
+  # 'profiling',
+  # 'parallel-compilation',
+  'cranelift',
+  'pooling-allocator',
+  'demangle',
+  'addr2line',
+  'coredump',
+  'debug-builtins',
+  'runtime',
+  'component-model',
+  'component-model-async',
+  # 'threads',
+  'stack-switching',
+  'std',
+  # 'debug',
+  # 'compile-time-builtins',
+  'wit-parser',
+]

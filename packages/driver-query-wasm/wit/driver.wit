@@ -1,0 +1,68 @@
+package polywolf:driver;
+
+interface boundary {
+  resource blob {
+    store: static func(bytes: list<u8>) -> blob;
+    store-string: static func(s: string) -> blob;
+    unstore: func() -> list<u8>;
+    unstore-string: func() -> string;
+
+    hash: func() -> string;
+  }
+
+  enum value-kind {
+    null,
+    boolean,
+    int,
+    str,
+    array,
+    object,
+    blob,
+  }
+
+  /// WIT can't have recursive types, so we need to parameterize manually.
+  resource value {
+    kind: func() -> value-kind;
+
+    as-boolean: func() -> option<bool>;
+    as-int: func() -> option<s32>;
+    as-str: func() -> option<string>;
+    as-array: func() -> option<list<value>>;
+    as-object: func() -> option<list<tuple<string, value>>>;
+    as-blob: func() -> option<blob>;
+
+    of-boolean: static func(b: bool) -> value;
+    of-int: static func(i: s32) -> value;
+    of-str: static func(s: string) -> value;
+    of-array: static func(arr: list<value>) -> value;
+    of-object: static func(obj: list<tuple<string, value>>) -> value;
+    of-blob: func(b: blob) -> value;
+  }
+
+  type error = string;
+  type path = string;
+
+  print: func(text: string);
+  slugify: func(s: string) -> string;
+
+  read-file: async func(path: path) -> result<blob, error>;
+  list-directory: async func(path: path) -> result<list<path>, error>;
+  file-type: async func(path: path) -> result<string, error>;
+
+  get-url: async func(url: string) -> result<blob, error>;
+
+  run: async func(wasm: path, num: u8, arg: value) -> result<value, error>;
+
+  write-output: func(path: path, contents: blob) -> option<error>;
+}
+
+world guest {
+  import boundary;
+  use boundary.{value, error};
+
+  export main: async func(num: u8, arg: value) -> result<value, error>;
+}
+
+world host {
+  export boundary;
+}

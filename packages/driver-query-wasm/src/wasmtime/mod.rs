@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use driver_engine::Object;
 
+mod host;
+
 /// Turns command-line arguments into a javascript-compatible list.
 /// TODO: better types than `&str`.
 pub fn parse_args<'a>(iter: impl IntoIterator<Item = &'a str>) -> () {
