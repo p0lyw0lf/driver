@@ -3,12 +3,13 @@ use std::path::{Path, PathBuf};
 use futures_concurrency::future::TryJoin as _;
 
 use driver_engine::{Blob, query};
-use driver_query_ssg::boa::{RunJs, WriteOutputs, parse_args};
+use driver_query_ssg::boa::{RunJs, parse_args};
 use driver_query_ssg::{QueryContext, QueryOutput};
+use driver_util::WriteOutput;
 
 pub struct RunOutput {
-    prev: Option<WriteOutputs>,
-    curr: WriteOutputs,
+    prev: Option<WriteOutput>,
+    curr: WriteOutput,
 }
 
 pub async fn run<'a>(

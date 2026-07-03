@@ -10,9 +10,10 @@ use tera::Tera;
 
 use driver_engine::{Blob, query};
 use driver_query_fs::{ListDirectory, ReadFile};
+use driver_util::WriteOutput;
 
 use crate::QueryContext;
-use crate::boa::{JsBlob, JsValue, RunJs, WriteOutputs};
+use crate::boa::{JsBlob, JsValue, RunJs};
 
 driver_engine::key!(
     #[input=|_| false]
@@ -26,7 +27,7 @@ driver_engine::blob_trace!(RunTera => { arg });
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunTeraOutput {
     pub export: driver_util::Result<Blob>,
-    pub writes: WriteOutputs,
+    pub writes: WriteOutput,
 }
 driver_engine::blob_trace!(RunTeraOutput => {
     export,
@@ -106,7 +107,7 @@ fn render_tera_async(
 }
 
 fn render_tera(ctx: &QueryContext, input: &Blob, file: &Path, arg: &JsValue) -> RunTeraOutput {
-    let writes = Arc::new(Mutex::new(WriteOutputs::new()));
+    let writes = Arc::new(Mutex::new(WriteOutput::default()));
 
     let export = (|| -> driver_util::Result<_> {
         let input = ctx.load_string(input)?;
@@ -157,7 +158,7 @@ macro_rules! get_arg {
     };
 }
 
-fn register_functions(tera: &mut Tera, ctx: &QueryContext, writes: Arc<Mutex<WriteOutputs>>) {
+fn register_functions(tera: &mut Tera, ctx: &QueryContext, writes: Arc<Mutex<WriteOutput>>) {
     macro_rules! wrap_function {
         (move ($($i:ident),*) |$args:ident| $body:tt) => {{
             $(
@@ -246,7 +247,7 @@ fn register_functions(tera: &mut Tera, ctx: &QueryContext, writes: Arc<Mutex<Wri
                 query(&ctx, run_js.clone())
             );
             {
-                writes.lock().unwrap().extend(output.writes);
+                writes.lock().unwrap().merge(output.writes);
             }
             let output = js_to_tera_value(
                 &output.export
@@ -270,7 +271,7 @@ fn register_functions(tera: &mut Tera, ctx: &QueryContext, writes: Arc<Mutex<Wri
             };
             let output = future::block_on(query(&ctx, run_tera.clone()));
             {
-                writes.lock().unwrap().extend(output.writes);
+                writes.lock().unwrap().merge(output.writes);
             };
             let output = js_to_tera_value(&JsValue::Store(JsBlob {
                 blob: output.export.map_err(|e| format!("{run_tera}:\n\t{e}"))?,

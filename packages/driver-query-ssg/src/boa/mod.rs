@@ -22,8 +22,9 @@ use serde::Deserialize;
 use serde::Serialize;
 use tracing::trace;
 
-use driver_engine::{Blob, query};
+use driver_engine::query;
 use driver_query_fs::ReadFile;
+use driver_util::WriteOutput;
 
 use crate::QueryContext;
 
@@ -45,11 +46,9 @@ pub fn parse_args<'a>(iter: impl IntoIterator<Item = &'a str>) -> JsValue {
     )
 }
 
-pub type WriteOutputs = BTreeMap<PathBuf, Blob>;
-
 struct ContextFrame {
     ctx: QueryContext,
-    outputs: WriteOutputs,
+    outputs: WriteOutput,
 }
 
 async_task_local::task_local! {
@@ -62,7 +61,7 @@ async_task_local::task_local! {
 async fn with_query_context<T, F: Future<Output = driver_util::Result<T>>>(
     ctx: QueryContext,
     f: impl FnOnce() -> F,
-) -> (driver_util::Result<T>, WriteOutputs) {
+) -> (driver_util::Result<T>, WriteOutput) {
     let fut = QUERY_CONTEXT.scope(
         ContextFrame {
             ctx,
@@ -89,11 +88,11 @@ fn get_context() -> JsResult<QueryContext> {
 }
 
 /// SAFETY: only safe to call when running inside `with_query_context()`
-unsafe fn push_outputs(outputs: impl IntoIterator<Item = (PathBuf, Blob)>) -> JsResult<()> {
+unsafe fn with_outputs(f: impl FnOnce(&mut WriteOutput)) -> JsResult<()> {
     QUERY_CONTEXT.with_mut(|ctx| -> JsResult<()> {
         let ctx = ctx
             .ok_or_else(|| JsNativeError::eval().with_message("pushed outputs without context"))?;
-        ctx.outputs.extend(outputs);
+        f(&mut ctx.outputs);
         Ok(())
     })
 }
@@ -402,14 +401,11 @@ mod driver_module {
             arg: arg.clone(),
         };
 
-        let RunJsOutput {
-            export: value,
-            writes: outputs,
-        } = query(ctx, task.clone()).await;
+        let RunJsOutput { export, writes } = query(ctx, task.clone()).await;
 
-        unsafe { push_outputs(outputs) }?;
+        unsafe { with_outputs(|outputs| outputs.merge(writes)) }?;
 
-        value.map_err(|e| {
+        export.map_err(|e| {
             JsNativeError::eval()
                 .with_message(format!("{task}:\n\t{e}"))
                 .into()
@@ -427,7 +423,7 @@ mod driver_module {
 
         let RunTeraOutput { export, writes } = query(ctx, task.clone()).await;
 
-        unsafe { push_outputs(writes) }?;
+        unsafe { with_outputs(|outputs| outputs.merge(writes)) }?;
 
         Ok(JsValue::Store(JsBlob {
             blob: export
@@ -583,12 +579,14 @@ mod driver_module {
                 .into());
         }
         unsafe {
-            super::push_outputs([(
-                path,
-                // SAFETY: being provided a StoreObject always means we've put it in the store
-                // already
-                contents.blob.clone(),
-            )])?
+            super::with_outputs(|outputs| {
+                outputs.push(
+                    path,
+                    // SAFETY: being provided a StoreObject always means we've put it in the store
+                    // already
+                    contents.blob.clone(),
+                )
+            })?
         };
         Ok(())
     }
@@ -606,7 +604,7 @@ driver_engine::blob_trace!(RunJs => { arg });
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunJsOutput {
     pub export: driver_util::Result<JsValue>,
-    pub writes: WriteOutputs,
+    pub writes: WriteOutput,
 }
 driver_engine::blob_trace!(RunJsOutput => {
     export,

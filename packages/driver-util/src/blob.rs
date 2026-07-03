@@ -19,14 +19,21 @@ impl Blob {
 impl std::fmt::Display for Blob {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Format as lowercase hex
-        write!(f, "objects/{:x}", self.0)
+        f.write_str("objects/")?;
+        f.write_str(&hex::encode(self.0))
     }
 }
 
 impl std::fmt::Debug for Blob {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Format as lowercase hex, without the objects/ prefix
-        write!(f, "{:x}", self.0)
+        f.write_str(&hex::encode(self.0))
+    }
+}
+
+impl AsRef<[u8]> for Blob {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
     }
 }
 
