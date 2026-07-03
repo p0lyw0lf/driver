@@ -63,7 +63,9 @@ fn real_main() -> driver_util::Result<()> {
         .expect("--cache must be provided");
     let options = driver_engine::Options::with_base_dir(cache);
 
-    let root = time("restored database", || QueryContext::create_root(options));
+    let root = time("restored database", || {
+        QueryContext::create_root(options, None)
+    });
 
     if let Some(run_matches) = matches.subcommand_matches("run") {
         let filename = run_matches

@@ -1,6 +1,7 @@
+use std::collections::HashSet;
+use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::{fmt::Debug, hash::Hash};
 
 use memmap2::Mmap;
 use tracing::{info, trace};
@@ -10,14 +11,19 @@ use driver_db::{Database, Entry, Object, Options};
 
 use crate::{Producer, ProducerBase};
 
-#[derive(Debug)]
 struct State<Key: Hash + Ord + Eq, Output> {
     options: Options,
     db: Database<Key, Output>,
     executor: Executor,
+    hooks: OptHooks<Key>,
 }
 
-#[derive(Debug, Clone)]
+type OptHooks<Key> = Option<Box<dyn Hooks<Key> + 'static + Send + Sync>>;
+pub trait Hooks<Key> {
+    fn on_compute(&self, key: Key, old_deps: HashSet<Key>, new_deps: HashSet<Key>);
+}
+
+#[derive(Clone)]
 pub struct Context<Key: ProducerBase> {
     pub(crate) parent: Option<Key>,
     state: Arc<State<Key, Key::Output>>,
@@ -75,7 +81,7 @@ impl<Key: ProducerBase> Context<Key> {
 impl<Key: Producer<Key>> Context<Key> {
     /// Starts a new root context. Users SHOULD call `.destroy_root()` before dropping it. MUST be
     /// called outside of any async context.
-    pub fn create_root(options: Options) -> Self {
+    pub fn create_root(options: Options, hooks: OptHooks<Key>) -> Self {
         let db = Database::restore(&options);
 
         // Bust cache immediately
@@ -91,6 +97,7 @@ impl<Key: Producer<Key>> Context<Key> {
                 options,
                 db,
                 executor,
+                hooks,
             }),
         }
     }
@@ -120,6 +127,7 @@ impl<Key: Producer<Key>> Context<Key> {
                 options,
                 db,
                 executor,
+                hooks: None,
             }),
         }
     }
@@ -170,6 +178,13 @@ impl<Key: Producer<Key>> Context<Key> {
 
         trace!("removing dependencies");
         // We're about to run the key again, so remove any dependencies it once had
+        let old_deps = self
+            .db()
+            .dependencies(&key)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
         self.db().remove_all_dependencies(&key).await;
         trace!("removed");
 
@@ -183,6 +198,17 @@ impl<Key: Producer<Key>> Context<Key> {
 
         entry.insert(revision, value.clone());
         trace!("inserted entry");
+
+        let new_deps = self
+            .db()
+            .dependencies(&key)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        if let Some(hooks) = &self.state.hooks {
+            hooks.on_compute(key.clone(), old_deps, new_deps);
+        }
 
         value
     }

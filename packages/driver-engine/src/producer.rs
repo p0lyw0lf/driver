@@ -52,7 +52,7 @@ macro_rules! producer {
 /// implementations and outside of them.
 ///
 /// See module documentation for example usage.
-pub async fn query<KSmall, KLarge>(ctx: &Context<KLarge>, key: KSmall) -> KSmall::Output
+pub async fn query<'a, KSmall, KLarge>(ctx: &Context<KLarge>, key: KSmall) -> KSmall::Output
 where
     KSmall: ProducerBase + Into<KLarge>,
     KLarge: Producer<KLarge>,
