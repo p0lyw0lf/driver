@@ -22,18 +22,18 @@ use serde::Deserialize;
 use serde::Serialize;
 use tracing::trace;
 
-use driver_engine::{Object, query};
+use driver_engine::{Blob, query};
 use driver_query_fs::ReadFile;
 
 use crate::QueryContext;
 
+mod blob;
 mod image;
 mod macros;
-mod object;
 mod path;
 mod value;
 
-pub use self::{image::JsImage, object::JsObject, path::JsPath, value::JsValue};
+pub use self::{blob::JsBlob, image::JsImage, path::JsPath, value::JsValue};
 
 /// Turns command-line arguments into a javascript-compatible list.
 /// TODO: better types than `&str`.
@@ -45,7 +45,7 @@ pub fn parse_args<'a>(iter: impl IntoIterator<Item = &'a str>) -> JsValue {
     )
 }
 
-pub type WriteOutputs = BTreeMap<PathBuf, Object>;
+pub type WriteOutputs = BTreeMap<PathBuf, Blob>;
 
 struct ContextFrame {
     ctx: QueryContext,
@@ -89,7 +89,7 @@ fn get_context() -> JsResult<QueryContext> {
 }
 
 /// SAFETY: only safe to call when running inside `with_query_context()`
-unsafe fn push_outputs(outputs: impl IntoIterator<Item = (PathBuf, Object)>) -> JsResult<()> {
+unsafe fn push_outputs(outputs: impl IntoIterator<Item = (PathBuf, Blob)>) -> JsResult<()> {
     QUERY_CONTEXT.with_mut(|ctx| -> JsResult<()> {
         let ctx = ctx
             .ok_or_else(|| JsNativeError::eval().with_message("pushed outputs without context"))?;
@@ -251,13 +251,13 @@ impl ModuleLoader for MemoizedModuleLoader {
             return Ok(module.get().clone());
         }
 
-        let source_object = query(&self.ctx, ReadFile(path.clone()))
+        let source_blob = query(&self.ctx, ReadFile(path.clone()))
             .await
             .map_err(|e| {
                 JsNativeError::eval()
                     .with_message(format!("reading imported module '{}': {}", short_path, e))
             })?;
-        let source_bytes = self.ctx.load_bytes(&source_object).map_err(|e| {
+        let source_bytes = self.ctx.load_bytes(&source_blob).map_err(|e| {
             JsNativeError::eval().with_message(format!("loading {} for {}", e, path.display()))
         })?;
 
@@ -287,7 +287,7 @@ where
         .build()?;
 
     js_ctx.register_global_class::<JsImage>()?;
-    js_ctx.register_global_class::<JsObject>()?;
+    js_ctx.register_global_class::<JsBlob>()?;
 
     js_ctx.register_global_builtin_callable(
         js_str!("print").into(),
@@ -328,10 +328,10 @@ fn make_driver_module(js_ctx: &mut Context) -> JsResult<Module> {
 
         async fn get_url(url: String) -> JsResult<JsObject>;
 
-        async fn markdown_to_html(contents: JsObject) -> JsResult<JsObject>;
-        async fn minify_html(contents: JsObject) -> JsResult<JsObject>;
+        async fn markdown_to_html(contents: JsBlob) -> JsResult<JsObject>;
+        async fn minify_html(contents: JsBlob) -> JsResult<JsObject>;
 
-        async fn parse_image(object: JsObject) -> JsResult<JsImage>;
+        async fn parse_image(blob: JsBlob) -> JsResult<JsImage>;
         async fn convert_image(
             image: JsImage,
             opts: boa_engine::JsObject,
@@ -340,7 +340,7 @@ fn make_driver_module(js_ctx: &mut Context) -> JsResult<Module> {
 
         async fn run_js(filename: JsPath, args: JsValue) -> JsResult<JsValue>;
         async fn run_tera(filename: JsPath, args: JsValue) -> JsResult<JsValue>;
-        fn write_output(name: String, contents: JsObject) -> JsResult<()>;
+        fn write_output(name: String, contents: JsBlob) -> JsResult<()>;
     ))
 }
 
@@ -368,15 +368,15 @@ mod driver_module {
         Ok(slug::slugify(value))
     }
 
-    pub async fn read_file(path: JsPath) -> JsResult<JsObject> {
+    pub async fn read_file(path: JsPath) -> JsResult<JsBlob> {
         let ctx = &get_context()?;
 
         let read_file = ReadFile(path.0);
-        let object = query(ctx, read_file.clone())
+        let blob = query(ctx, read_file.clone())
             .await
             .map_err(|e| JsNativeError::eval().with_message(format!("{read_file}: {e}")))?;
 
-        Ok(JsObject { object })
+        Ok(JsBlob { blob })
     }
 
     pub async fn list_directory(dirname: JsPath) -> JsResult<Vec<String>> {
@@ -425,15 +425,12 @@ mod driver_module {
             arg: arg.clone(),
         };
 
-        let RunTeraOutput {
-            export: object,
-            writes,
-        } = query(ctx, task.clone()).await;
+        let RunTeraOutput { export, writes } = query(ctx, task.clone()).await;
 
         unsafe { push_outputs(writes) }?;
 
-        Ok(JsValue::Store(JsObject {
-            object: object
+        Ok(JsValue::Store(JsBlob {
+            blob: export
                 .map_err(|e| JsNativeError::eval().with_message(format!("{task}:\n\t{e}",)))?,
         }))
     }
@@ -455,52 +452,52 @@ mod driver_module {
 
     // TODO: eventually, I want this to be able to take in JsUint8Array. However, that has some
     // weird lifetime implications w/ js_ctx, so I won't bother for now.
-    pub fn store(value: String) -> JsResult<JsObject> {
+    pub fn store(value: String) -> JsResult<JsBlob> {
         let ctx = &get_context()?;
 
-        let object = ctx
+        let blob = ctx
             .store(value.into_bytes())
             .map_err(|err| JsNativeError::eval().with_message(format!("loading {err}")))?;
-        Ok(JsObject { object })
+        Ok(JsBlob { blob })
     }
 
-    pub async fn get_url(url: String) -> JsResult<JsObject> {
+    pub async fn get_url(url: String) -> JsResult<JsBlob> {
         let ctx = &get_context()?;
         let uri = url
             .try_into()
             .map_err(|e| JsNativeError::eval().with_message(format!("parsing url: {e}")))?;
 
         let get_url = GetUrl(Uri(uri));
-        let object = query(ctx, get_url.clone())
+        let blob = query(ctx, get_url.clone())
             .await
             .map_err(|e| JsNativeError::eval().with_message(format!("{get_url}: {e}")))?;
-        Ok(JsObject { object })
+        Ok(JsBlob { blob })
     }
 
-    pub async fn markdown_to_html(contents: JsObject) -> JsResult<JsObject> {
+    pub async fn markdown_to_html(contents: JsBlob) -> JsResult<JsBlob> {
         let ctx = &get_context()?;
 
-        let markdown_to_html = MarkdownToHtml(contents.object.clone());
-        let object = query(ctx, markdown_to_html.clone())
+        let markdown_to_html = MarkdownToHtml(contents.blob.clone());
+        let blob = query(ctx, markdown_to_html.clone())
             .await
             .map_err(|e| JsNativeError::eval().with_message(format!("{markdown_to_html}: {e}")))?;
-        Ok(JsObject { object })
+        Ok(JsBlob { blob })
     }
 
-    pub async fn minify_html(contents: JsObject) -> JsResult<JsObject> {
+    pub async fn minify_html(contents: JsBlob) -> JsResult<JsBlob> {
         let ctx = &get_context()?;
 
-        let minify_html = MinifyHtml(contents.object.clone());
-        let object = query(ctx, minify_html.clone())
+        let minify_html = MinifyHtml(contents.blob.clone());
+        let blob = query(ctx, minify_html.clone())
             .await
             .map_err(|e| JsNativeError::eval().with_message(format!("{minify_html}: {e}")))?;
-        Ok(JsObject { object })
+        Ok(JsBlob { blob })
     }
 
-    pub async fn parse_image(object: JsObject) -> JsResult<JsImage> {
+    pub async fn parse_image(blob: JsBlob) -> JsResult<JsImage> {
         let ctx = &get_context()?;
 
-        let parse_image = ParseImage(object.object.clone());
+        let parse_image = ParseImage(blob.blob.clone());
         let image = query(ctx, parse_image.clone())
             .await
             .map_err(|e| JsNativeError::eval().with_message(format!("{parse_image}: {e}")))?;
@@ -574,7 +571,7 @@ mod driver_module {
         Ok(JsImage { image })
     }
 
-    pub fn write_output(name: String, contents: JsObject) -> JsResult<()> {
+    pub fn write_output(name: String, contents: JsBlob) -> JsResult<()> {
         let path = PathBuf::from(name);
         if !path
             .components()
@@ -590,7 +587,7 @@ mod driver_module {
                 path,
                 // SAFETY: being provided a StoreObject always means we've put it in the store
                 // already
-                contents.object.clone(),
+                contents.blob.clone(),
             )])?
         };
         Ok(())
@@ -604,14 +601,14 @@ driver_engine::key!(
         pub arg: JsValue,
     }
 );
-driver_engine::object_trace!(RunJs => { arg });
+driver_engine::blob_trace!(RunJs => { arg });
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunJsOutput {
     pub export: driver_util::Result<JsValue>,
     pub writes: WriteOutputs,
 }
-driver_engine::object_trace!(RunJsOutput => {
+driver_engine::blob_trace!(RunJsOutput => {
     export,
     writes,
 });
@@ -626,8 +623,8 @@ driver_engine::producer!(RunJs(self, ctx) as (crate::QueryKey) -> RunJsOutput {
         let key = format!("{}({})", file.display(), arg);
         trace!("with_query_context start {key}");
 
-        let object = query(ctx, ReadFile(self.file.clone())).await?;
-        let contents = ctx.load_bytes(&object)?;
+        let blob = query(ctx, ReadFile(self.file.clone())).await?;
+        let contents = ctx.load_bytes(&blob)?;
 
         let out = with_js_ctx(ctx.clone(), arg.clone(), async move |js_ctx| {
             trace!("with_js_ctx start");

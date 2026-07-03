@@ -1,17 +1,17 @@
 use std::path::PathBuf;
 
-use driver_engine::Object;
+use driver_engine::Blob;
 
 driver_engine::key!(
     #[input=|_| true]
     struct ReadFile(pub PathBuf);
 );
-driver_engine::no_objects!(ReadFile);
+driver_engine::no_blobs!(ReadFile);
 
-driver_engine::producer!(ReadFile(self, ctx) -> driver_util::Result<Object> {
+driver_engine::producer!(ReadFile(self, ctx) -> driver_util::Result<Blob> {
     let content = async_fs::read(&self.0).await?;
-    let object = ctx.store(content)?;
-    Ok(object)
+    let blob = ctx.store(content)?;
+    Ok(blob)
 });
 
 impl std::fmt::Display for ReadFile {

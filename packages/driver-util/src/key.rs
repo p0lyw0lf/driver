@@ -14,7 +14,7 @@ pub trait Key:
     + Display
     + serde::Serialize
     + for<'de> serde::Deserialize<'de>
-    + crate::ObjectTrace
+    + crate::BlobTrace
 {
     /// Returns whether a given key is an "input" or not. Being an input key has a special
     /// connotation: input keys are assumed to not have any dependencies, and are instead _only_
@@ -31,7 +31,7 @@ pub trait Key:
 /// Example:
 ///
 /// ```rust
-/// use driver_util::{key, Key as _, no_objects};
+/// use driver_util::{key, Key as _, no_blobs};
 ///
 /// key!(#[input=|_| true] struct Foo;);
 /// key!(#[input=|_| false] struct Bar(i32););
@@ -50,19 +50,19 @@ pub trait Key:
 /// assert_eq!(Qux::Baz(Baz { x: 6, y: 9 }).is_input(), false);
 /// assert_eq!(Qux::Baz(Baz { x: 7, y: 7 }).is_input(), true);
 ///
-/// no_objects!(Foo);
+/// no_blobs!(Foo);
 /// impl std::fmt::Display for Foo {
 ///     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 ///         f.write_str("Foo")
 ///     }
 /// }
-/// no_objects!(Bar);
+/// no_blobs!(Bar);
 /// impl std::fmt::Display for Bar {
 ///     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 ///         write!(f, "Bar({})", self.0)
 ///     }
 /// }
-/// no_objects!(Baz);
+/// no_blobs!(Baz);
 /// impl std::fmt::Display for Baz {
 ///     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 ///         write!(f, "Baz {{ x: {}, y: {} }}", self.x, self.y)
@@ -123,10 +123,10 @@ macro_rules! key {
             }
         }
 
-        impl $crate::ObjectTrace for $name {
-            fn trace(&self) -> impl Iterator<Item = &'_ $crate::Object> {
+        impl $crate::BlobTrace for $name {
+            fn trace(&self) -> impl Iterator<Item = &'_ $crate::Blob> {
                 match self { $(
-                    Self::$key(x) => Box::new($crate::ObjectTrace::trace(x)) as Box<dyn Iterator<Item = &'_ $crate::Object>>,
+                    Self::$key(x) => Box::new($crate::BlobTrace::trace(x)) as Box<dyn Iterator<Item = &'_ $crate::Blob>>,
                 )* }
             }
         }
@@ -144,38 +144,38 @@ macro_rules! key {
     };
 }
 
-/// Generates a default implementation of [`crate::ObjectTrace`] for the given type.
+/// Generates a default implementation of [`crate::BlobTrace`] for the given type.
 #[macro_export]
-macro_rules! no_objects {
+macro_rules! no_blobs {
     ($ty:ty) => {
-        impl $crate::ObjectTrace for $ty {
-            fn trace(&self) -> impl Iterator<Item = &'_ $crate::Object> {
+        impl $crate::BlobTrace for $ty {
+            fn trace(&self) -> impl Iterator<Item = &'_ $crate::Blob> {
                 std::iter::empty()
             }
         }
     };
 }
 
-/// Generates an implementation of [`crate::ObjectTrace`] that recurs into the given fields for the
+/// Generates an implementation of [`crate::BlobTrace`] that recurs into the given fields for the
 /// type.
 #[macro_export]
-macro_rules! object_trace {
+macro_rules! blob_trace {
     ($ty:ty => { $($field:ident),* $(,)? }) => {
-        impl $crate::ObjectTrace for $ty {
-            fn trace(&self) -> impl Iterator<Item = &'_ $crate::Object> {
+        impl $crate::BlobTrace for $ty {
+            fn trace(&self) -> impl Iterator<Item = &'_ $crate::Blob> {
                 std::iter::empty()
                 $(
-                    .chain($crate::ObjectTrace::trace(&self.$field))
+                    .chain($crate::BlobTrace::trace(&self.$field))
                 )*
             }
         }
     };
     ($ty:ty => ( $($idx:tt),* $(,)? )) => {
-        impl $crate::ObjectTrace for $ty {
-            fn trace(&self) -> impl Iterator<Item = &'_ $crate::Object> {
+        impl $crate::BlobTrace for $ty {
+            fn trace(&self) -> impl Iterator<Item = &'_ $crate::Blob> {
                 std::iter::empty()
                 $(
-                    .chain($crate::ObjectTrace::trace(&self.$idx))
+                    .chain($crate::BlobTrace::trace(&self.$idx))
                 )*
             }
         }

@@ -5,7 +5,7 @@ use boa_engine::{
 use boa_gc::{Finalize, GcRef, Trace};
 use serde::{Deserialize, Serialize};
 
-use crate::boa::JsObject;
+use crate::boa::JsBlob;
 use crate::boa::macros::class_wrap;
 use crate::zune::{EncoderOptions, ImageFit, ImageFormat, ImageObject, ImageSize, ResizeMethod};
 
@@ -153,14 +153,14 @@ pub struct JsImage {
     #[unsafe_ignore_trace]
     pub image: ImageObject,
 }
-driver_engine::object_trace!(JsImage => { image });
+driver_engine::blob_trace!(JsImage => { image });
 
 class_wrap!(class JsImage {
     length 0,
     methods {
         object: (0) |this: GcRef<'_, JsImage>, _args, _js_ctx| -> JsResult<_> {
-            let object = this.image.object.clone();
-            Ok(JsObject { object })
+            let blob = this.image.blob.clone();
+            Ok(JsBlob { blob })
         },
         format: (0) |this: GcRef<'_, JsImage>, _args, js_ctx| {
             this.image.format.try_into_js(js_ctx)

@@ -15,7 +15,7 @@
 //!     #[input=|_| false]
 //!     struct Fib(u32);
 //! );
-//! driver_engine::no_objects!(Fib);
+//! driver_engine::no_blobs!(Fib);
 //! driver_engine::producer!(Fib(self, ctx) where [Fib] -> u32 {
 //!     let n = self.0;
 //!     if n == 0 || n == 1 {
@@ -54,8 +54,8 @@ pub use producer::query;
 /// Re-export for convenience
 pub use driver_db::Options;
 pub use driver_db::Uri;
-pub use driver_util::Object;
-pub use driver_util::ObjectTrace;
+pub use driver_util::Blob;
+pub use driver_util::BlobTrace;
+pub use driver_util::blob_trace;
 pub use driver_util::key;
-pub use driver_util::no_objects;
-pub use driver_util::object_trace;
+pub use driver_util::no_blobs;

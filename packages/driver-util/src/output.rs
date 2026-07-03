@@ -6,20 +6,13 @@ use serde::{Deserialize, Serialize};
 /// can be used in the ways we need it to.
 ///
 /// In order to make the lifetimes work out, we do need the `Clone` bound unfortunately. If you're
-/// passing around large objects, see the driver-db crate for content-addressed objects that
+/// passing around large objects, see the driver-db crate for content-addressed blobs that
 /// satisfy this trait.
 pub trait Output:
-    Send + Sync + Eq + Clone + Debug + Serialize + for<'de> Deserialize<'de> + crate::ObjectTrace
+    Send + Sync + Eq + Clone + Debug + Serialize + for<'de> Deserialize<'de> + crate::BlobTrace
 {
 }
 impl<T> Output for T where
-    T: Send
-        + Sync
-        + Eq
-        + Clone
-        + Debug
-        + Serialize
-        + for<'de> Deserialize<'de>
-        + crate::ObjectTrace
+    T: Send + Sync + Eq + Clone + Debug + Serialize + for<'de> Deserialize<'de> + crate::BlobTrace
 {
 }

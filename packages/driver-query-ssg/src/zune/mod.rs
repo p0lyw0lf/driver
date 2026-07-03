@@ -8,7 +8,7 @@ use zune_image::codecs::{
 };
 use zune_image::traits::{DecoderTrait, OperationsTrait};
 
-use driver_engine::Object;
+use driver_engine::Blob;
 
 mod auto_orient;
 mod rotate;
@@ -41,21 +41,21 @@ impl ImageSize {
 /// to re-parse the headers.
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
 pub struct ImageObject {
-    pub object: Object,
+    pub blob: Blob,
     pub format: ImageFormat,
     pub size: ImageSize,
 }
-driver_engine::object_trace!(ImageObject => { object });
+driver_engine::blob_trace!(ImageObject => { blob });
 
 driver_engine::key!(
     #[input=|_| false]
-    struct ParseImage(pub Object);
+    struct ParseImage(pub Blob);
 );
-driver_engine::object_trace!(ParseImage => (0));
+driver_engine::blob_trace!(ParseImage => (0));
 
 driver_engine::producer!(ParseImage(self, ctx) -> driver_util::Result<ImageObject> {
     let contents = ZCursor::new(ctx.load_bytes(&self.0)?);
-    let object = self.0.clone();
+    let blob = self.0.clone();
 
     let metadata = zune_image::utils::decode_info(contents)
         .ok_or_else(|| driver_util::Error::new("could not parse image metadata"))?;
@@ -84,7 +84,7 @@ driver_engine::producer!(ParseImage(self, ctx) -> driver_util::Result<ImageObjec
     };
 
     Ok(ImageObject {
-        object,
+        blob,
         format,
         size: ImageSize { width, height },
     })
@@ -193,7 +193,7 @@ driver_engine::key!(
         pub resize_method: Option<ResizeMethod>,
     }
 );
-driver_engine::object_trace!(ConvertImage => { input });
+driver_engine::blob_trace!(ConvertImage => { input });
 
 driver_engine::producer!(ConvertImage(self, ctx) -> driver_util::Result<ImageObject> {
     // NOTE: I know that reading this into memory only to read it into more memory is wasteful,
@@ -202,7 +202,7 @@ driver_engine::producer!(ConvertImage(self, ctx) -> driver_util::Result<ImageObj
 
     let input_format = self.input.format;
     let (source_width, source_height) = self.input.size.as_dimensions();
-    let input_contents = ZCursor::new(ctx.load_bytes(&self.input.object)?);
+    let input_contents = ZCursor::new(ctx.load_bytes(&self.input.blob)?);
     let decoder_options = DecoderOptions::new_fast();
 
     let size = self.size;
@@ -268,16 +268,16 @@ driver_engine::producer!(ConvertImage(self, ctx) -> driver_util::Result<ImageObj
         resize_op.execute(&mut image)?;
     }
 
-    let object = {
+    let bytes = {
         let mut sink = vec![];
         let format: zune_image::codecs::ImageFormat = format.into();
         format.encode(&image, self.encoder_options.clone().unwrap_or_default().into(), &mut sink)?;
         sink
     };
-    let object = ctx.store(object)?;
+    let blob = ctx.store(bytes)?;
 
     Ok(ImageObject {
-        object,
+        blob,
         format,
         size: ImageSize {
             width: dest_width,
@@ -328,8 +328,8 @@ impl Display for ImageObject {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{{ object: {}, format: \"{}\", size: {} }}",
-            self.object, self.format, self.size,
+            "{{ blob: {}, format: \"{}\", size: {} }}",
+            self.blob, self.format, self.size,
         )
     }
 }

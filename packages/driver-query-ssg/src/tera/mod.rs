@@ -8,11 +8,11 @@ use relative_path::{RelativePath, RelativePathBuf};
 use serde::{Deserialize, Serialize};
 use tera::Tera;
 
-use driver_engine::{Object, query};
+use driver_engine::{Blob, query};
 use driver_query_fs::{ListDirectory, ReadFile};
 
 use crate::QueryContext;
-use crate::boa::{JsObject, JsValue, RunJs, WriteOutputs};
+use crate::boa::{JsBlob, JsValue, RunJs, WriteOutputs};
 
 driver_engine::key!(
     #[input=|_| false]
@@ -21,14 +21,14 @@ driver_engine::key!(
         pub arg: JsValue,
     }
 );
-driver_engine::object_trace!(RunTera => { arg });
+driver_engine::blob_trace!(RunTera => { arg });
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunTeraOutput {
-    pub export: driver_util::Result<Object>,
+    pub export: driver_util::Result<Blob>,
     pub writes: WriteOutputs,
 }
-driver_engine::object_trace!(RunTeraOutput => {
+driver_engine::blob_trace!(RunTeraOutput => {
     export,
     writes,
 });
@@ -59,7 +59,7 @@ enum State<T> {
 
 fn render_tera_async(
     ctx: &QueryContext,
-    input: &Object,
+    input: &Blob,
     file: &Path,
     arg: &JsValue,
 ) -> impl Future<Output = RunTeraOutput> {
@@ -105,7 +105,7 @@ fn render_tera_async(
     })
 }
 
-fn render_tera(ctx: &QueryContext, input: &Object, file: &Path, arg: &JsValue) -> RunTeraOutput {
+fn render_tera(ctx: &QueryContext, input: &Blob, file: &Path, arg: &JsValue) -> RunTeraOutput {
     let writes = Arc::new(Mutex::new(WriteOutputs::new()));
 
     let export = (|| -> driver_util::Result<_> {
@@ -188,8 +188,8 @@ fn register_functions(tera: &mut Tera, ctx: &QueryContext, writes: Arc<Mutex<Wri
             get_arg!(file: as_str <- args);
             let file = resolve_path(file)?;
             let read_file = ReadFile(file);
-            let object = future::block_on(query(&ctx, read_file.clone())).map_err(|e| format!("{read_file}: {e}"))?;
-            js_to_tera_value(&JsValue::Store(JsObject { object }))
+            let blob = future::block_on(query(&ctx, read_file.clone())).map_err(|e| format!("{read_file}: {e}"))?;
+            js_to_tera_value(&JsValue::Store(JsBlob { blob }))
         }),
     );
 
@@ -272,8 +272,8 @@ fn register_functions(tera: &mut Tera, ctx: &QueryContext, writes: Arc<Mutex<Wri
             {
                 writes.lock().unwrap().extend(output.writes);
             };
-            let output = js_to_tera_value(&JsValue::Store(JsObject {
-                object: output.export.map_err(|e| format!("{run_tera}:\n\t{e}"))?,
+            let output = js_to_tera_value(&JsValue::Store(JsBlob {
+                blob: output.export.map_err(|e| format!("{run_tera}:\n\t{e}"))?,
             }))?;
 
             Ok(output)
@@ -286,10 +286,10 @@ fn register_functions(tera: &mut Tera, ctx: &QueryContext, writes: Arc<Mutex<Wri
             let tera::Value::String(s) = arg else {
                 return Err("store must take in str".into());
             };
-            let object = ctx
+            let blob = ctx
                 .store(s.clone().into_bytes())
                 .map_err(|e| e.to_string())?;
-            js_to_tera_value(&JsValue::Store(JsObject { object }))
+            js_to_tera_value(&JsValue::Store(JsBlob { blob }))
         }),
     );
 
@@ -299,8 +299,8 @@ fn register_functions(tera: &mut Tera, ctx: &QueryContext, writes: Arc<Mutex<Wri
             let tera::Value::Object(obj) = arg else {
                 return Err("unstore must take in object".into());
             };
-            let object = tera_to_js_store_object(obj)?;
-            let output = ctx.load_string(&object).map_err(|e| e.to_string())?;
+            let blob = tera_to_js_store_object(obj)?;
+            let output = ctx.load_string(&blob).map_err(|e| e.to_string())?;
             Ok(tera::Value::String(output))
         }),
     );
@@ -393,7 +393,7 @@ fn js_to_tera_value(value: &JsValue) -> tera::Result<tera::Value> {
             let mut map = tera::Map::new();
             map.insert(
                 STORE_OBJECT_MAGIC.to_string(),
-                tera::to_value(s.object.clone())?,
+                tera::to_value(s.blob.clone())?,
             );
             tera::Value::Object(map)
         }
@@ -419,7 +419,7 @@ fn tera_to_js_value(value: &tera::Value) -> tera::Result<JsValue> {
             JsValue::Array(arr.iter().map(tera_to_js_value).collect::<Result<_, _>>()?)
         }
         tera::Value::Object(obj) => match tera_to_js_store_object(obj) {
-            Ok(object) => JsValue::Store(JsObject { object }),
+            Ok(blob) => JsValue::Store(JsBlob { blob }),
             Err(_) => JsValue::Object(
                 obj.into_iter()
                     .map(|(key, value)| -> tera::Result<_> {
@@ -431,14 +431,14 @@ fn tera_to_js_value(value: &tera::Value) -> tera::Result<JsValue> {
     })
 }
 
-fn tera_to_js_store_object(obj: &tera::Map<String, tera::Value>) -> tera::Result<Object> {
+fn tera_to_js_store_object(obj: &tera::Map<String, tera::Value>) -> tera::Result<Blob> {
     match obj.get(STORE_OBJECT_MAGIC) {
         Some(hash) => {
             let hash = tera::from_value(hash.clone())?;
             // SAFETY: we have no choice but to trust this. The user has purposefully messed us
             // up otherwise, worst case we will find there is no backing file.
-            let object = unsafe { Object::from_hash(hash) };
-            Ok(object)
+            let blob = unsafe { Blob::from_hash(hash) };
+            Ok(blob)
         }
         None => Err("not a store object".into()),
     }

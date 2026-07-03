@@ -1,12 +1,12 @@
-use driver_engine::{Object, Uri};
+use driver_engine::{Blob, Uri};
 
 driver_engine::key!(
     #[input=|_| true]
     struct GetUrl(pub Uri);
 );
-driver_engine::no_objects!(GetUrl);
+driver_engine::no_blobs!(GetUrl);
 
-driver_engine::producer!(GetUrl(self, ctx) -> driver_util::Result<Object> {
+driver_engine::producer!(GetUrl(self, ctx) -> driver_util::Result<Blob> {
     ctx.fetch(self.0.clone()).await
 });
 

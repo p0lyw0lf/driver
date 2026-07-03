@@ -3,40 +3,40 @@ use std::path::{Path, PathBuf};
 use sha2::Digest as _;
 
 use crate::Options;
-use driver_util::{Object, SerializedMap};
+use driver_util::{Blob, SerializedMap};
 
 /// A store for all strings/blobs that would otherwise be too large to persist to disk multiple
 /// times. "Uniquely" keyed by the hashes of the strings/blobs it stores.
 #[derive(Debug, Default, PartialEq)]
-pub struct Objects {
-    cache: SerializedMap<Object, Vec<u8>>,
+pub struct Blobs {
+    cache: SerializedMap<Blob, Vec<u8>>,
 }
 
-impl Objects {
+impl Blobs {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn store(&self, options: &Options, contents: Vec<u8>) -> driver_util::Result<Object> {
+    pub fn store(&self, options: &Options, contents: Vec<u8>) -> driver_util::Result<Blob> {
         let hash = sha2::Sha256::digest(&contents[..]);
         // SAFETY: we just calculated the hash
-        let object = unsafe { Object::from_hash(hash) };
+        let blob = unsafe { Blob::from_hash(hash) };
         // SAFETY: we just calculated the hash
-        unsafe { self.store_raw(options, object.clone(), contents)? };
-        Ok(object)
+        unsafe { self.store_raw(options, blob.clone(), contents)? };
+        Ok(blob)
     }
 
     /// # Safety
-    /// `object` MUST be the hash of `contents`
+    /// `blob` MUST be the hash of `contents`
     pub unsafe fn store_raw(
         &self,
         options: &Options,
-        object: Object,
+        blob: Blob,
         contents: Vec<u8>,
     ) -> driver_util::Result<()> {
         // First, we need to write the contents to the specified file, if not already written.
         // We do this first so that we're never in a state where an entry exists but a file doesn't.
-        let filename = self.object_filename(options, &object);
+        let filename = self.blob_filename(options, &blob);
         if !std::fs::exists(&filename)? {
             // TODO: should we use async_fs here, or is our existing threadpool enough?
             // Right now I don't want to color all the functions, so let's hope the threadpool is
@@ -45,16 +45,16 @@ impl Objects {
         }
 
         // Then, we insert the file
-        let _ = self.cache.insert_sync(object.clone(), contents);
+        let _ = self.cache.insert_sync(blob.clone(), contents);
         Ok(())
     }
 
     /// This will return an error if the file doesn't exist, because the only way we should have
-    /// access to objects is by having created a file beforehand.
-    pub fn load(&self, options: &Options, object: Object) -> driver_util::Result<Vec<u8>> {
-        Ok(match self.cache.entry_sync(object.clone()) {
+    /// access to blobs is by having created a file beforehand.
+    pub fn load(&self, options: &Options, blob: Blob) -> driver_util::Result<Vec<u8>> {
+        Ok(match self.cache.entry_sync(blob.clone()) {
             scc::hash_map::Entry::Vacant(entry) => {
-                let filename = self.object_filename(options, &object);
+                let filename = self.blob_filename(options, &blob);
                 let value = std::fs::read(&filename)?;
                 let _ = entry.insert_entry(value.clone());
                 value
@@ -63,12 +63,8 @@ impl Objects {
         })
     }
 
-    pub fn load_mmap(
-        &self,
-        options: &Options,
-        object: &Object,
-    ) -> driver_util::Result<memmap2::Mmap> {
-        let filename = self.object_filename(options, object);
+    pub fn load_mmap(&self, options: &Options, blob: &Blob) -> driver_util::Result<memmap2::Mmap> {
+        let filename = self.blob_filename(options, blob);
         let file = std::fs::File::open(&filename)?;
         // SAFETY: We don't do anything crazy with these files, if the user does then that's their
         // problem.
@@ -78,14 +74,14 @@ impl Objects {
         Ok(mmap)
     }
 
-    /// This will create a hardlink from the file in the object store to the specified output path
+    /// This will create a hardlink from the file in the blob store to the specified output path
     pub fn copy(
         &self,
         options: &Options,
-        object: &Object,
+        blob: &Blob,
         output_filename: &Path,
     ) -> driver_util::Result<()> {
-        let input_filename = self.object_filename(options, object);
+        let input_filename = self.blob_filename(options, blob);
         if std::fs::exists(output_filename)? {
             std::fs::remove_file(output_filename)?;
         }
@@ -93,8 +89,8 @@ impl Objects {
         Ok(())
     }
 
-    fn object_filename(&self, options: &Options, object: &Object) -> PathBuf {
-        options.objects_path.join(format!("{:?}", object))
+    fn blob_filename(&self, options: &Options, blob: &Blob) -> PathBuf {
+        options.blobs_path.join(format!("{:?}", blob))
     }
 
     /// MUST be called with the equivalent of an exclusive reference. Sorry the types don't work
@@ -103,21 +99,21 @@ impl Objects {
     pub(crate) fn retain(
         &self,
         options: &Options,
-        f: impl Fn(&Object) -> bool,
+        f: impl Fn(&Blob) -> bool,
     ) -> driver_util::Result<()> {
         self.cache.clear_sync();
 
-        // Read from the filesystem to get a list of all possible objects
-        for file in std::fs::read_dir(&options.objects_path)? {
+        // Read from the filesystem to get a list of all possible blobs
+        for file in std::fs::read_dir(&options.blobs_path)? {
             let file = file?;
             let path = file.path();
-            let hash = path.file_name().expect("object didn't have filename?");
+            let hash = path.file_name().expect("blob didn't have filename?");
             let hash: [u8; 32] = hex::FromHex::from_hex(hash.as_encoded_bytes())?;
             // SAFETY: Object was read from filesystem
-            let object = unsafe { Object::from_hash(hash.into()) };
+            let blob = unsafe { Blob::from_hash(hash.into()) };
 
-            if !f(&object) {
-                // Delete the object
+            if !f(&blob) {
+                // Delete the blob
                 std::fs::remove_file(path)?;
             }
         }

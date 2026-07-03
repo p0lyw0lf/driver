@@ -7,7 +7,7 @@ use memmap2::Mmap;
 use tracing::{info, trace};
 
 use async_tpc_executor::Executor;
-use driver_db::{Database, Entry, Object, Options};
+use driver_db::{Blob, Database, Entry, Options};
 
 use crate::{Producer, ProducerBase};
 
@@ -52,35 +52,35 @@ impl<Key: ProducerBase> Context<Key> {
     }
 
     /// Stores the given content into the database.
-    pub fn store(&self, content: Vec<u8>) -> driver_util::Result<Object> {
-        self.db().objects.store(self.options(), content)
+    pub fn store(&self, content: Vec<u8>) -> driver_util::Result<Blob> {
+        self.db().blobs.store(self.options(), content)
     }
 
     /// Fetches the remote URL.
-    pub async fn fetch(&self, uri: driver_db::Uri) -> driver_util::Result<Object> {
+    pub async fn fetch(&self, uri: driver_db::Uri) -> driver_util::Result<Blob> {
         Ok(self
             .db()
             .remotes
-            .fetch(self.executor(), self.options(), &self.db().objects, uri)
+            .fetch(self.executor(), self.options(), &self.db().blobs, uri)
             .await?
-            .object)
+            .blob)
     }
 
-    /// Loads the given object as bytes
-    pub fn load_bytes(&self, object: &Object) -> driver_util::Result<Vec<u8>> {
-        self.db().objects.load(self.options(), object.clone())
+    /// Loads the given blob as bytes
+    pub fn load_bytes(&self, blob: &Blob) -> driver_util::Result<Vec<u8>> {
+        self.db().blobs.load(self.options(), blob.clone())
     }
 
-    /// Loads the given object as a UTF-8 string
-    pub fn load_string(&self, object: &Object) -> driver_util::Result<String> {
-        let bytes = self.load_bytes(object)?;
+    /// Loads the given blob as a UTF-8 string
+    pub fn load_string(&self, blob: &Blob) -> driver_util::Result<String> {
+        let bytes = self.load_bytes(blob)?;
         let string = String::from_utf8(bytes)?;
         Ok(string)
     }
 
-    /// Loads the given object as an [`Mmap`]
-    pub fn load_mmap(&self, object: &Object) -> driver_util::Result<Mmap> {
-        self.db().objects.load_mmap(self.options(), object)
+    /// Loads the given blob as an [`Mmap`]
+    pub fn load_mmap(&self, blob: &Blob) -> driver_util::Result<Mmap> {
+        self.db().blobs.load_mmap(self.options(), blob)
     }
 }
 

@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Object, Objects, Options, RemoteObjects};
+use crate::{Blob, Blobs, Options, RemoteBlobs};
 use driver_util::SerializedMap;
 
 /// Tracks the range [changed_at, verified_at], to confirm the value is corresponds to is the same
@@ -75,8 +75,8 @@ impl<Key: Hash + Ord + Eq, Output> Default for Core<Key, Output> {
 #[derive(Debug)]
 pub struct Database<Key: Hash + Ord + Eq, Output> {
     core: Core<Key, Output>,
-    pub objects: Objects,
-    pub remotes: RemoteObjects,
+    pub blobs: Blobs,
+    pub remotes: RemoteBlobs,
 }
 
 impl<Key: Hash + Ord + Eq, Output> Deref for Database<Key, Output> {
@@ -291,14 +291,14 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Database<Key, Output> {
         let file = postcard::to_io(&self.remotes, file)?;
         file.finish()?;
 
-        // self.objects are already saved as part of normal operation
+        // self.blobs are already saved as part of normal operation
         Ok(())
     }
 
     pub fn restore(options: &Options) -> Self {
-        std::fs::create_dir_all(&options.objects_path)
+        std::fs::create_dir_all(&options.blobs_path)
             .expect("could not create/read object directory");
-        let objects = Objects::new();
+        let blobs = Blobs::new();
 
         let core = (|| {
             let file = std::fs::File::open(&options.cache_path)?;
@@ -319,7 +319,7 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Database<Key, Output> {
             let mut file = zstd::Decoder::new(file)?;
             let mut bytes = Vec::<u8>::new();
             file.read_to_end(&mut bytes)?;
-            let remotes: RemoteObjects = postcard::from_bytes(&bytes)?;
+            let remotes: RemoteBlobs = postcard::from_bytes(&bytes)?;
             driver_util::Result::Ok(remotes)
         })()
         .unwrap_or_else(|err| {
@@ -334,7 +334,7 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Database<Key, Output> {
         Self {
             core,
             remotes,
-            objects,
+            blobs,
         }
     }
 }
@@ -390,12 +390,12 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Database<Key, Output> {
     /// Removes all [`Object`]s that aren't referenced from the local or remote caches.
     pub fn garbage_collect(&self, options: &Options) -> driver_util::Result<()> {
         let objects = self.collect_objects();
-        self.objects
+        self.blobs
             .retain(options, |object| objects.contains(object))
     }
 
     /// Finds all [`Objects`]s that are referenced in the local and remote caches.
-    fn collect_objects(&self) -> HashSet<Object> {
+    fn collect_objects(&self) -> HashSet<Blob> {
         let mut objects = HashSet::new();
 
         self.cache.iter_sync(|key, value| {
@@ -414,7 +414,7 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Database<Key, Output> {
         });
 
         self.remotes.cache.iter_sync(|_key, value| {
-            objects.insert(value.object.clone());
+            objects.insert(value.blob.clone());
             true
         });
 
@@ -506,7 +506,7 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Database<Key, Output> {
         Self {
             core: Default::default(),
             remotes: Default::default(),
-            objects: Objects::new(),
+            blobs: Blobs::new(),
         }
     }
 }

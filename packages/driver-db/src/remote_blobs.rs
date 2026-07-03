@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use smol_hyper_client::{Client, USER_AGENT as USER_AGENT_VALUE, Uri};
 
-use crate::{Object, Objects, Options};
+use crate::{Blob, Blobs, Options};
 use driver_util::SerializedMap;
 
 type EmptyBody = http_body_util::Empty<hyper::body::Bytes>;
@@ -20,16 +20,16 @@ fn default_client() -> MyClient {
     MyClient::new()
 }
 
-/// A store for all URLs that have been fetched remotely. Maps a URL to an object hash and
+/// A store for all URLs that have been fetched remotely. Maps a URL to an blob hash and
 /// expiration time, if present on the fetched headers.
 #[derive(Debug, Serialize, Deserialize)]
-pub struct RemoteObjects {
+pub struct RemoteBlobs {
     #[serde(skip, default = "default_client")]
     client: MyClient,
-    pub(crate) cache: SerializedMap<Uri, RemoteObject>,
+    pub(crate) cache: SerializedMap<Uri, RemoteBlob>,
 }
 
-impl Default for RemoteObjects {
+impl Default for RemoteBlobs {
     fn default() -> Self {
         Self {
             client: default_client(),
@@ -39,12 +39,12 @@ impl Default for RemoteObjects {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RemoteObject {
-    /// The stored object we fetched.
-    pub object: Object,
-    /// The time at which we fetched the object.
+pub struct RemoteBlob {
+    /// The stored blob we fetched.
+    pub blob: Blob,
+    /// The time at which we fetched the blob.
     fetched: Timestamp,
-    /// How long after `fetched` can we continue to treat the object as "fresh" (don't need to
+    /// How long after `fetched` can we continue to treat the blob as "fresh" (don't need to
     /// fetch again)? Calculated according to <https://httpwg.org/specs/rfc9111.html#calculating.freshness.lifetime>,
     /// based on the HTTP responose headers.
     freshness_lifetime: Span,
@@ -53,8 +53,8 @@ pub struct RemoteObject {
     etag: Option<Vec<u8>>,
 }
 
-impl RemoteObject {
-    /// Returns whether the object is still fresh at the time of the call.
+impl RemoteBlob {
+    /// Returns whether the blob is still fresh at the time of the call.
     fn is_fresh(&self) -> bool {
         let now = Timestamp::now();
         let since_then = now - self.fetched;
@@ -65,44 +65,41 @@ impl RemoteObject {
     }
 }
 
-impl RemoteObjects {
+impl RemoteBlobs {
     /// Fetches a remote URL and adds it to the local store if not present or too stale.
     /// If the URL is present in the cache and still fresh, uses that instead of fetching.
     pub async fn fetch<E>(
         &self,
         executor: &E,
         options: &Options,
-        objects: &Objects,
+        blobs: &Blobs,
         uri: Uri,
-    ) -> driver_util::Result<RemoteObject>
+    ) -> driver_util::Result<RemoteBlob>
     where
         E: smol_hyper_client::Executor<EmptyBody>,
     {
         let (req, why) = {
-            // Limit lifetime of the remote object that we use to build the request
-            let remote_object = self.cache.get_async(&uri).await;
-            if let Some(ref remote_object) = remote_object
-                && remote_object.is_fresh()
+            // Limit lifetime of the remote blob that we use to build the request
+            let remote_blob = self.cache.get_async(&uri).await;
+            if let Some(ref remote_blob) = remote_blob
+                && remote_blob.is_fresh()
             {
-                // If there is a fresh object in the cache, just use that
-                return Ok((*remote_object).clone());
+                // If there is a fresh blob in the cache, just use that
+                return Ok((*remote_blob).clone());
             }
 
             // Otherwise, we need to fetch the URL.
             let mut req = hyper::Request::get(uri.clone())
                 .header(USER_AGENT, USER_AGENT_VALUE)
                 .header(HOST, uri.host().ok_or(driver_util::Error::new("no host"))?);
-            if let Some(ref remote_object) = remote_object {
-                req = req.header(
-                    IF_MODIFIED_SINCE,
-                    format_header_date(remote_object.fetched)?,
-                );
-                if let Some(etag) = &remote_object.etag {
+            if let Some(ref remote_blob) = remote_blob {
+                req = req.header(IF_MODIFIED_SINCE, format_header_date(remote_blob.fetched)?);
+                if let Some(etag) = &remote_blob.etag {
                     req = req.header(IF_NONE_MATCH, HeaderValue::from_bytes(etag)?);
                 }
             }
 
-            let why = match remote_object {
+            let why = match remote_blob {
                 None => "not fetched",
                 Some(_) => "stale",
             };
@@ -116,16 +113,16 @@ impl RemoteObjects {
         let status = resp.status();
         if !status.is_success() {
             if status == StatusCode::NOT_MODIFIED {
-                // Cache thinks the object we have locally is still fresh, keep it around and
+                // Cache thinks the blob we have locally is still fresh, keep it around and
                 // update the headers.
                 let headers = ResponseHeaders::from_headers(resp.headers());
                 return match self.cache.entry_async(uri).await {
                     scc::hash_map::Entry::Occupied(mut entry) => {
-                        *entry = headers.with_object(entry.object.clone());
+                        *entry = headers.with_blob(entry.blob.clone());
                         Ok(entry.clone())
                     }
                     scc::hash_map::Entry::Vacant(_) => Err(driver_util::Error::new(
-                        "server returned 304, but object not found in cache. please clear your local cache.",
+                        "server returned 304, but blob not found in cache. please clear your local cache.",
                     )),
                 };
             }
@@ -139,12 +136,12 @@ impl RemoteObjects {
 
         let body = resp.into_body();
         let body = body.collect().await?.to_bytes();
-        let object = objects.store(options, body.into())?;
+        let blob = blobs.store(options, body.into())?;
 
-        let remote_object = headers.with_object(object);
-        let _ = self.cache.upsert_async(uri, remote_object.clone()).await;
+        let remote_blob = headers.with_blob(blob);
+        let _ = self.cache.upsert_async(uri, remote_blob.clone()).await;
 
-        Ok(remote_object)
+        Ok(remote_blob)
     }
 }
 
@@ -156,14 +153,14 @@ struct ResponseHeaders {
 }
 
 impl ResponseHeaders {
-    fn with_object(self, object: Object) -> RemoteObject {
+    fn with_blob(self, blob: Blob) -> RemoteBlob {
         let Self {
             fetched,
             freshness_lifetime,
             etag,
         } = self;
-        RemoteObject {
-            object,
+        RemoteBlob {
+            blob,
             fetched,
             freshness_lifetime,
             etag,

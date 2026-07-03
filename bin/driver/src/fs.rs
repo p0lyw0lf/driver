@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use futures_concurrency::future::TryJoin as _;
 
-use driver_engine::{Object, query};
+use driver_engine::{Blob, query};
 use driver_query_ssg::boa::{RunJs, WriteOutputs, parse_args};
 use driver_query_ssg::{QueryContext, QueryOutput};
 
@@ -67,9 +67,8 @@ impl RunOutput {
                     write(
                         root,
                         base,
-                        self.curr.iter().filter(|(path, object)| {
-                            prev.get(*path)
-                                .is_none_or(|prev_object| &prev_object != object)
+                        self.curr.iter().filter(|(path, blob)| {
+                            prev.get(*path).is_none_or(|prev_blob| &prev_blob != blob)
                         }),
                     ),
                     remove(
@@ -90,14 +89,14 @@ impl RunOutput {
 async fn write(
     root: &QueryContext,
     base: &Path,
-    iter: impl Iterator<Item = (&PathBuf, &Object)>,
+    iter: impl Iterator<Item = (&PathBuf, &Blob)>,
 ) -> driver_util::Result<()> {
     let mut futs = Vec::new();
-    for (path, object) in iter {
+    for (path, blob) in iter {
         let full_path = base.join(path);
         futs.push(async move {
             std::fs::create_dir_all(full_path.parent().unwrap())?;
-            root.db().objects.copy(root.options(), object, &full_path)?;
+            root.db().blobs.copy(root.options(), blob, &full_path)?;
             driver_util::Result::Ok(())
         });
     }

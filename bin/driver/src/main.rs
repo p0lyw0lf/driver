@@ -65,12 +65,12 @@ fn real_main() -> driver_util::Result<()> {
                 .long_about("Runs a Javascript file, writing all files it outputs, then watches for changes to re-run the build.")
         ))
         .subcommand(Command::new("print-graph").arg(arg!(--"with-outputs" "In addition to printing each dependency key, also print each dependency output")))
-        .subcommand(Command::new("clean").about("Allows for cleaning the database and object store.")
+        .subcommand(Command::new("clean").about("Allows for cleaning the database and blob store.")
             .arg(arg!(--key <prefix> "Removes all keys starting with the given prefix from the database").action(ArgAction::Append))
             .arg(arg!(--db "Cleans the entire database"))
             .arg(arg!(--remotes "Cleans the remote cache"))
             .arg(arg!(--dist [dir] "Cleans the output directory.").value_parser(value_parser!(PathBuf)).default_value("./dist"))
-            .arg(arg!(--gc "Keeps only objects in the object store that are referenced in either the db or remote cache"))
+            .arg(arg!(--gc "Keeps only blobs in the blob store that are referenced in either the db or remote cache"))
         )
         .get_matches();
 

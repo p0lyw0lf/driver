@@ -1,10 +1,10 @@
-use driver_engine::Object;
+use driver_engine::Blob;
 
 driver_engine::key!(
     #[input=|_| false]
-    struct MarkdownToHtml(pub Object);
+    struct MarkdownToHtml(pub Blob);
 );
-driver_engine::object_trace!(MarkdownToHtml => (0));
+driver_engine::blob_trace!(MarkdownToHtml => (0));
 
 struct Options {
     comrak_options: comrak::Options<'static>,
@@ -111,7 +111,7 @@ impl comrak::adapters::SyntaxHighlighterAdapter for ArboriumHighlighter {
     }
 }
 
-driver_engine::producer!(MarkdownToHtml(self, ctx) -> driver_util::Result<Object> {
+driver_engine::producer!(MarkdownToHtml(self, ctx) -> driver_util::Result<Blob> {
     let contents = ctx.load_string(&self.0)?;
 
     thread_local! {
@@ -155,8 +155,8 @@ driver_engine::producer!(MarkdownToHtml(self, ctx) -> driver_util::Result<Object
         Ok(out)
     })?;
 
-    let object = ctx.store(output.into_bytes())?;
-    Ok(object)
+    let blob = ctx.store(output.into_bytes())?;
+    Ok(blob)
 });
 
 impl std::fmt::Display for MarkdownToHtml {

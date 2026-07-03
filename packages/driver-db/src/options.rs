@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 pub struct Options {
     pub cache_path: PathBuf,
     pub remotes_path: PathBuf,
-    pub objects_path: PathBuf,
+    pub blobs_path: PathBuf,
 }
 
 impl Options {
@@ -12,7 +12,7 @@ impl Options {
         Self {
             cache_path: dir.join("cache.zst"),
             remotes_path: dir.join("remotes.zst"),
-            objects_path: dir.join("objects"),
+            blobs_path: dir.join("objects"),
         }
     }
 }
