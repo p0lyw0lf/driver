@@ -25,7 +25,7 @@ driver_engine::object_trace!(RunTera => { arg });
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunTeraOutput {
-    pub export: Object,
+    pub export: driver_util::Result<Object>,
     pub writes: WriteOutputs,
 }
 driver_engine::object_trace!(RunTeraOutput => {
@@ -33,9 +33,15 @@ driver_engine::object_trace!(RunTeraOutput => {
     writes,
 });
 
-driver_engine::producer!(RunTera(self, ctx) as (crate::QueryKey) -> driver_util::Result<RunTeraOutput> {
+driver_engine::producer!(RunTera(self, ctx) as (crate::QueryKey) -> RunTeraOutput {
     println!("run_tera(\"{}\", {})", self.file.display(), self.arg);
-    let input = query(ctx, ReadFile(self.file.clone())).await?;
+    let input = match query(ctx, ReadFile(self.file.clone())).await {
+        Ok(input) => input,
+        Err(e) => return RunTeraOutput {
+            export: Err(e),
+            writes: Default::default(),
+        },
+    };
     render_tera_async(ctx, &input, &self.file, &self.arg).await
 });
 
@@ -56,15 +62,13 @@ fn render_tera_async(
     input: &Object,
     file: &Path,
     arg: &JsValue,
-) -> impl Future<Output = driver_util::Result<RunTeraOutput>> {
+) -> impl Future<Output = RunTeraOutput> {
     // The main reason why I can't just block is because the blocking tera template will itself
     // call back into the async executor wanting other threads to complete, with potential for
     // deadlock if all such threads are occupied by tera template renders. So instead, I need
     // to spawn a thread for each template, which isn't ideal.
     // I'll be on the lookout for if tera will support async filters eventually...
-    let state = Arc::new(Mutex::new(
-        State::<driver_util::Result<RunTeraOutput>>::NotStarted,
-    ));
+    let state = Arc::new(Mutex::new(State::<RunTeraOutput>::NotStarted));
     future::poll_fn(move |poll_ctx| {
         // First, check if we are already running/finished. This ensures we only spawn one
         // thread of computation.
@@ -101,34 +105,29 @@ fn render_tera_async(
     })
 }
 
-fn render_tera(
-    ctx: &QueryContext,
-    input: &Object,
-    file: &Path,
-    arg: &JsValue,
-) -> driver_util::Result<RunTeraOutput> {
-    let input = ctx.load_string(input)?;
+fn render_tera(ctx: &QueryContext, input: &Object, file: &Path, arg: &JsValue) -> RunTeraOutput {
     let writes = Arc::new(Mutex::new(WriteOutputs::new()));
 
-    let output = {
+    let export = (|| -> driver_util::Result<_> {
+        let input = ctx.load_string(input)?;
+
         let mut tera = Tera::default();
         register_functions(&mut tera, ctx, writes.clone());
 
         let name = format!("{}", file.display());
         tera.add_raw_template(&name, &input)?;
         let context = js_to_tera_context(arg)?;
-        tera.render(&name, &context)?
-    };
+        let output = tera.render(&name, &context)?;
+
+        ctx.store(output.into_bytes())
+    })();
+
     let writes = Arc::into_inner(writes)
         .expect("should be finished rendering")
         .into_inner()
         .expect("mutex is poisoned");
-    let object = ctx.store(output.into_bytes())?;
 
-    Ok(RunTeraOutput {
-        export: object,
-        writes,
-    })
+    RunTeraOutput { export, writes }
 }
 
 macro_rules! get_arg {
@@ -245,12 +244,14 @@ fn register_functions(tera: &mut Tera, ctx: &QueryContext, writes: Arc<Mutex<Wri
             };
             let output = future::block_on(
                 query(&ctx, run_js.clone())
-            )
-            .map_err(|e| format!("{run_js}:\n\t{e}"))?;
+            );
             {
                 writes.lock().unwrap().extend(output.writes);
             }
-            let output = js_to_tera_value(&output.export)?;
+            let output = js_to_tera_value(
+                &output.export
+                .map_err(|e| format!("{run_js}:\n\t{e}"))?
+            )?;
 
             Ok(output)
         }),
@@ -267,14 +268,13 @@ fn register_functions(tera: &mut Tera, ctx: &QueryContext, writes: Arc<Mutex<Wri
                 file: file.clone(),
                 arg: arg.clone(),
             };
-            let output = future::block_on(
-                query(&ctx, run_tera.clone())
-            )
-            .map_err(|e| format!("{run_tera}:\n\t{e}"))?;
+            let output = future::block_on(query(&ctx, run_tera.clone()));
             {
                 writes.lock().unwrap().extend(output.writes);
             };
-            let output = js_to_tera_value(&JsValue::Store(JsObject { object: output.export }))?;
+            let output = js_to_tera_value(&JsValue::Store(JsObject {
+                object: output.export.map_err(|e| format!("{run_tera}:\n\t{e}"))?,
+            }))?;
 
             Ok(output)
         }),

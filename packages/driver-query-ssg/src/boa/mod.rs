@@ -62,7 +62,7 @@ async_task_local::task_local! {
 async fn with_query_context<T, F: Future<Output = driver_util::Result<T>>>(
     ctx: QueryContext,
     f: impl FnOnce() -> F,
-) -> driver_util::Result<(T, WriteOutputs)> {
+) -> (driver_util::Result<T>, WriteOutputs) {
     let fut = QUERY_CONTEXT.scope(
         ContextFrame {
             ctx,
@@ -70,11 +70,12 @@ async fn with_query_context<T, F: Future<Output = driver_util::Result<T>>>(
         },
         f(),
     );
-    let mut fut = std::pin::pin!(fut);
 
-    let out = fut.as_mut().await?;
+    let mut fut = std::pin::pin!(fut);
+    let out = fut.as_mut().await;
     let popped_frame = fut.take_value().expect("scope should have value");
-    Ok((out, popped_frame.outputs))
+
+    (out, popped_frame.outputs)
 }
 
 fn get_context() -> JsResult<QueryContext> {
@@ -404,13 +405,15 @@ mod driver_module {
         let RunJsOutput {
             export: value,
             writes: outputs,
-        } = query(ctx, task.clone())
-            .await
-            .map_err(|e| JsNativeError::eval().with_message(format!("{task}:\n\t{e}")))?;
+        } = query(ctx, task.clone()).await;
 
         unsafe { push_outputs(outputs) }?;
 
-        Ok(value)
+        value.map_err(|e| {
+            JsNativeError::eval()
+                .with_message(format!("{task}:\n\t{e}"))
+                .into()
+        })
     }
 
     pub async fn run_tera(filename: JsPath, arg: JsValue) -> JsResult<JsValue> {
@@ -425,13 +428,14 @@ mod driver_module {
         let RunTeraOutput {
             export: object,
             writes,
-        } = query(ctx, task.clone())
-            .await
-            .map_err(|e| JsNativeError::eval().with_message(format!("{task}:\n\t{e}",)))?;
+        } = query(ctx, task.clone()).await;
 
         unsafe { push_outputs(writes) }?;
 
-        Ok(JsValue::Store(JsObject { object }))
+        Ok(JsValue::Store(JsObject {
+            object: object
+                .map_err(|e| JsNativeError::eval().with_message(format!("{task}:\n\t{e}",)))?,
+        }))
     }
 
     pub fn file_type(entry_name: String) -> JsResult<String> {
@@ -603,9 +607,8 @@ driver_engine::key!(
 driver_engine::object_trace!(RunJs => { arg });
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(Default))]
 pub struct RunJsOutput {
-    pub export: JsValue,
+    pub export: driver_util::Result<JsValue>,
     pub writes: WriteOutputs,
 }
 driver_engine::object_trace!(RunJsOutput => {
@@ -613,21 +616,21 @@ driver_engine::object_trace!(RunJsOutput => {
     writes,
 });
 
-driver_engine::producer!(RunJs(self, ctx) as (crate::QueryKey) -> driver_util::Result<RunJsOutput> {
+driver_engine::producer!(RunJs(self, ctx) as (crate::QueryKey) -> RunJsOutput {
     println!("{}", self);
 
     let file = self.file.clone();
     let arg = self.arg.clone();
 
-    let object = query(ctx, ReadFile(self.file.clone())).await?;
-    let contents = ctx.load_bytes(&object)?;
+    let (export, writes) = with_query_context(ctx.clone(), async move || {
+        let key = format!("{}({})", file.display(), arg);
+        trace!("with_query_context start {key}");
 
-    let ctx = ctx.clone();
-    let (export, writes) = with_js_ctx(ctx.clone(), arg.clone(), async move |js_ctx| {
-        trace!("with_js_ctx start");
-        let out = with_query_context(ctx, async move || {
-            trace!("with_query_context start {}({})", file.display(), arg);
+        let object = query(ctx, ReadFile(self.file.clone())).await?;
+        let contents = ctx.load_bytes(&object)?;
 
+        let out = with_js_ctx(ctx.clone(), arg.clone(), async move |js_ctx| {
+            trace!("with_js_ctx start");
             let source = boa_engine::Source::from_bytes(&contents).with_path(&file);
             let module = boa_engine::Module::parse(source, None, js_ctx)?;
             let promise = module.load_link_evaluate(js_ctx);
@@ -647,21 +650,16 @@ driver_engine::producer!(RunJs(self, ctx) as (crate::QueryKey) -> driver_util::R
 
             let value = module.namespace(js_ctx).get(js_str!("default"), js_ctx)?;
             let value = JsValue::try_from_js(&value, js_ctx)?;
-            trace!(
-                "with_query_context end {}({}) = {}",
-                file.display(),
-                arg,
-                value
-            );
+            trace!("with_js_ctx end");
             Ok(value)
         })
         .await;
 
-        trace!("with_js_ctx end");
+        trace!("with_query_context end {key} = {out:?}");
         out
     })
-    .await?;
-    Ok(RunJsOutput { export, writes })
+    .await;
+    RunJsOutput { export, writes }
 });
 
 impl std::fmt::Display for RunJs {

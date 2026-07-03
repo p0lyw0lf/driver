@@ -23,8 +23,7 @@ pub async fn run<'a>(
     // SAFETY: we are the one place this function is allowed to be called.
     let prev = match root.db().get_value(&key.clone().into()) {
         None => None,
-        Some(QueryOutput::RunJs(Ok(v))) => Some(v.writes),
-        Some(QueryOutput::RunJs(Err(e))) => return Err(e),
+        Some(QueryOutput::RunJs(v)) => Some(v.writes),
         Some(other) => {
             return Err(driver_util::Error::new(&format!(
                 "expected RunJs, got {other:?}"
@@ -32,7 +31,10 @@ pub async fn run<'a>(
         }
     };
 
-    let output = query(root, key).await?;
+    let output = query(root, key).await;
+    if let Err(e) = output.export {
+        eprintln!("{e}");
+    }
     Ok(RunOutput {
         prev,
         curr: output.writes,

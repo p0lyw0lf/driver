@@ -82,10 +82,13 @@ fn real_main() -> driver_util::Result<()> {
 
         let output = time("ran query", || {
             future::block_on(fs::run(&root, filename.into(), args))
-        })?;
-        time("wrote output", || {
-            future::block_on(output.write(&root, &write_options))
-        })?;
+        });
+        match output {
+            Ok(output) => time("wrote output", || {
+                future::block_on(output.write(&root, &write_options))
+            })?,
+            Err(e) => eprintln!("{e}"),
+        };
     }
 
     if let Some(print_matches) = matches.subcommand_matches("print-graph") {
