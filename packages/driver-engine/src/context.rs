@@ -19,8 +19,14 @@ struct State<Key: Hash + Ord + Eq, Output> {
 }
 
 type OptHooks<Key> = Option<Box<dyn Hooks<Key> + 'static + Send + Sync>>;
-pub trait Hooks<Key> {
-    fn on_compute(&self, key: Key, old_deps: HashSet<Key>, new_deps: HashSet<Key>);
+pub trait Hooks<Key: ProducerBase> {
+    fn on_compute(
+        &self,
+        ctx: &Context<Key>,
+        key: Key,
+        old_deps: HashSet<Key>,
+        new_deps: HashSet<Key>,
+    );
 }
 
 #[derive(Clone)]
@@ -151,7 +157,7 @@ impl<Key: Producer<Key>> Context<Key> {
         trace!("starting query");
         if let Some(parent) = &self.parent {
             info!("adding edge {parent} -> {key}");
-            self.db().add_dependency(parent.clone(), key.clone()).await;
+            self.db().add_dependency(parent.clone(), key.clone());
             trace!("added");
         }
 
@@ -178,14 +184,8 @@ impl<Key: Producer<Key>> Context<Key> {
 
         trace!("removing dependencies");
         // We're about to run the key again, so remove any dependencies it once had
-        let old_deps = self
-            .db()
-            .dependencies(&key)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
-        self.db().remove_all_dependencies(&key).await;
+        let old_deps = self.db().dependencies(&key).unwrap_or_default();
+        self.db().remove_all_dependencies(&key);
         trace!("removed");
 
         let value = key
@@ -199,15 +199,9 @@ impl<Key: Producer<Key>> Context<Key> {
         entry.insert(revision, value.clone());
         trace!("inserted entry");
 
-        let new_deps = self
-            .db()
-            .dependencies(&key)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
+        let new_deps = self.db().dependencies(&key).unwrap_or_default();
         if let Some(hooks) = &self.state.hooks {
-            hooks.on_compute(key.clone(), old_deps, new_deps);
+            hooks.on_compute(self, key.clone(), old_deps, new_deps);
         }
 
         value
@@ -240,7 +234,7 @@ impl<Key: Producer<Key>> Context<Key> {
         }
 
         trace!("trying to get dependencies");
-        let Some(deps) = self.db().dependencies(&key).await else {
+        let Some(deps) = self.db().dependencies::<Vec<_>>(&key) else {
             trace!("no dependencies");
             // Input queries should be handled the above case; these sorts of queries with no
             // dependencies are deterministic ones entirely determined by their key, so we can mark

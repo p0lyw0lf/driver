@@ -88,8 +88,8 @@ impl<Key: Hash + Ord + Eq, Output> Deref for Database<Key, Output> {
 }
 
 impl<Key: driver_util::Key, Output: driver_util::Output> Core<Key, Output> {
-    pub async fn add_dependency(&self, parent: Key, child: Key) {
-        let entry = self.dep_graph.entry_async(parent).await;
+    pub fn add_dependency(&self, parent: Key, child: Key) {
+        let entry = self.dep_graph.entry_sync(parent);
         let mut child = BTreeSet::from([child]);
         entry
             .and_modify(|deps| {
@@ -98,13 +98,13 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Core<Key, Output> {
             .or_insert(child);
     }
 
-    pub async fn remove_all_dependencies(&self, parent: &Key) {
-        self.dep_graph.remove_async(parent).await;
+    pub fn remove_all_dependencies(&self, parent: &Key) {
+        self.dep_graph.remove_sync(parent);
     }
 
-    pub async fn dependencies(&self, parent: &Key) -> Option<Vec<Key>> {
-        let deps = self.dep_graph.get_async(parent).await?;
-        Some(deps.get().iter().map(Clone::clone).collect())
+    pub fn dependencies<T: FromIterator<Key>>(&self, parent: &Key) -> Option<T> {
+        let deps = self.dep_graph.get_sync(parent)?;
+        Some(deps.get().iter().cloned().collect())
     }
 
     /// Running this acquires a lock on the given entry, meaning the current task will suspend

@@ -29,6 +29,20 @@ fn time<T>(message: &'static str, f: impl FnOnce() -> T) -> T {
     out
 }
 
+/// Adds all the necessary arguments to a command to actually do a build.
+fn build_command(command: Command) -> Command {
+    command
+        .arg(
+            arg!(--dist <dir> "Where to output the files.")
+                .value_parser(value_parser!(PathBuf))
+                .default_value("./dist"),
+        )
+        .arg(arg!(--"no-delete-missing" "Only adds new output files, never deletes old ones"))
+        .arg(arg!(<script> "The file to run").value_parser(value_parser!(PathBuf)))
+        .arg(Arg::new("remaining").last(true).action(ArgAction::Append))
+        .long_about("These arguments are provided as an array of strings to the file being run.")
+}
+
 fn real_main() -> driver_util::Result<()> {
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| ["warn"].join(",").into()))
@@ -42,12 +56,14 @@ fn real_main() -> driver_util::Result<()> {
     let _ = include_str!("../Cargo.toml");
     let matches = command!()
         .arg(arg!(--cache <dir> "Where to save the cache.").value_parser(value_parser!(PathBuf)).default_value("./.driver"))
-        .subcommand(Command::new("run")
-            .long_about("Runs a Javascript file, writing all files it outputs")
-            .arg(arg!(--dist <dir> "Where to output the files.").value_parser(value_parser!(PathBuf)).default_value("./dist"))
-            .arg(arg!(--"no-delete-missing" "Only adds new output files, never deletes old ones"))
-            .arg(arg!(<script> "The file to run").value_parser(value_parser!(PathBuf)))
-            .arg(Arg::new("remaining").last(true).action(ArgAction::Append)).long_about("These arguments are provided as an array of strings to the file being run."))
+        .subcommand(build_command(
+            Command::new("run")
+                .long_about("Runs a Javascript file, writing all files it outputs")
+        ))
+        .subcommand(build_command(
+            Command::new("watch")
+                .long_about("Runs a Javascript file, writing all files it outputs, then watches for changes to re-run the build.")
+        ))
         .subcommand(Command::new("print-graph").arg(arg!(--"with-outputs" "In addition to printing each dependency key, also print each dependency output")))
         .subcommand(Command::new("clean").about("Allows for cleaning the database and object store.")
             .arg(arg!(--key <prefix> "Removes all keys starting with the given prefix from the database").action(ArgAction::Append))
@@ -63,11 +79,11 @@ fn real_main() -> driver_util::Result<()> {
         .expect("--cache must be provided");
     let options = driver_engine::Options::with_base_dir(cache);
 
-    let root = time("restored database", || {
-        QueryContext::create_root(options, None)
-    });
-
     if let Some(run_matches) = matches.subcommand_matches("run") {
+        let root = time("restored database", || {
+            QueryContext::create_root(options, None)
+        });
+
         let filename = run_matches
             .get_one::<PathBuf>("script")
             .expect("<script> must be provided.");
@@ -92,17 +108,59 @@ fn real_main() -> driver_util::Result<()> {
             })?,
             Err(e) => eprintln!("{e}"),
         };
-    }
 
-    if let Some(print_matches) = matches.subcommand_matches("print-graph") {
+        time("saved database", || root.destroy_root())?;
+    } else if let Some(watch_matches) = matches.subcommand_matches("watch") {
+        let notifier = inotify::Inotify::init().expect("could not initialize inotify");
+        let watches = watches::WatchHooks::new(watches::Watches::new(notifier.watches()));
+        let root = time("restored database", || {
+            QueryContext::create_root(options, Some(Box::new(watches.clone())))
+        });
+
+        let filename = watch_matches
+            .get_one::<PathBuf>("script")
+            .expect("<script> must be provided.");
+        let dist = watch_matches
+            .get_one::<PathBuf>("dist")
+            .expect("--dist must be provided");
+        let write_options = fs::WriteOptions {
+            output_path: dist.clone(),
+            no_delete_missing: watch_matches.get_flag("no-delete-missing"),
+        };
+        let args = watch_matches
+            .get_many::<String>("remaining")
+            .unwrap_or_default()
+            .map(|s| s.deref());
+
+        let output = time("ran query", || {
+            future::block_on(fs::run(&root, filename.into(), args))
+        });
+        {
+            // Start watching all the files that were referenced in the query.
+            watches.lock().commit();
+        }
+        match output {
+            Ok(output) => time("wrote output", || {
+                future::block_on(output.write(&root, &write_options))
+            })?,
+            Err(e) => eprintln!("{e}"),
+        };
+
+        // TODO: start reading from event stream that the notifier gives us. Need some way to
+        // invalidate ReadFile & ListDirectory keys in the context.
+    } else if let Some(print_matches) = matches.subcommand_matches("print-graph") {
+        let root = time("restored database", || {
+            QueryContext::create_root(options, None)
+        });
         if print_matches.get_flag("with-outputs") {
             println!("{}", root.db().display_dep_graph_with_outputs());
         } else {
             println!("{}", root.db().display_dep_graph());
         }
-    }
-
-    if let Some(forget_matches) = matches.subcommand_matches("clean") {
+    } else if let Some(forget_matches) = matches.subcommand_matches("clean") {
+        let root = time("restored database", || {
+            QueryContext::create_root(options, None)
+        });
         if forget_matches.get_flag("db") {
             // Delete entire database
             root.db().clear();
@@ -127,9 +185,9 @@ fn real_main() -> driver_util::Result<()> {
         if forget_matches.get_flag("gc") {
             root.db().garbage_collect(root.options())?;
         }
-    }
 
-    time("saved database", || root.destroy_root())?;
+        time("saved database", || root.destroy_root())?;
+    }
 
     Ok(())
 }

@@ -1,8 +1,10 @@
-use std::collections::HashMap;
-use std::num::NonZeroU32;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use inotify::{WatchDescriptor, WatchMask};
+
+use driver_query_ssg::{QueryContext, QueryKey};
 
 /// Represents a single watch of a path.
 struct Watch {
@@ -162,6 +164,76 @@ impl Watches {
             } else if count < 0 {
                 self.active_watches
                     .remove(&directory, (-count).try_into().unwrap());
+            }
+        }
+    }
+}
+
+/// Wrapper around [`Watches`] for use in [`driver_engine::Hooks`]
+#[derive(Clone)]
+pub struct WatchHooks(Arc<Mutex<Watches>>);
+
+impl WatchHooks {
+    pub fn new(watches: Watches) -> Self {
+        Self(Arc::new(Mutex::new(watches)))
+    }
+
+    pub fn lock(&self) -> MutexGuard<'_, Watches> {
+        self.0.lock().unwrap()
+    }
+}
+
+impl driver_engine::Hooks<QueryKey> for WatchHooks {
+    fn on_compute(
+        &self,
+        ctx: &QueryContext,
+        _key: QueryKey,
+        old_deps: HashSet<QueryKey>,
+        new_deps: HashSet<QueryKey>,
+    ) {
+        let only_in_old = old_deps.difference(&new_deps);
+        let only_in_new = new_deps.difference(&old_deps);
+
+        let mut this = self.0.lock().unwrap();
+        for key in only_in_old {
+            this.recursive_remove(ctx, key);
+        }
+
+        for key in only_in_new {
+            match key {
+                QueryKey::ReadFile(file) => {
+                    this.add_file(file.0.clone());
+                }
+                QueryKey::ListDirectory(directory) => {
+                    this.add_directory(directory.0.clone());
+                }
+                _otherwise => {
+                    // If the query is newly run, it will have already added the watches thru this hook.
+                }
+            }
+        }
+    }
+}
+
+impl Watches {
+    /// Removes all watches under the given key.
+    fn recursive_remove(&mut self, ctx: &QueryContext, key: &QueryKey) {
+        match key {
+            QueryKey::ReadFile(file) => {
+                self.remove_file(file.0.clone());
+            }
+            QueryKey::ListDirectory(directory) => {
+                self.remove_directory(directory.0.clone());
+            }
+            otherwise => {
+                for dep in ctx
+                    .db()
+                    .dependencies::<Vec<_>>(otherwise)
+                    .into_iter()
+                    .flatten()
+                {
+                    self.recursive_remove(ctx, &dep);
+                }
             }
         }
     }

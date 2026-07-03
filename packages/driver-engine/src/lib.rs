@@ -43,6 +43,7 @@
 
 mod context;
 pub use context::Context;
+pub use context::Hooks;
 
 mod producer;
 pub use producer::Downcastable;
