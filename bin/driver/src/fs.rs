@@ -75,7 +75,7 @@ impl RunOutput {
                     remove(
                         base,
                         prev.keys().filter(|path| {
-                            !(options.no_delete_missing || self.curr.contains_key(*path))
+                            !options.no_delete_missing && !self.curr.contains_key(*path)
                         }),
                     ),
                 )

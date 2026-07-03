@@ -10,6 +10,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 use driver_query_ssg::QueryContext;
 
 mod fs;
+mod watches;
 
 fn main() {
     match real_main() {
