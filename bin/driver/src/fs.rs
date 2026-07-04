@@ -64,19 +64,17 @@ impl RunOutput {
                 write(root, base, self.curr.iter()).await
             }
             Some(prev) => {
+                let diff = self.curr.diff(&prev);
                 let ((), ()) = (
-                    write(
-                        root,
-                        base,
-                        self.curr.iter().filter(|(path, blob)| {
-                            prev.get(*path).is_none_or(|prev_blob| &prev_blob != blob)
-                        }),
-                    ),
+                    write(root, base, diff.to_write.into_iter()),
                     remove(
                         base,
-                        prev.keys().filter(|path| {
-                            !options.no_delete_missing && !self.curr.contains_key(*path)
-                        }),
+                        if options.no_delete_missing {
+                            vec![]
+                        } else {
+                            diff.to_remove
+                        }
+                        .into_iter(),
                     ),
                 )
                     .try_join()

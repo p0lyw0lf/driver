@@ -1,4 +1,6 @@
 use std::cmp::Ordering;
+use std::collections::btree_set::Iter;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 
 use crypto_common::hazmat::{SerializableState, SerializedState};
@@ -17,7 +19,7 @@ pub enum WriteOutput {
     One { path: PathBuf, blob: Blob },
     /// Represents a collection of writes.
     Many {
-        outputs: Vec<WriteOutput>,
+        outputs: BTreeSet<WriteOutput>,
         /// Collected hash of every node inside [`outputs`], for faster comparisons.
         /// We need to be extremely cautious in upholding this guarantee; in particular, due to the
         /// way hashes are calculated, we MUST NOT modify children added to the [`outputs`] after
@@ -64,12 +66,12 @@ impl WriteOutput {
                         output.hash_update(&mut hash);
                         hash
                     },
-                    outputs: vec![old_self, output],
+                    outputs: [old_self, output].into_iter().collect(),
                 };
             }
             WriteOutput::Many { outputs, hash } => {
                 output.hash_update(hash);
-                outputs.push(output);
+                outputs.insert(output);
             }
         }
     }
@@ -199,10 +201,163 @@ where
     deserializer.deserialize_bytes(HashVisitor)
 }
 
+/// Tree-traversing iterator
+pub enum PathBufBlobIterator<'a> {
+    Finished,
+    Single((&'a PathBuf, &'a Blob)),
+    More {
+        curr: Iter<'a, WriteOutput>,
+        prev: Option<Box<PathBufBlobIterator<'a>>>,
+    },
+}
+
+impl<'a> Iterator for PathBufBlobIterator<'a> {
+    type Item = (&'a PathBuf, &'a Blob);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match std::mem::replace(self, Self::Finished) {
+            Self::Finished => None,
+            Self::Single(item) => Some(item),
+            Self::More { mut curr, prev } => loop {
+                match curr.next() {
+                    Some(WriteOutput::Zero) => continue,
+                    Some(WriteOutput::One { path, blob }) => {
+                        *self = PathBufBlobIterator::More { curr, prev };
+                        return Some((path, blob));
+                    }
+                    Some(WriteOutput::Many { outputs, hash: _ }) => {
+                        *self = PathBufBlobIterator::More {
+                            curr: outputs.iter(),
+                            prev: Some(Box::new(std::mem::replace(self, Self::Finished))),
+                        };
+                        return self.next();
+                    }
+                    None => {
+                        *self = match prev {
+                            Some(prev) => *prev,
+                            None => Self::Finished,
+                        };
+                        return self.next();
+                    }
+                }
+            },
+        }
+    }
+}
+
+impl WriteOutput {
+    pub fn iter(&self) -> PathBufBlobIterator<'_> {
+        match self {
+            WriteOutput::Zero => PathBufBlobIterator::Finished,
+            WriteOutput::One { path, blob } => PathBufBlobIterator::Single((path, blob)),
+            WriteOutput::Many { outputs, hash: _ } => PathBufBlobIterator::More {
+                curr: outputs.iter(),
+                prev: None,
+            },
+        }
+    }
+}
+
 enum WriteOutputIterator<'a> {
     Finished,
-    More {
-        curr: std::slice::Iter<'a, WriteOutput>,
-        prev: Option<&'a WriteOutput>,
-    },
+    Single(&'a WriteOutput),
+    Many(Iter<'a, WriteOutput>),
+}
+
+impl<'a> Iterator for WriteOutputIterator<'a> {
+    type Item = &'a WriteOutput;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match std::mem::replace(self, WriteOutputIterator::Finished) {
+            WriteOutputIterator::Finished => None,
+            WriteOutputIterator::Single(write_output) => Some(write_output),
+            WriteOutputIterator::Many(mut iter) => {
+                let out = iter.next();
+                if out.is_some() {
+                    *self = WriteOutputIterator::Many(iter);
+                }
+                out
+            }
+        }
+    }
+}
+
+impl WriteOutput {
+    fn iter_raw(&self) -> WriteOutputIterator<'_> {
+        match self {
+            WriteOutput::Zero => WriteOutputIterator::Finished,
+            WriteOutput::One { .. } => WriteOutputIterator::Single(self),
+            WriteOutput::Many { outputs, hash: _ } => WriteOutputIterator::Many(outputs.iter()),
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct WriteOutputDiff<'a> {
+    pub to_write: HashMap<&'a PathBuf, &'a Blob>,
+    pub to_remove: Vec<&'a PathBuf>,
+}
+
+impl WriteOutput {
+    /// to_write will contain all the paths in [`self`] that aren't present in [`old`], and
+    /// to_remove will contain all the paths in [`old`] that aren't present in [`self`].
+    ///
+    /// NOTE: both of those are strictly conservative estimates: to_remove might overlap with
+    /// to_write. In such a case, to_write takes precedence.
+    pub fn diff<'a>(&'a self, old: &'a WriteOutput) -> WriteOutputDiff<'a> {
+        // TODO: these need to be iterators of raw WriteOutput, instead of iterators of (PathBuf,
+        // Blob) in order for my thing to work properly.
+        let mut new = self.iter_raw().peekable();
+        let mut old = old.iter_raw().peekable();
+
+        let mut to_write = HashMap::new();
+        let mut to_remove = Vec::new();
+
+        // This algorithm makes use of the property that both the new and old lists MUST be in
+        // sorted order. It compares the next element in order, comparing them.
+        // If the "new" one is greater, that means there are some "old" things that are missing.
+        // If the "old" one is greater, that means there are some "new" things that have been added.
+        // If they are equal, we can advance both.
+        loop {
+            let (new_output, old_output) = match (new.peek(), old.peek()) {
+                (None, None) => break,
+                (None, Some(old_output)) => {
+                    to_remove.extend(old_output.iter().map(|(path, _)| path));
+                    let _ = old.next();
+                    continue;
+                }
+                (Some(new_output), None) => {
+                    to_write.extend(new_output.iter());
+                    let _ = new.next();
+                    continue;
+                }
+                (Some(new_output), Some(old_output)) => (new_output, old_output),
+            };
+
+            match new_output.cmp(old_output) {
+                Ordering::Less => {
+                    to_write.extend(new_output.iter());
+                    let _ = new.next();
+                }
+                Ordering::Greater => {
+                    to_remove.extend(old_output.iter().map(|(path, _)| path));
+                    let _ = old.next();
+                }
+                Ordering::Equal => {
+                    let _ = new.next();
+                    let _ = old.next();
+                }
+            }
+
+            // TODO: I think this will work, but it's not recursive enough for me. That is, we no
+            // longer have a way to correlate different WriteOutput::Many with each other, so we
+            // can't diff ones that _should_ have some structural sharing. I'll need to think a bit
+            // harder about how it's possible to do this...
+        }
+
+        WriteOutputDiff {
+            to_write,
+            to_remove,
+        }
+    }
 }
