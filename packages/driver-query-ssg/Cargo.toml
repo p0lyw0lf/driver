@@ -1,6 +1,6 @@
 [package]
 name = "driver-query-ssg"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
@@ -23,7 +23,7 @@ scc = "3.6"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 slug = "0.1"
-tera = "1"
+tera = { git = "https://github.com/p0lyw0lf/tera", branch = "kwargs-iter" }
 tracing = "0.1"
 zstd = "0.13"
 zune-core = "0.5"
