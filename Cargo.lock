@@ -2471,6 +2471,7 @@ dependencies = [
  "driver-util",
  "futures-concurrency",
  "futures-lite",
+ "jiff",
  "kamadak-exif",
  "katex-rs",
  "minify-html",

@@ -270,6 +270,57 @@ fn register_functions(tera: &mut Tera, ctx: &QueryContext, writes: Arc<Mutex<Wri
         }),
     );
 
+    // Extra utilities that really should be Tera built-ins
+
+    tera.register_filter(
+        "date",
+        |arg: &tera::Value, args: tera::Kwargs, _state: &tera::State<'_>| -> TeraResult<String> {
+            // I think we don't want to have a dependency on what timezone this is run in, because
+            // that's a dependency that isn't tracked by the system. ah well neither is `now()` I
+            // guess.
+            // TODO: allow specifying this as a kwarg too
+            let tz = jiff::tz::TimeZone::system();
+
+            let time = if let Some(s) = arg.as_str() {
+                use jiff::fmt::temporal::DateTimeParser;
+                static PARSER: DateTimeParser = DateTimeParser::new();
+                if let Ok(datetime) = PARSER.parse_datetime(s) {
+                    datetime.to_zoned(tz).map_err(|e| {
+                        tera::Error::message(format!("putting date {s} in timezone:\n\t:{e}"))
+                    })
+                } else if let Ok(ts) = PARSER.parse_timestamp(s) {
+                    Ok(jiff::Zoned::new(ts, tz))
+                } else {
+                    Err(tera::Error::message(format!(
+                        "parsing timestamp as string: {s}"
+                    )))
+                }
+            } else if let Some(i) = arg.as_i64() {
+                let ts = jiff::Timestamp::from_millisecond(i).map_err(|e| {
+                    tera::Error::chain(format!("parsing timestamp as milliseconds: {i}"), e)
+                })?;
+                Ok(jiff::Zoned::new(ts, tz))
+            } else {
+                Err(tera::Error::message(format!(
+                    "invalid input for date filter: {arg:?}"
+                )))
+            }?;
+
+            let format: &str = args.must_get("format")?;
+
+            Ok(time.strftime(format).to_string())
+        },
+    );
+
+    tera.register_function(
+        "now",
+        wrap_function!(move() |_args| {
+            // This breaks purity, but that's probably OK?
+            let ts = jiff::Timestamp::now();
+            Ok(ts.as_millisecond().into())
+        }),
+    );
+
     tera.register_function(
         "zip",
         wrap_function!(move() |args| {

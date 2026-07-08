@@ -15,6 +15,7 @@ boa_gc = { version = "0.21", features = ["boa_string"] }
 comrak = "0.52"
 futures-concurrency = "7.7"
 futures-lite = "2.6"
+jiff = "0.2"
 kamadak-exif = "0.6"
 katex-rs = "0.2"
 minify-html = "0.18"
