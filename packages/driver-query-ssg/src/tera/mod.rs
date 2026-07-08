@@ -137,7 +137,7 @@ fn register_functions(tera: &mut Tera, ctx: &QueryContext, writes: Arc<Mutex<Wri
             $(
                 let $i = $i.clone();
             )*
-            move |$args: tera::Kwargs, _state| -> TeraResult<tera::Value> {
+            move |$args: tera::Kwargs, _state: &tera::State<'_>| -> TeraResult<tera::Value> {
                 $body
             }
         }};
@@ -148,7 +148,7 @@ fn register_functions(tera: &mut Tera, ctx: &QueryContext, writes: Arc<Mutex<Wri
             $(
                 let $i = $i.clone();
             )*
-            move |$arg: $ty, _args, _state| -> TeraResult<tera::Value> {
+            move |$arg: $ty, _args, _state: &tera::State<'_>| -> TeraResult<tera::Value> {
                 $body
             }
         }};
@@ -389,7 +389,7 @@ fn tera_to_js_value(value: &tera::Value) -> TeraResult<JsValue> {
         match tera_to_js_store_object(obj) {
             Ok(blob) => JsValue::Store(JsBlob { blob }),
             Err(_) => JsValue::Object(
-                obj.into_iter()
+                obj.iter()
                     .filter_map(|(key, value)| -> Option<TeraResult<_>> {
                         let key = key.as_str()?.to_string();
                         let value = tera_to_js_value(value);
