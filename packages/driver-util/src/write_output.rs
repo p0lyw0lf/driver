@@ -8,7 +8,7 @@ use crypto_common::typenum::Unsigned;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
-use crate::Blob;
+use crate::{Blob, BlobTrace};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub enum WriteOutput {
@@ -29,7 +29,16 @@ pub enum WriteOutput {
         hash: sha2::Sha256,
     },
 }
-crate::no_blobs!(WriteOutput);
+
+impl BlobTrace for WriteOutput {
+    fn trace(&self) -> impl Iterator<Item = &'_ Blob> {
+        match self {
+            Self::Zero => Box::new(std::iter::empty()) as Box<dyn Iterator<Item = &'_ Blob>>,
+            Self::One { path: _, blob } => Box::new(std::iter::once(blob)),
+            Self::Many { outputs, hash: _ } => Box::new(outputs.iter().flat_map(BlobTrace::trace)),
+        }
+    }
+}
 
 impl WriteOutput {
     fn hash_update(&self, hash: &mut impl Digest) {
