@@ -361,3 +361,46 @@ impl WriteOutput {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    fn o(i: u8) -> crate::Blob {
+        unsafe { crate::Blob::from_hash([i; 32].into()) }
+    }
+
+    #[test]
+    fn nested_iter() {
+        let mut a = WriteOutput::default();
+        let a1 = (PathBuf::from("a1"), o(1));
+        a.push(a1.0.clone(), a1.1.clone());
+        let a2 = (PathBuf::from("a2"), o(2));
+        a.push(a2.0.clone(), a2.1.clone());
+
+        let mut b = WriteOutput::default();
+        let b1 = (PathBuf::from("b1"), o(3));
+        b.push(b1.0.clone(), b1.1.clone());
+        let b2 = (PathBuf::from("b2"), o(4));
+        b.push(b2.0.clone(), b2.1.clone());
+        let b3 = (PathBuf::from("b3"), o(5));
+        b.push(b3.0.clone(), b3.1.clone());
+
+        let mut c = WriteOutput::default();
+        let c1 = (PathBuf::from("c1"), o(6));
+        c.push(c1.0.clone(), c1.1.clone());
+        c.merge(a);
+        let c2 = (PathBuf::from("c2"), o(7));
+        c.push(c2.0.clone(), c2.1.clone());
+        c.merge(b);
+        let c3 = (PathBuf::from("c3"), o(8));
+        c.push(c3.0.clone(), c3.1.clone());
+
+        assert_eq!(
+            c.iter()
+                .map(|(path, blob)| (path.clone(), blob.clone()))
+                .collect::<Vec<_>>(),
+            [c1, a1, a2, c2, b1, b2, b3, c3,]
+        );
+    }
+}
