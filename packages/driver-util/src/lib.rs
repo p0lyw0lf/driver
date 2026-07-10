@@ -18,5 +18,7 @@ pub use blob::BlobTrace;
 mod output;
 pub use output::Output;
 
+mod hash;
+
 mod write_output;
 pub use write_output::WriteOutput;

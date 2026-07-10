@@ -4,6 +4,8 @@
 use std::hash::Hash;
 use std::marker::PhantomData;
 
+use crypto_common::hazmat::{SerializableState, SerializedState};
+use crypto_common::typenum::Unsigned;
 use scc::hash_map::HashMap;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize};

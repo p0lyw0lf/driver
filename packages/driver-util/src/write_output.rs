@@ -1,319 +1,156 @@
-use std::cmp::Ordering;
-use std::collections::btree_set::Iter;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, btree_map};
 use std::path::PathBuf;
 
-use crypto_common::hazmat::{SerializableState, SerializedState};
-use crypto_common::typenum::Unsigned;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
-use crate::{Blob, BlobTrace};
+use crate::blob::{Blob, BlobTrace};
+use crate::hash::{Hash, Sha256Hasher};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub enum WriteOutput {
-    /// Represents no writes. Exists so we don't _always_ allocate a Vec.
-    #[default]
-    Zero,
-    /// Represents a single desired write.
-    One { path: PathBuf, blob: Blob },
-    /// Represents a collection of writes.
-    Many {
-        outputs: BTreeSet<WriteOutput>,
-        /// Collected hash of every node inside [`outputs`], for faster comparisons.
-        /// We need to be extremely cautious in upholding this guarantee; in particular, due to the
-        /// way hashes are calculated, we MUST NOT modify children added to the [`outputs`] after
-        /// they've been added. The API we expose should be sufficient for this.
-        #[serde(serialize_with = "serialize_hash")]
-        #[serde(deserialize_with = "deserialize_hash")]
-        hash: sha2::Sha256,
-    },
+#[derive(Debug, Serialize, Deserialize)]
+struct PartialWriteOutput<Key: Ord> {
+    direct: BTreeMap<PathBuf, Blob>,
+    // TODO: Right now, the main complaint I have is that all these indirect dependencies are full
+    // objects, meaning they need to be cloned fresh out of the cached computation store every time.
+    // There's **gotta* be a way to get around this, but I haven't found it yet...
+    //
+    // All this does so far is do a slightly (algorithmically) faster diffing algorithm that can
+    // ignore when subkeys haven't changed. What we can't do (and what I really really want to do)
+    // is make is so that _we don't even need to materialize dirs that haven't changed_.
+    //
+    // I think the way we need to do this is with another content-addressed sore? But just for the
+    // WriteOutputs instead of the Blobs.
+    indirect: BTreeMap<Key, WriteOutput<Key>>,
 }
 
-impl BlobTrace for WriteOutput {
-    fn trace(&self) -> impl Iterator<Item = &'_ Blob> {
-        match self {
-            Self::Zero => Box::new(std::iter::empty()) as Box<dyn Iterator<Item = &'_ Blob>>,
-            Self::One { path: _, blob } => Box::new(std::iter::once(blob)),
-            Self::Many { outputs, hash: _ } => Box::new(outputs.iter().flat_map(BlobTrace::trace)),
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WriteOutput<Key: Ord> {
+    inner: PartialWriteOutput<Key>,
+    /// Memoized hash of [`inner`] to make comparisons faster.
+    hash: Hash,
+}
+
+/// We want this clone impl, but we _don't_ want a clone impl for [`WriteOutputBuilder`], so we have
+/// to write it manually.
+impl<Key: Ord + Clone> Clone for WriteOutput<Key> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: PartialWriteOutput {
+                direct: self.inner.direct.clone(),
+                indirect: self.inner.indirect.clone(),
+            },
+            hash: self.hash,
         }
     }
 }
 
-impl WriteOutput {
-    fn hash_update(&self, hash: &mut impl Digest) {
-        match self {
-            WriteOutput::Zero => {}
-            WriteOutput::One { path, blob } => {
-                hash.update(b"One");
-                hash.update(path.as_os_str().as_encoded_bytes());
-                hash.update(blob);
-            }
-            WriteOutput::Many {
-                outputs: _,
-                hash: sub_hash,
-            } => {
-                hash.update(b"Many");
-                hash.update(sub_hash.clone().finalize());
-            }
+pub type WriteOutputBuilder<Key> = PartialWriteOutput<Key>;
+
+impl<Key: Ord + std::hash::Hash> WriteOutputBuilder<Key> {
+    pub fn new() -> Self {
+        Self {
+            direct: BTreeMap::new(),
+            indirect: BTreeMap::new(),
         }
     }
 
     pub fn push(&mut self, path: PathBuf, blob: Blob) {
-        self.merge(WriteOutput::One { path, blob });
+        // TODO: as an optimization, if we ever get "too many" direct things (say like 32? or 128?)
+        // we should be able to put the current PartialWriteOutput as an indirect dependency
+        // instead. This requires content-addressing all the WriteOutputs somehow but I think that
+        // should be doable?
+        let _ = self.direct.insert(path, blob);
     }
 
-    pub fn merge(&mut self, output: WriteOutput) {
-        match self {
-            WriteOutput::Zero => *self = output,
-            WriteOutput::One { .. } => {
-                let old_self = std::mem::take(self);
-                *self = WriteOutput::Many {
-                    hash: {
-                        let mut hash = sha2::Sha256::default();
-                        old_self.hash_update(&mut hash);
-                        output.hash_update(&mut hash);
-                        hash
-                    },
-                    outputs: [old_self, output].into_iter().collect(),
-                };
-            }
-            WriteOutput::Many { outputs, hash } => {
-                output.hash_update(hash);
-                outputs.insert(output);
-            }
-        }
+    pub fn merge(&mut self, key: Key, output: WriteOutput<Key>) {
+        let _ = self.indirect.insert(key, output);
     }
-}
 
-impl PartialEq for WriteOutput {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Zero, Self::Zero) => true,
-            (
-                Self::One {
-                    path: l_path,
-                    blob: l_blob,
-                },
-                Self::One {
-                    path: r_path,
-                    blob: r_blob,
-                },
-            ) => l_path == r_path && l_blob == r_blob,
-            (
-                Self::Many {
-                    outputs: _,
-                    hash: l_hash,
-                },
-                Self::Many {
-                    outputs: _,
-                    hash: r_hash,
-                },
-            ) => l_hash.clone().finalize() == r_hash.clone().finalize(),
-            _ => false,
-        }
-    }
-}
-impl Eq for WriteOutput {}
+    pub fn finalize(self) -> WriteOutput<Key> {
+        let mut hasher = Sha256Hasher::new();
 
-impl Ord for WriteOutput {
-    fn cmp(&self, other: &Self) -> Ordering {
-        match (self, other) {
-            (Self::Zero, Self::Zero) => Ordering::Equal,
-            (
-                Self::One {
-                    path: l_path,
-                    blob: l_blob,
-                },
-                Self::One {
-                    path: r_path,
-                    blob: r_blob,
-                },
-            ) => l_path.cmp(r_path).then(l_blob.cmp(r_blob)),
-            (
-                Self::Many {
-                    outputs: _,
-                    hash: l_hash,
-                },
-                Self::Many {
-                    outputs: _,
-                    hash: r_hash,
-                },
-            ) => l_hash.clone().finalize().cmp(&r_hash.clone().finalize()),
-            (Self::Zero, Self::One { .. }) => Ordering::Less,
-            (Self::Zero, Self::Many { .. }) => Ordering::Less,
-            (Self::One { .. }, Self::Zero) => Ordering::Greater,
-            (Self::One { .. }, Self::Many { .. }) => Ordering::Less,
-            (Self::Many { .. }, Self::Zero) => Ordering::Greater,
-            (Self::Many { .. }, Self::One { .. }) => Ordering::Greater,
-        }
-    }
-}
-
-impl PartialOrd for WriteOutput {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl std::hash::Hash for WriteOutput {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        core::mem::discriminant(self).hash(state);
-        match self {
-            WriteOutput::Zero => {}
-            WriteOutput::One { path, blob } => {
-                path.hash(state);
-                blob.hash(state);
-            }
-            WriteOutput::Many { outputs: _, hash } => {
-                hash.clone().finalize().hash(state);
-            }
-        }
-    }
-}
-
-fn serialize_hash<S>(hash: &sha2::Sha256, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: serde::ser::Serializer,
-{
-    serializer.serialize_bytes(SerializableState::serialize(hash).as_ref())
-}
-
-fn deserialize_hash<'de, D>(deserializer: D) -> Result<sha2::Sha256, D::Error>
-where
-    D: serde::de::Deserializer<'de>,
-{
-    struct HashVisitor;
-
-    impl<'de> serde::de::Visitor<'de> for HashVisitor {
-        type Value = sha2::Sha256;
-
-        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            write!(
-                f,
-                "expecting sha256 hasher state of {} bytes",
-                <sha2::Sha256 as SerializableState>::SerializedStateSize::to_usize()
-            )
+        for (path, blob) in self.direct.iter() {
+            hasher.update(path.as_os_str().as_encoded_bytes());
+            hasher.update(blob);
         }
 
-        fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            let state = SerializedState::<sha2::Sha256>::try_from(v)
-                .map_err(|_| serde::de::Error::invalid_length(v.len(), &HashVisitor))?;
-            SerializableState::deserialize(&state)
-                .map_err(|_| serde::de::Error::custom("could not restore from state"))
+        for (key, output) in self.indirect.iter() {
+            key.hash(&mut hasher);
+            hasher.update(output.hash);
         }
+
+        let hash = hasher.finalize();
+
+        WriteOutput { inner: self, hash }
     }
-
-    deserializer.deserialize_bytes(HashVisitor)
 }
 
-/// Tree-traversing iterator
-pub enum PathBufBlobIterator<'a> {
-    Finished,
-    Single((&'a PathBuf, &'a Blob)),
-    More {
-        curr: Iter<'a, WriteOutput>,
-        prev: Option<Box<PathBufBlobIterator<'a>>>,
-    },
+impl<Key: Ord> BlobTrace for WriteOutput<Key> {
+    fn trace(&self) -> impl Iterator<Item = &'_ Blob> {
+        self.iter().map(|(_path, blob)| blob)
+    }
 }
 
-impl<'a> Iterator for PathBufBlobIterator<'a> {
+pub struct WriteOutputIter<'a, Key: Ord> {
+    /// The current level of `direct` items we're iterating over.
+    direct: btree_map::Iter<'a, PathBuf, Blob>,
+    /// The current level of `indirect` items we're iterating over.
+    indirect: btree_map::Values<'a, Key, WriteOutput<Key>>,
+    /// The level we came from, if applicable.
+    parent: Option<Box<WriteOutputIter<'a, Key>>>,
+}
+
+impl<'a, Key: Ord> Iterator for WriteOutputIter<'a, Key> {
     type Item = (&'a PathBuf, &'a Blob);
 
     fn next(&mut self) -> Option<Self::Item> {
-        match std::mem::replace(self, Self::Finished) {
-            Self::Finished => None,
-            Self::Single(item) => Some(item),
-            Self::More { mut curr, prev } => loop {
-                match curr.next() {
-                    Some(WriteOutput::Zero) => continue,
-                    Some(WriteOutput::One { path, blob }) => {
-                        *self = PathBufBlobIterator::More { curr, prev };
-                        return Some((path, blob));
-                    }
-                    Some(WriteOutput::Many { outputs, hash: _ }) => {
-                        *self = PathBufBlobIterator::More {
-                            curr: outputs.iter(),
-                            prev: Some(Box::new(std::mem::replace(self, Self::Finished))),
-                        };
-                        return self.next();
-                    }
-                    None => {
-                        *self = match prev {
-                            Some(prev) => *prev,
-                            None => Self::Finished,
-                        };
-                        return self.next();
-                    }
-                }
-            },
+        if let Some(item) = self.direct.next() {
+            return Some(item);
         }
-    }
-}
 
-impl WriteOutput {
-    pub fn iter(&self) -> PathBufBlobIterator<'_> {
-        match self {
-            WriteOutput::Zero => PathBufBlobIterator::Finished,
-            WriteOutput::One { path, blob } => PathBufBlobIterator::Single((path, blob)),
-            WriteOutput::Many { outputs, hash: _ } => PathBufBlobIterator::More {
-                curr: outputs.iter(),
-                prev: None,
-            },
-        }
-    }
-}
+        match self.indirect.next() {
+            Some(next_level) => {
+                let mut child = next_level.iter();
+                std::mem::swap(self, &mut child);
+                self.parent = Some(Box::new(child));
 
-enum WriteOutputIterator<'a> {
-    Finished,
-    Single(&'a WriteOutput),
-    Many(Iter<'a, WriteOutput>),
-}
-
-impl<'a> Iterator for WriteOutputIterator<'a> {
-    type Item = &'a WriteOutput;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match std::mem::replace(self, WriteOutputIterator::Finished) {
-            WriteOutputIterator::Finished => None,
-            WriteOutputIterator::Single(write_output) => Some(write_output),
-            WriteOutputIterator::Many(mut iter) => {
-                let out = iter.next();
-                if out.is_some() {
-                    *self = WriteOutputIterator::Many(iter);
-                }
-                out
+                self.next()
             }
+            None => match self.parent.take() {
+                Some(parent) => {
+                    *self = *parent;
+                    self.next()
+                }
+                None => None,
+            },
         }
     }
 }
 
-impl WriteOutput {
-    fn iter_raw(&self) -> WriteOutputIterator<'_> {
-        match self {
-            WriteOutput::Zero => WriteOutputIterator::Finished,
-            WriteOutput::One { .. } => WriteOutputIterator::Single(self),
-            WriteOutput::Many { outputs, hash: _ } => WriteOutputIterator::Many(outputs.iter()),
+impl<Key: Ord> WriteOutput<Key> {
+    pub fn iter(&self) -> WriteOutputIter<'_, Key> {
+        WriteOutputIter {
+            direct: self.inner.direct.iter(),
+            indirect: self.inner.indirect.values(),
+            parent: None,
         }
     }
 }
 
+/*
 #[derive(Default)]
 pub struct WriteOutputDiff<'a> {
     pub to_write: HashMap<&'a PathBuf, &'a Blob>,
     pub to_remove: Vec<&'a PathBuf>,
 }
 
-impl WriteOutput {
+impl<Key: Ord> WriteOutput<Key> {
     /// to_write will contain all the paths in [`self`] that aren't present in [`old`], and
     /// to_remove will contain all the paths in [`old`] that aren't present in [`self`].
     ///
     /// NOTE: both of those are strictly conservative estimates: to_remove might overlap with
     /// to_write. In such a case, to_write takes precedence.
-    pub fn diff<'a>(&'a self, old: &'a WriteOutput) -> WriteOutputDiff<'a> {
+    pub fn diff<'a>(&'a self, old: &'a WriteOutput<Key>) -> WriteOutputDiff<'a> {
         // TODO: these need to be iterators of raw WriteOutput, instead of iterators of (PathBuf,
         // Blob) in order for my thing to work properly.
         let mut new = self.iter_raw().peekable();
@@ -370,6 +207,7 @@ impl WriteOutput {
         }
     }
 }
+*/
 
 #[cfg(test)]
 mod test {
@@ -381,35 +219,38 @@ mod test {
 
     #[test]
     fn nested_iter() {
-        let mut a = WriteOutput::default();
+        let mut a = WriteOutputBuilder::new();
         let a1 = (PathBuf::from("a1"), o(1));
         a.push(a1.0.clone(), a1.1.clone());
         let a2 = (PathBuf::from("a2"), o(2));
         a.push(a2.0.clone(), a2.1.clone());
+        let a = a.finalize();
 
-        let mut b = WriteOutput::default();
+        let mut b = WriteOutputBuilder::new();
         let b1 = (PathBuf::from("b1"), o(3));
         b.push(b1.0.clone(), b1.1.clone());
         let b2 = (PathBuf::from("b2"), o(4));
         b.push(b2.0.clone(), b2.1.clone());
         let b3 = (PathBuf::from("b3"), o(5));
         b.push(b3.0.clone(), b3.1.clone());
+        let b = b.finalize();
 
-        let mut c = WriteOutput::default();
+        let mut c = WriteOutputBuilder::new();
         let c1 = (PathBuf::from("c1"), o(6));
         c.push(c1.0.clone(), c1.1.clone());
-        c.merge(a);
+        c.merge("a".to_string(), a);
         let c2 = (PathBuf::from("c2"), o(7));
         c.push(c2.0.clone(), c2.1.clone());
-        c.merge(b);
+        c.merge("b".to_string(), b);
         let c3 = (PathBuf::from("c3"), o(8));
         c.push(c3.0.clone(), c3.1.clone());
+        let c = c.finalize();
 
         assert_eq!(
             c.iter()
                 .map(|(path, blob)| (path.clone(), blob.clone()))
                 .collect::<Vec<_>>(),
-            [c1, a1, a2, c2, b1, b2, b3, c3,]
+            [c1, c2, c3, a1, a2, b1, b2, b3]
         );
     }
 }
