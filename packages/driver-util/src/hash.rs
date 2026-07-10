@@ -2,7 +2,7 @@ use std::ops::{Deref, DerefMut};
 
 use sha2::Digest;
 
-pub(crate) type Hash = sha2::digest::Output<sha2::Sha256>;
+pub type Hash = sha2::digest::Output<sha2::Sha256>;
 
 /// Helper struct that lets us shim types implementing [`std::hash::Hash`] into a sha256. "probably
 /// fine" but I have no way to prove it...
@@ -51,8 +51,21 @@ impl Sha256Hasher {
     pub fn finalize(self) -> Hash {
         self.digest.finalize()
     }
+}
 
-    fn update(&mut self, data: impl AsRef<[u8]>) {
-        self.digest.update(data);
+/// Helper trait for creating SHA256 hashes based off arbitrary types implementing
+/// [`std::hash::Hash`]. I'm "pretty sure" this "just works".
+pub trait ToHash {
+    fn to_hash(&self) -> Hash;
+}
+
+impl<T> ToHash for T
+where
+    T: std::hash::Hash,
+{
+    fn to_hash(&self) -> Hash {
+        let mut hasher = Sha256Hasher::new();
+        self.hash(&mut hasher);
+        hasher.finalize()
     }
 }

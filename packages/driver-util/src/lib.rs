@@ -19,6 +19,7 @@ mod output;
 pub use output::Output;
 
 mod hash;
+pub use hash::ToHash;
 
 mod write_output;
 pub use write_output::WriteOutput;
