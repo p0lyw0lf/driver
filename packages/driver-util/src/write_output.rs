@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, btree_map};
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, HashMap, HashSet, btree_map};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -8,7 +9,7 @@ use crate::blob::{Blob, BlobTrace};
 use crate::hash::{Hash, Sha256Hasher};
 
 #[derive(Debug, Serialize, Deserialize)]
-struct PartialWriteOutput<Key: Ord> {
+pub struct PartialWriteOutput<Key: Ord> {
     direct: BTreeMap<PathBuf, Blob>,
     // TODO: Right now, the main complaint I have is that all these indirect dependencies are full
     // objects, meaning they need to be cloned fresh out of the cached computation store every time.
@@ -44,16 +45,10 @@ impl<Key: Ord + Clone> Clone for WriteOutput<Key> {
     }
 }
 
+/// To construct this, use [`WriteOutput::builder()`].
 pub type WriteOutputBuilder<Key> = PartialWriteOutput<Key>;
 
 impl<Key: Ord + std::hash::Hash> WriteOutputBuilder<Key> {
-    pub fn new() -> Self {
-        Self {
-            direct: BTreeMap::new(),
-            indirect: BTreeMap::new(),
-        }
-    }
-
     pub fn push(&mut self, path: PathBuf, blob: Blob) {
         // TODO: as an optimization, if we ever get "too many" direct things (say like 32? or 128?)
         // we should be able to put the current PartialWriteOutput as an indirect dependency
@@ -128,6 +123,13 @@ impl<'a, Key: Ord> Iterator for WriteOutputIter<'a, Key> {
 }
 
 impl<Key: Ord> WriteOutput<Key> {
+    pub fn builder() -> WriteOutputBuilder<Key> {
+        WriteOutputBuilder {
+            direct: BTreeMap::new(),
+            indirect: BTreeMap::new(),
+        }
+    }
+
     pub fn iter(&self) -> WriteOutputIter<'_, Key> {
         WriteOutputIter {
             direct: self.inner.direct.iter(),
@@ -137,77 +139,127 @@ impl<Key: Ord> WriteOutput<Key> {
     }
 }
 
-/*
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct WriteOutputDiff<'a> {
     pub to_write: HashMap<&'a PathBuf, &'a Blob>,
-    pub to_remove: Vec<&'a PathBuf>,
+    pub to_remove: HashSet<&'a PathBuf>,
 }
 
-impl<Key: Ord> WriteOutput<Key> {
-    /// to_write will contain all the paths in [`self`] that aren't present in [`old`], and
-    /// to_remove will contain all the paths in [`old`] that aren't present in [`self`].
-    ///
-    /// NOTE: both of those are strictly conservative estimates: to_remove might overlap with
-    /// to_write. In such a case, to_write takes precedence.
-    pub fn diff<'a>(&'a self, old: &'a WriteOutput<Key>) -> WriteOutputDiff<'a> {
-        // TODO: these need to be iterators of raw WriteOutput, instead of iterators of (PathBuf,
-        // Blob) in order for my thing to work properly.
-        let mut new = self.iter_raw().peekable();
-        let mut old = old.iter_raw().peekable();
+impl<'a> WriteOutputDiff<'a> {
+    fn write(&mut self, elem: &(&'a PathBuf, &'a Blob)) {
+        self.to_write.insert(elem.0, elem.1);
+        self.to_remove.remove(elem.0);
+    }
 
-        let mut to_write = HashMap::new();
-        let mut to_remove = Vec::new();
+    fn remove(&mut self, elem: &(&'a PathBuf, &'a Blob)) {
+        if !self.to_write.contains_key(elem.0) {
+            self.to_remove.insert(elem.0);
+        }
+    }
+
+    pub fn diff<Key: Ord>(new: &'a WriteOutput<Key>, old: &'a WriteOutput<Key>) -> Self {
+        let mut diff = Self::default();
+        diff.add_from(new, old);
+        diff
+    }
+
+    fn add_from<Key: Ord>(&mut self, new: &'a WriteOutput<Key>, old: &'a WriteOutput<Key>) {
+        let mut new_direct = new.inner.direct.iter().peekable();
+        let mut old_direct = old.inner.direct.iter().peekable();
 
         // This algorithm makes use of the property that both the new and old lists MUST be in
         // sorted order. It compares the next element in order, comparing them.
         // If the "new" one is greater, that means there are some "old" things that are missing.
         // If the "old" one is greater, that means there are some "new" things that have been added.
         // If they are equal, we can advance both.
+        //
+        // First, we do this sort of iteration over all the same direct dependencies for this node.
         loop {
-            let (new_output, old_output) = match (new.peek(), old.peek()) {
+            let (new_output, old_output) = match (new_direct.peek(), old_direct.peek()) {
                 (None, None) => break,
                 (None, Some(old_output)) => {
-                    to_remove.extend(old_output.iter().map(|(path, _)| path));
-                    let _ = old.next();
+                    self.remove(old_output);
+                    let _ = old_direct.next();
                     continue;
                 }
                 (Some(new_output), None) => {
-                    to_write.extend(new_output.iter());
-                    let _ = new.next();
+                    self.write(new_output);
+                    let _ = new_direct.next();
                     continue;
                 }
                 (Some(new_output), Some(old_output)) => (new_output, old_output),
             };
 
-            match new_output.cmp(old_output) {
+            match new_output.0.cmp(old_output.0) {
                 Ordering::Less => {
-                    to_write.extend(new_output.iter());
-                    let _ = new.next();
+                    self.write(new_output);
+                    let _ = new_direct.next();
                 }
                 Ordering::Greater => {
-                    to_remove.extend(old_output.iter().map(|(path, _)| path));
-                    let _ = old.next();
+                    self.remove(old_output);
+                    let _ = old_direct.next();
                 }
                 Ordering::Equal => {
-                    let _ = new.next();
-                    let _ = old.next();
+                    if new_output.1 != old_output.1 {
+                        self.write(new_output);
+                    }
+                    let _ = new_direct.next();
+                    let _ = old_direct.next();
                 }
             }
-
-            // TODO: I think this will work, but it's not recursive enough for me. That is, we no
-            // longer have a way to correlate different WriteOutput::Many with each other, so we
-            // can't diff ones that _should_ have some structural sharing. I'll need to think a bit
-            // harder about how it's possible to do this...
         }
 
-        WriteOutputDiff {
-            to_write,
-            to_remove,
+        // Next, do this sort of iteration for all the indirect dependencies. The efficiency of this
+        // algorithm relies on indirect dependencies "likely not having changed" and no keys moving
+        // between them.
+
+        let mut new_indirect = new.inner.indirect.iter().peekable();
+        let mut old_indirect = old.inner.indirect.iter().peekable();
+
+        loop {
+            let (new_output, old_output) = match (new_indirect.peek(), old_indirect.peek()) {
+                (None, None) => break,
+                (None, Some(old_output)) => {
+                    for elem in old_output.1.iter() {
+                        self.remove(&elem);
+                    }
+                    let _ = old_indirect.next();
+                    continue;
+                }
+                (Some(new_output), None) => {
+                    for elem in new_output.1.iter() {
+                        self.write(&elem);
+                    }
+                    let _ = new_indirect.next();
+                    continue;
+                }
+                (Some(new_output), Some(old_output)) => (new_output, old_output),
+            };
+
+            match new_output.0.cmp(old_output.0) {
+                Ordering::Less => {
+                    for elem in new_output.1.iter() {
+                        self.write(&elem);
+                    }
+                    let _ = new_indirect.next();
+                }
+                Ordering::Greater => {
+                    for elem in old_output.1.iter() {
+                        self.remove(&elem);
+                    }
+                    let _ = old_indirect.next();
+                }
+                Ordering::Equal => {
+                    if new_output.1.hash != old_output.1.hash {
+                        self.add_from(new_output.1, old_output.1);
+                    }
+                    let _ = new_indirect.next();
+                    let _ = old_indirect.next();
+                }
+            }
         }
     }
 }
-*/
 
 #[cfg(test)]
 mod test {
@@ -219,14 +271,14 @@ mod test {
 
     #[test]
     fn nested_iter() {
-        let mut a = WriteOutputBuilder::new();
+        let mut a = WriteOutput::builder();
         let a1 = (PathBuf::from("a1"), o(1));
         a.push(a1.0.clone(), a1.1.clone());
         let a2 = (PathBuf::from("a2"), o(2));
         a.push(a2.0.clone(), a2.1.clone());
         let a = a.finalize();
 
-        let mut b = WriteOutputBuilder::new();
+        let mut b = WriteOutput::builder();
         let b1 = (PathBuf::from("b1"), o(3));
         b.push(b1.0.clone(), b1.1.clone());
         let b2 = (PathBuf::from("b2"), o(4));
@@ -235,7 +287,7 @@ mod test {
         b.push(b3.0.clone(), b3.1.clone());
         let b = b.finalize();
 
-        let mut c = WriteOutputBuilder::new();
+        let mut c = WriteOutput::builder();
         let c1 = (PathBuf::from("c1"), o(6));
         c.push(c1.0.clone(), c1.1.clone());
         c.merge("a".to_string(), a);
@@ -252,5 +304,89 @@ mod test {
                 .collect::<Vec<_>>(),
             [c1, c2, c3, a1, a2, b1, b2, b3]
         );
+    }
+
+    #[test]
+    fn nested_diff() {
+        let tree1 = {
+            let mut a = WriteOutput::builder();
+            let a1 = (PathBuf::from("a1"), o(1));
+            a.push(a1.0.clone(), a1.1.clone());
+            let a2 = (PathBuf::from("a2"), o(2));
+            a.push(a2.0.clone(), a2.1.clone());
+            let a = a.finalize();
+
+            let mut b = WriteOutput::builder();
+            let b1 = (PathBuf::from("b1"), o(3));
+            b.push(b1.0.clone(), b1.1.clone());
+            let b2 = (PathBuf::from("b2"), o(4));
+            b.push(b2.0.clone(), b2.1.clone());
+            let b3 = (PathBuf::from("b3"), o(5));
+            b.push(b3.0.clone(), b3.1.clone());
+            let b = b.finalize();
+
+            let mut c = WriteOutput::builder();
+            let c1 = (PathBuf::from("c1"), o(6));
+            c.push(c1.0.clone(), c1.1.clone());
+            let c2 = (PathBuf::from("c2"), o(7));
+            c.push(c2.0.clone(), c2.1.clone());
+            let c3 = (PathBuf::from("c3"), o(8));
+            c.push(c3.0.clone(), c3.1.clone());
+            let c = c.finalize();
+
+            let mut d = WriteOutput::builder();
+            d.merge("a".to_string(), a);
+            d.merge("b".to_string(), b);
+            d.merge("c".to_string(), c);
+            d.finalize()
+        };
+
+        let tree2 = {
+            let mut a = WriteOutput::builder();
+            let a1 = (PathBuf::from("a1"), o(1));
+            a.push(a1.0.clone(), a1.1.clone());
+            let a2 = (PathBuf::from("a2"), o(2));
+            a.push(a2.0.clone(), a2.1.clone());
+            // CHANGE: extra element in a
+            let a3 = (PathBuf::from("a3"), o(3));
+            a.push(a3.0.clone(), a3.1.clone());
+            let a = a.finalize();
+
+            let mut b = WriteOutput::builder();
+            // CHANGE: one less element in b
+            // let b1 = (PathBuf::from("b1"), o(3));
+            // b.push(b1.0.clone(), b1.1.clone());
+            let b2 = (PathBuf::from("b2"), o(4));
+            b.push(b2.0.clone(), b2.1.clone());
+            let b3 = (PathBuf::from("b3"), o(5));
+            b.push(b3.0.clone(), b3.1.clone());
+            let b = b.finalize();
+
+            let mut c = WriteOutput::builder();
+            let c1 = (PathBuf::from("c1"), o(6));
+            c.push(c1.0.clone(), c1.1.clone());
+            // CHANGE: different element in c
+            let c2 = (PathBuf::from("c2"), o(9));
+            c.push(c2.0.clone(), c2.1.clone());
+            let c3 = (PathBuf::from("c3"), o(8));
+            c.push(c3.0.clone(), c3.1.clone());
+            let c = c.finalize();
+
+            let mut d = WriteOutput::builder();
+            d.merge("a".to_string(), a);
+            d.merge("b".to_string(), b);
+            d.merge("c".to_string(), c);
+            d.finalize()
+        };
+
+        let diff = WriteOutputDiff::diff(&tree2, &tree1);
+
+        assert_eq!(
+            diff.to_write,
+            [(&PathBuf::from("a3"), &o(3)), (&PathBuf::from("c2"), &o(9))]
+                .into_iter()
+                .collect()
+        );
+        assert_eq!(diff.to_remove, [&PathBuf::from("b1")].into_iter().collect());
     }
 }
