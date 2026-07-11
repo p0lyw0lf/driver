@@ -22,7 +22,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use tracing::trace;
 
-use driver_engine::query;
+use driver_engine::{query, query_with_hash};
 use driver_query_fs::ReadFile;
 
 use crate::{QueryContext, WriteOutput, WriteOutputBuilder};
@@ -359,7 +359,7 @@ mod driver_module {
 
     use crate::comrak::MarkdownToHtml;
     use crate::minify_html::MinifyHtml;
-    use crate::tera::{RunTera, RunTeraOutput};
+    use crate::tera::RunTera;
     use crate::zune::{ConvertImage, ParseImage};
 
     pub fn slugify(value: String) -> JsResult<String> {
@@ -400,12 +400,11 @@ mod driver_module {
             arg: arg.clone(),
         };
 
-        let RunJsOutput { export, writes } = query(ctx, task.clone()).await;
+        let (hash, output) = query_with_hash(ctx, task.clone()).await;
 
-        let hash = ctx.interner().insert(task.clone().into());
-        unsafe { with_outputs(|outputs| outputs.merge(hash, writes)) }?;
+        unsafe { with_outputs(|outputs| outputs.merge(hash, output.writes)) }?;
 
-        export.map_err(|e| {
+        output.export.map_err(|e| {
             JsNativeError::eval()
                 .with_message(format!("{task}:\n\t{e}"))
                 .into()
@@ -421,13 +420,13 @@ mod driver_module {
             arg: arg.clone(),
         };
 
-        let RunTeraOutput { export, writes } = query(ctx, task.clone()).await;
+        let (hash, output) = query_with_hash(ctx, task.clone()).await;
 
-        let hash = ctx.interner().insert(task.clone().into());
-        unsafe { with_outputs(|outputs| outputs.merge(hash, writes)) }?;
+        unsafe { with_outputs(|outputs| outputs.merge(hash, output.writes)) }?;
 
         Ok(JsValue::Store(JsBlob {
-            blob: export
+            blob: output
+                .export
                 .map_err(|e| JsNativeError::eval().with_message(format!("{task}:\n\t{e}",)))?,
         }))
     }

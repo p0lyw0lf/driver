@@ -3,6 +3,9 @@ pub use database::Database;
 pub use database::Entry;
 pub use database::Revision;
 
+mod hashed_key;
+pub use hashed_key::Hashed;
+
 mod blobs;
 pub use blobs::Blobs;
 

@@ -4,18 +4,16 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use memmap2::Mmap;
-use tracing::{info, trace};
+use tracing::{info, trace, warn};
 
 use async_tpc_executor::Executor;
-use driver_db::{Blob, Database, Entry, Options};
-use driver_util::Interner;
+use driver_db::{Blob, Database, Entry, Hashed, Options};
 
 use crate::{Producer, ProducerBase};
 
 struct State<Key: Hash + Ord + Eq, Output> {
     options: Options,
     db: Database<Key, Output>,
-    interner: Interner<Key>,
     executor: Executor,
     hooks: OptHooks<Key>,
 }
@@ -26,14 +24,14 @@ pub trait Hooks<Key: ProducerBase> {
         &self,
         ctx: &Context<Key>,
         key: Key,
-        old_deps: HashSet<Key>,
-        new_deps: HashSet<Key>,
+        old_deps: HashSet<Hashed<Key>>,
+        new_deps: HashSet<Hashed<Key>>,
     );
 }
 
 #[derive(Clone)]
 pub struct Context<Key: ProducerBase> {
-    pub(crate) parent: Option<Key>,
+    pub(crate) parent: Option<Hashed<Key>>,
     state: Arc<State<Key, Key::Output>>,
 }
 
@@ -46,10 +44,6 @@ impl<Key: ProducerBase> Context<Key> {
     /// Get the database associated with the context.
     pub fn db(&self) -> &Database<Key, Key::Output> {
         &self.state.db
-    }
-
-    pub fn interner(&self) -> &Interner<Key> {
-        &self.state.interner
     }
 
     /// Get the executor associated with the context.
@@ -99,7 +93,6 @@ impl<Key: Producer<Key>> Context<Key> {
     /// called outside of any async context.
     pub fn create_root(options: Options, hooks: OptHooks<Key>) -> Self {
         let db = Database::restore(&options);
-        let interner = Default::default();
 
         // Bust cache immediately
         // TODO: should only bust the input queries here; right now this busts "everything" which
@@ -113,7 +106,6 @@ impl<Key: Producer<Key>> Context<Key> {
             state: Arc::new(State {
                 options,
                 db,
-                interner,
                 executor,
                 hooks,
             }),
@@ -137,7 +129,6 @@ impl<Key: Producer<Key>> Context<Key> {
     pub fn create_empty_root_for_testing_only() -> Self {
         let options = Options::default();
         let db = Database::empty();
-        let interner = Default::default();
         let executor = Executor::start_n_threads(1);
 
         Self {
@@ -145,33 +136,36 @@ impl<Key: Producer<Key>> Context<Key> {
             state: Arc::new(State {
                 options,
                 db,
-                interner,
                 executor,
                 hooks: None,
             }),
         }
     }
 
-    /// NOTE: most code that runs inside a query itself should use the `key.query(ctx)` form
+    /// NOTE: most code that runs inside a query itself should use the `query(key, ctx)` form
     /// instead. This function is meant to be used by the executor itself.
     #[tracing::instrument(level = "debug", skip(self), fields(key=%key))]
-    pub(crate) async fn query_internal(self, key: Key) -> Key::Output {
+    pub(crate) async fn query_internal(self, key: Key) -> (Hashed<Key>, Key::Output) {
         trace!("locking db entry");
         self.db()
-            .with_entry(key.clone(), async |mut entry| {
+            .upsert(key, async |hashed, key, entry| {
                 trace!("locked");
-                let entry = &mut entry;
-                self.query_entry(key, entry).await
+                self.query_entry(hashed, key, entry).await
             })
             .await
     }
 
     #[tracing::instrument(level = "debug", skip(self, entry), fields(key=%key))]
-    async fn query_entry(&self, key: Key, entry: &mut Entry<Key::Output>) -> Key::Output {
+    async fn query_entry(
+        &self,
+        hashed: &Hashed<Key>,
+        key: &Key,
+        entry: &mut Entry<Key::Output>,
+    ) -> Key::Output {
         trace!("starting query");
-        if let Some(parent) = &self.parent {
-            info!("adding edge {parent} -> {key}");
-            self.db().add_dependency(parent.clone(), key.clone());
+        if let Some(parent) = self.parent {
+            info!("adding edge {parent:?} -> {hashed:?}");
+            self.db().add_dependency(parent, *hashed);
             trace!("added");
         }
 
@@ -186,7 +180,7 @@ impl<Key: Producer<Key>> Context<Key> {
             }
             // If we have seen it before, check it again
             Some(verified_at) => {
-                self.maybe_changed_after(verified_at, key.clone(), revision, entry)
+                self.maybe_changed_after(verified_at, hashed, key, revision, entry)
                     .await
             }
         };
@@ -198,13 +192,13 @@ impl<Key: Producer<Key>> Context<Key> {
 
         trace!("removing dependencies");
         // We're about to run the key again, so remove any dependencies it once had
-        let old_deps = self.db().dependencies(&key).unwrap_or_default();
-        self.db().remove_all_dependencies(&key);
+        let old_deps = self.db().dependencies(hashed).unwrap_or_default();
+        self.db().remove_all_dependencies(hashed);
         trace!("removed");
 
         let value = key
             .produce(&Context {
-                parent: Some(key.clone()),
+                parent: Some(*hashed),
                 state: self.state.clone(),
             })
             .await;
@@ -213,7 +207,7 @@ impl<Key: Producer<Key>> Context<Key> {
         entry.insert(revision, value.clone());
         trace!("inserted entry");
 
-        let new_deps = self.db().dependencies(&key).unwrap_or_default();
+        let new_deps = self.db().dependencies(hashed).unwrap_or_default();
         if let Some(hooks) = &self.state.hooks {
             hooks.on_compute(self, key.clone(), old_deps, new_deps);
         }
@@ -225,7 +219,8 @@ impl<Key: Producer<Key>> Context<Key> {
     async fn maybe_changed_after(
         &self,
         verified_at: usize,
-        key: Key,
+        hashed: &Hashed<Key>,
+        key: &Key,
         current_revision: usize,
         entry: &mut Entry<Key::Output>,
     ) -> bool {
@@ -248,7 +243,7 @@ impl<Key: Producer<Key>> Context<Key> {
         }
 
         trace!("trying to get dependencies");
-        let Some(deps) = self.db().dependencies::<Vec<_>>(&key) else {
+        let Some(deps) = self.db().dependencies::<Vec<_>>(hashed) else {
             trace!("no dependencies");
             // Input queries should be handled the above case; these sorts of queries with no
             // dependencies are deterministic ones entirely determined by their key, so we can mark
@@ -259,25 +254,33 @@ impl<Key: Producer<Key>> Context<Key> {
 
         trace!("got dependencies");
         for dep in deps {
-            trace!("locking {dep}");
+            trace!("locking {dep:?}");
             if self
                 .db()
-                .with_entry(dep.clone(), async |dep_entry| {
-                    trace!("locked {dep}");
+                .get_mut(dep, async |dep_entry| {
+                    trace!("locked {dep:?}");
+                    let (dep_hashed, dep_key, dep_entry) = match dep_entry {
+                        None => {
+                            warn!("non-existent dependency: {dep:?}");
+                            return true;
+                        }
+                        Some(dep_entry) => dep_entry,
+                    };
                     let dep_maybe_changed = Box::pin(self.maybe_changed_after(
                         verified_at,
-                        dep.clone(),
+                        dep_hashed,
+                        dep_key,
                         current_revision,
                         dep_entry,
                     ))
                     .await;
                     if !dep_maybe_changed {
-                        trace!("dep {dep} definitely hasn't changed");
+                        trace!("dep {dep_hashed:?} definitely hasn't changed");
                         return false;
                     }
 
-                    trace!("pre-querying dep {dep}");
-                    let _ = Box::pin(self.query_entry(dep, dep_entry)).await;
+                    trace!("pre-querying dep {dep_hashed:?}");
+                    let _ = Box::pin(self.query_entry(dep_hashed, dep_key, dep_entry)).await;
 
                     let dep_rev = dep_entry
                         .revision()

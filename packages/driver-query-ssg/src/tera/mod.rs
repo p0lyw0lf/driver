@@ -8,7 +8,7 @@ use relative_path::{RelativePath, RelativePathBuf};
 use serde::{Deserialize, Serialize};
 use tera::{Tera, TeraResult};
 
-use driver_engine::{Blob, query};
+use driver_engine::{Blob, query, query_with_hash};
 use driver_query_fs::{ListDirectory, ReadFile};
 
 use crate::boa::{JsBlob, JsValue, RunJs};
@@ -213,11 +213,10 @@ fn register_functions(tera: &mut Tera, ctx: &QueryContext, writes: Arc<Mutex<Wri
                 file: file.clone(),
                 arg: arg.clone(),
             };
-            let output = future::block_on(
-                query(&ctx, run_js.clone())
+            let (hash, output) = future::block_on(
+                query_with_hash(&ctx, run_js.clone())
             );
             {
-                let hash = ctx.interner().insert(run_js.clone().into());
                 writes.lock().unwrap().merge(hash, output.writes);
             }
             let output = js_to_tera_value(
@@ -240,9 +239,8 @@ fn register_functions(tera: &mut Tera, ctx: &QueryContext, writes: Arc<Mutex<Wri
                 file: file.clone(),
                 arg: arg.clone(),
             };
-            let output = future::block_on(query(&ctx, run_tera.clone()));
+            let (hash, output) = future::block_on(query_with_hash(&ctx, run_tera.clone()));
             {
-                let hash = ctx.interner().insert(run_tera.clone().into());
                 writes.lock().unwrap().merge(hash, output.writes);
             };
             let output = js_to_tera_value(&JsValue::Store(JsBlob {

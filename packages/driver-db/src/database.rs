@@ -3,10 +3,15 @@ use std::fmt::Display;
 use std::hash::Hash;
 use std::io::Read;
 use std::ops::Deref;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
+use scc::hash_map::Entry as SccEntry;
 use serde::{Deserialize, Serialize};
 
+use crate::hashed_key::Hashed;
 use crate::{Blob, Blobs, Options, RemoteBlobs};
 use driver_util::SerializedMap;
 
@@ -47,8 +52,17 @@ enum LogicalValue<Output> {
     Computing(ThreadsafeReceiver<Value<Output>>),
 }
 
+/// Represents an entry in the cache. We need to be able to store the key _somewhere_ in case we
+/// need to re-compute it.
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Core<Key: Hash + Ord + Eq, Output> {
+struct CacheEntry<Key, Output> {
+    /// Effectively read-only, MUST not be mutated after insertion.
+    key: Arc<Key>,
+    value: LogicalValue<Output>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Core<Key, Output> {
     #[serde(skip)]
     pub revision: AtomicUsize,
 
@@ -56,12 +70,12 @@ pub struct Core<Key: Hash + Ord + Eq, Output> {
     /// one back. We do this because we can't compare the `oneshot::Receiver`s directly.
     #[serde(skip)]
     with_entry_nonce: AtomicUsize,
-    cache: SerializedMap<Key, LogicalValue<Output>>,
-    dep_graph: SerializedMap<Key, BTreeSet<Key>>,
+    cache: SerializedMap<Hashed<Key>, CacheEntry<Key, Output>>,
+    dep_graph: SerializedMap<Hashed<Key>, BTreeSet<Hashed<Key>>>,
 }
 
 /// Manual impl to avoid extraneous bounds on `Output`.
-impl<Key: Hash + Ord + Eq, Output> Default for Core<Key, Output> {
+impl<Key, Output> Default for Core<Key, Output> {
     fn default() -> Self {
         Self {
             revision: Default::default(),
@@ -88,7 +102,7 @@ impl<Key: Hash + Ord + Eq, Output> Deref for Database<Key, Output> {
 }
 
 impl<Key: driver_util::Key, Output: driver_util::Output> Core<Key, Output> {
-    pub fn add_dependency(&self, parent: Key, child: Key) {
+    pub fn add_dependency(&self, parent: Hashed<Key>, child: Hashed<Key>) {
         let entry = self.dep_graph.entry_sync(parent);
         let mut child = BTreeSet::from([child]);
         entry
@@ -98,11 +112,11 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Core<Key, Output> {
             .or_insert(child);
     }
 
-    pub fn remove_all_dependencies(&self, parent: &Key) {
+    pub fn remove_all_dependencies(&self, parent: &Hashed<Key>) {
         self.dep_graph.remove_sync(parent);
     }
 
-    pub fn dependencies<T: FromIterator<Key>>(&self, parent: &Key) -> Option<T> {
+    pub fn dependencies<T: FromIterator<Hashed<Key>>>(&self, parent: &Hashed<Key>) -> Option<T> {
         let deps = self.dep_graph.get_sync(parent)?;
         Some(deps.get().iter().cloned().collect())
     }
@@ -111,11 +125,11 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Core<Key, Output> {
     /// until the entry is unlocked by the task that currently has it acquired. This is necessary
     /// for us to run each query exactly once per revision, otherwise we could be running the same
     /// query concurrently (does too much work).
-    pub async fn with_entry<T>(
+    pub async fn upsert<T>(
         &self,
         key: Key,
-        f: impl for<'a> AsyncFnOnce(&'a mut Entry<Output>) -> T,
-    ) -> T {
+        f: impl for<'a> AsyncFnOnce(&'a Hashed<Key>, &'a Key, &'a mut Entry<Output>) -> T,
+    ) -> (Hashed<Key>, T) {
         /// Here, we effectively queue the waiters in FIFO order, based on the time they swap in
         /// their local oneshot channel into the map. There are other possible algorithms we can do
         /// here, but they have more overhead and I'm not 100% convinced they are globally better,
@@ -134,14 +148,24 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Core<Key, Output> {
         let (send, recv) = oneshot::channel();
         let nonce = self.with_entry_nonce.fetch_add(1, Ordering::Relaxed);
         let recv = ThreadsafeReceiver { recv, nonce };
+        let hashed = Hashed::new(&key);
 
-        let case = match self
-            .cache
-            .upsert_sync(key.clone(), LogicalValue::Computing(recv))
-        {
-            None => Case::Missing,
-            Some(LogicalValue::Materialized(value)) => Case::Present(value),
-            Some(LogicalValue::Computing(recv)) => Case::Contended(recv),
+        let (key, case) = match self.cache.entry_sync(hashed) {
+            SccEntry::Vacant(entry) => {
+                let key = Arc::new(key);
+                let _ = entry.insert_entry(CacheEntry {
+                    key: key.clone(),
+                    value: LogicalValue::Computing(recv),
+                });
+                (key, Case::Missing)
+            }
+            SccEntry::Occupied(mut entry) => (
+                entry.get().key.clone(),
+                match std::mem::replace(&mut entry.get_mut().value, LogicalValue::Computing(recv)) {
+                    LogicalValue::Materialized(value) => Case::Present(value),
+                    LogicalValue::Computing(recv) => Case::Contended(recv),
+                },
+            ),
         };
 
         // This is split out from the above so that we don't hold the lock on the map for too long.
@@ -152,39 +176,84 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Core<Key, Output> {
         };
 
         let mut entry = Entry { value };
-        let out = f(&mut entry).await;
+        let out = f(&hashed, &key, &mut entry).await;
+        self.finish_entry(hashed, entry, send, nonce);
 
+        (hashed, out)
+    }
+
+    /// This is the same as the [`upsert`] case, just with no "missing" case to represent the
+    /// fact we can just call `f(None)` early in that case.
+    pub async fn get_mut<T>(
+        &self,
+        hashed: Hashed<Key>,
+        f: impl for<'a> AsyncFnOnce(Option<(&'a Hashed<Key>, &'a Key, &'a mut Entry<Output>)>) -> T,
+    ) -> T {
+        let (send, recv) = oneshot::channel();
+        let nonce = self.with_entry_nonce.fetch_add(1, Ordering::Relaxed);
+        let recv = ThreadsafeReceiver { recv, nonce };
+
+        let (key, value) = match self.cache.get_sync(&hashed) {
+            None => return f(None).await,
+            Some(mut entry) => (
+                entry.get().key.clone(),
+                match std::mem::replace(&mut entry.get_mut().value, LogicalValue::Computing(recv)) {
+                    LogicalValue::Materialized(value) => value,
+                    LogicalValue::Computing(recv) => recv.await.expect("value receive error"),
+                },
+            ),
+        };
+
+        let mut entry = Entry { value: Some(value) };
+        let out = f(Some((&hashed, &key, &mut entry))).await;
+        self.finish_entry(hashed, entry, send, nonce);
+
+        out
+    }
+
+    fn finish_entry(
+        &self,
+        hashed: Hashed<Key>,
+        entry: Entry<Output>,
+        send: oneshot::Sender<Value<Output>>,
+        nonce: usize,
+    ) {
         let value = entry
             .value
-            .unwrap_or_else(|| panic!("operated on entry {} without inserting value", key));
+            .unwrap_or_else(|| panic!("operated on entry {hashed:?} without inserting value"));
 
         // If there are no waiters (that is, if no one has swapped out our
         // LogicalValue::Computing), then let's just immediately swap back in a
         // LogicalValue::Materialized. Otherwise, we have to send the value to the next waiter.
-        self.cache.get_sync(&key).map(|mut entry| {
-            let old_nonce = match entry.get() {
+        self.cache.get_sync(&hashed).map(|mut entry| {
+            let old_nonce = match &entry.get().value {
                 LogicalValue::Materialized(_) => panic!(
                     "got LogicalValue::Materialized after computing value; expected LogicalValue::Computing because we're holding a lock"
                 ),
                 LogicalValue::Computing(recv) => recv.nonce,
             };
             if old_nonce == nonce {
-                let _ = entry.insert(LogicalValue::Materialized(value));
+                entry.get_mut().value = LogicalValue::Materialized(value);
             } else {
                 send.send(value).expect("value send error");
             }
         }).unwrap_or_else(|| panic!("got None after computing value; expected LogicalValue::Computing"));
-
-        out
     }
 
-    /// Gets the value associated with an entry. MUST ONLY be used to compute diffs between past
-    /// known values and queried values; MUST NOT be relied on as an accurate "this is up to date".
-    pub fn get_value(&self, key: &Key) -> Option<Output> {
-        match self.cache.get_sync(key)?.get() {
+    /// Gets the value associated with an entry.
+    ///
+    /// SHOULD only be used to compute diffs between past known values and queried values; SHOULD
+    /// NOT be relied on as an accurate "this is up to date".
+    ///
+    /// # Safety
+    ///
+    /// MUST be called when computation is not taking place.
+    pub unsafe fn get_value(&self, key: &Key) -> Option<Output> {
+        let hashed = Hashed::new(key);
+        match &self.cache.get_sync(&hashed)?.get().value {
             LogicalValue::Materialized(value) => Some(value.value.clone()),
             LogicalValue::Computing(_) => {
-                panic!("should not be computing {key}")
+                panic!("should not be computing")
             }
         }
     }
@@ -347,7 +416,8 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Database<Key, Output> {
         self.dep_graph.clear_sync();
     }
 
-    pub fn remove_keys_matching_prefixes(&self, prefixes: &[&String]) {
+    pub fn remove_keys_matching_prefixes(&self, _prefixes: &[&String]) {
+        /*
         let mut keys_to_remove = vec![];
 
         let mut entry = self.cache.begin_sync();
@@ -364,6 +434,8 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Database<Key, Output> {
             .retain_sync(|key, _| !keys_to_remove.contains(key));
         self.dep_graph
             .retain_sync(|key, _| !keys_to_remove.contains(key));
+        */
+        todo!()
     }
 
     pub fn clear_remote(&self) {
@@ -387,15 +459,16 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Database<Key, Output> {
             .retain_sync(|key, _| keys_to_keep.contains(key));
     }
 
-    /// Removes all [`Object`]s that aren't referenced from the local or remote caches.
+    /// Removes all [`Blob`]s that aren't referenced from the local or remote caches.
     pub fn garbage_collect(&self, options: &Options) -> driver_util::Result<()> {
-        let objects = self.collect_objects();
+        let objects = self.collect_blobs();
         self.blobs
             .retain(options, |object| objects.contains(object))
     }
 
-    /// Finds all [`Objects`]s that are referenced in the local and remote caches.
-    fn collect_objects(&self) -> HashSet<Blob> {
+    /// Finds all [`Blob`]s that are referenced in the local and remote caches.
+    fn collect_blobs(&self) -> HashSet<Blob> {
+        /*
         let mut objects = HashSet::new();
 
         self.cache.iter_sync(|key, value| {
@@ -419,82 +492,90 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Database<Key, Output> {
         });
 
         objects
+        */
+        todo!()
     }
 
     pub fn display_dep_graph(&self) -> impl Display + '_ {
-        struct GraphDisplayer<'a, Key: Hash + Eq>(&'a scc::HashMap<Key, BTreeSet<Key>>);
+        /*
+                struct GraphDisplayer<'a, Key: Hash + Eq>(&'a scc::HashMap<Key, BTreeSet<Key>>);
 
-        impl<'a, Key: driver_util::Key> Display for GraphDisplayer<'a, Key> {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                let mut keys = Vec::<Key>::with_capacity(self.0.len());
-                let mut entry = self.0.begin_sync();
-                while let Some(e) = entry {
-                    keys.push(e.key().clone());
-                    entry = e.next_sync();
-                }
-
-                keys.sort();
-
-                for key in keys {
-                    write!(f, "{}: ", key)?;
-
-                    if let Some(deps) = self.0.get_sync(&key)
-                        && !deps.is_empty()
-                    {
-                        writeln!(f, "[")?;
-                        for dep in deps.iter() {
-                            writeln!(f, "\t{},", dep)?;
+                impl<'a, Key: driver_util::Key> Display for GraphDisplayer<'a, Key> {
+                    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        let mut keys = Vec::<Key>::with_capacity(self.0.len());
+                        let mut entry = self.0.begin_sync();
+                        while let Some(e) = entry {
+                            keys.push(e.key().clone());
+                            entry = e.next_sync();
                         }
-                        writeln!(f, "]")?;
-                    } else {
-                        writeln!(f, "None")?;
-                    };
+
+                        keys.sort();
+
+                        for key in keys {
+                            write!(f, "{}: ", key)?;
+
+                            if let Some(deps) = self.0.get_sync(&key)
+                                && !deps.is_empty()
+                            {
+                                writeln!(f, "[")?;
+                                for dep in deps.iter() {
+                                    writeln!(f, "\t{},", dep)?;
+                                }
+                                writeln!(f, "]")?;
+                            } else {
+                                writeln!(f, "None")?;
+                            };
+                        }
+
+                        Ok(())
+                    }
                 }
 
-                Ok(())
-            }
-        }
-
-        GraphDisplayer(&self.dep_graph)
+                GraphDisplayer(&self.dep_graph)
+        */
+        "TODO"
     }
 
     pub fn display_dep_graph_with_outputs(&self) -> impl Display + '_ {
-        struct GraphAndOutputDisplayer<'a, Key: Hash + Ord + Eq, Output>(&'a Core<Key, Output>);
+        /*
+                struct GraphAndOutputDisplayer<'a, Key: Hash + Ord + Eq, Output>(&'a Core<Key, Output>);
 
-        impl<'a, Key: driver_util::Key, Output: driver_util::Output> Display
-            for GraphAndOutputDisplayer<'a, Key, Output>
-        {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                let mut keys = Vec::<Key>::with_capacity(self.0.dep_graph.len());
-                let mut entry = self.0.dep_graph.begin_sync();
-                while let Some(e) = entry {
-                    keys.push(e.key().clone());
-                    entry = e.next_sync();
-                }
-
-                keys.sort();
-
-                for key in keys {
-                    write!(f, "{} -> {:?}: ", key, self.0.get_value(&key))?;
-
-                    if let Some(deps) = self.0.dep_graph.get_sync(&key)
-                        && !deps.is_empty()
-                    {
-                        writeln!(f, "[")?;
-                        for dep in deps.iter() {
-                            writeln!(f, "\t{} -> {:?},", dep, self.0.get_value(dep))?;
+                impl<'a, Key: driver_util::Key, Output: driver_util::Output> Display
+                    for GraphAndOutputDisplayer<'a, Key, Output>
+                {
+                    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        let mut keys = Vec::<Key>::with_capacity(self.0.dep_graph.len());
+                        let mut entry = self.0.dep_graph.begin_sync();
+                        while let Some(e) = entry {
+                            keys.push(e.key().clone());
+                            entry = e.next_sync();
                         }
-                        writeln!(f, "]")?;
-                    } else {
-                        writeln!(f, "None")?;
-                    };
+
+                        keys.sort();
+
+                        for key in keys {
+                            write!(f, "{} -> {:?}: ", key, self.0.get_value(&key))?;
+
+                            if let Some(deps) = self.0.dep_graph.get_sync(&key)
+                                && !deps.is_empty()
+                            {
+                                writeln!(f, "[")?;
+                                for dep in deps.iter() {
+                                    writeln!(f, "\t{} -> {:?},", dep, self.0.get_value(dep))?;
+                                }
+                                writeln!(f, "]")?;
+                            } else {
+                                writeln!(f, "None")?;
+                            };
+                        }
+
+                        Ok(())
+                    }
                 }
 
-                Ok(())
-            }
-        }
-
-        GraphAndOutputDisplayer(self)
+                GraphAndOutputDisplayer(self)
+        */
+        "TODO"
     }
 }
 

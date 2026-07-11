@@ -58,7 +58,21 @@ where
     KLarge: Producer<KLarge>,
     KLarge::Output: Downcastable,
 {
-    let value = ctx
+    query_with_hash(ctx, key).await.1
+}
+
+/// Like [`query`], but also returns a hashed representation of they key, for use in creating other
+/// efficient datastructures.
+pub async fn query_with_hash<KSmall, KLarge>(
+    ctx: &Context<KLarge>,
+    key: KSmall,
+) -> (driver_db::Hashed<KLarge>, KSmall::Output)
+where
+    KSmall: ProducerBase + Into<KLarge>,
+    KLarge: Producer<KLarge>,
+    KLarge::Output: Downcastable,
+{
+    let (hash, output) = ctx
         .executor()
         .execute_pinned({
             let ctx = ctx.clone();
@@ -67,7 +81,12 @@ where
         })
         .await;
 
-    value.downcast().expect("query produced wrong type somehow")
+    (
+        hash,
+        output
+            .downcast()
+            .expect("query produced wrong type somehow"),
+    )
 }
 
 pub trait Downcastable {

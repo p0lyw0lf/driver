@@ -22,10 +22,6 @@ mod hash;
 pub use hash::Hash;
 pub use hash::ToHash;
 
-mod interner;
-pub use interner::HashInterned;
-pub use interner::Interner;
-
 mod write_output;
 pub use write_output::WriteOutput;
 pub use write_output::WriteOutputBuilder;

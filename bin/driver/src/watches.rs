@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use inotify::{WatchDescriptor, WatchMask};
 
-use driver_query_ssg::{QueryContext, QueryKey};
+use driver_query_ssg::{HashKey, QueryContext, QueryKey};
 
 /// Represents a single watch of a path.
 struct Watch {
@@ -186,55 +186,63 @@ impl WatchHooks {
 impl driver_engine::Hooks<QueryKey> for WatchHooks {
     fn on_compute(
         &self,
-        ctx: &QueryContext,
+        _ctx: &QueryContext,
         _key: QueryKey,
-        old_deps: HashSet<QueryKey>,
-        new_deps: HashSet<QueryKey>,
+        _old_deps: HashSet<HashKey>,
+        _new_deps: HashSet<HashKey>,
     ) {
-        let only_in_old = old_deps.difference(&new_deps);
-        let only_in_new = new_deps.difference(&old_deps);
+        /*
+                let only_in_old = old_deps.difference(&new_deps);
+                let only_in_new = new_deps.difference(&old_deps);
 
-        let mut this = self.0.lock().unwrap();
-        for key in only_in_old {
-            this.recursive_remove(ctx, key);
-        }
+                let mut this = self.0.lock().unwrap();
+                for key in only_in_old {
+                    this.recursive_remove(ctx, key);
+                }
 
-        for key in only_in_new {
-            match key {
-                QueryKey::ReadFile(file) => {
-                    this.add_file(file.0.clone());
+                for key in only_in_new {
+                    ctx.db().get(*key, async |entry| {
+                        match entry {
+                            Some((_, QueryKey::ReadFile(file), _)) => {
+                                this.add_file(file.0.clone());
+                            }
+                            Some((_, QueryKey::ListDirectory(directory), _)) => {
+                                this.add_directory(directory.0.clone());
+                            }
+                            _otherwise => {
+                                // If the query is newly run, it will have already added the watches thru this hook.
+                            }
+                        }
+                    })
                 }
-                QueryKey::ListDirectory(directory) => {
-                    this.add_directory(directory.0.clone());
-                }
-                _otherwise => {
-                    // If the query is newly run, it will have already added the watches thru this hook.
-                }
-            }
-        }
+        */
+        todo!()
     }
 }
 
 impl Watches {
     /// Removes all watches under the given key.
-    fn recursive_remove(&mut self, ctx: &QueryContext, key: &QueryKey) {
-        match key {
-            QueryKey::ReadFile(file) => {
-                self.remove_file(file.0.clone());
-            }
-            QueryKey::ListDirectory(directory) => {
-                self.remove_directory(directory.0.clone());
-            }
-            otherwise => {
-                for dep in ctx
-                    .db()
-                    .dependencies::<Vec<_>>(otherwise)
-                    .into_iter()
-                    .flatten()
-                {
-                    self.recursive_remove(ctx, &dep);
+    fn recursive_remove(&mut self, _ctx: &QueryContext, _key: &HashKey) {
+        /*
+                match key {
+                    QueryKey::ReadFile(file) => {
+                        self.remove_file(file.0.clone());
+                    }
+                    QueryKey::ListDirectory(directory) => {
+                        self.remove_directory(directory.0.clone());
+                    }
+                    otherwise => {
+                        for dep in ctx
+                            .db()
+                            .dependencies::<Vec<_>>(otherwise)
+                            .into_iter()
+                            .flatten()
+                        {
+                            self.recursive_remove(ctx, &dep);
+                        }
+                    }
                 }
-            }
-        }
+        */
+        todo!()
     }
 }

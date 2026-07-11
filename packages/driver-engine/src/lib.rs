@@ -50,6 +50,7 @@ pub use producer::Downcastable;
 pub use producer::Producer;
 pub use producer::ProducerBase;
 pub use producer::query;
+pub use producer::query_with_hash;
 
 /// Re-export for convenience
 pub use driver_db::Options;
