@@ -1,4 +1,10 @@
-# PolyWolf's Build [Driver](https://github.com/p0lyw0lf/driver)
+> [!NOTE]
+> 
+> I am using [sourcehut](https://git.sr.ht/~polywolf/driver) instead nowadays, go there instead for updates to this repo.
+
+---
+
+# PolyWolf's Build [Driver](https://git.sr.ht/~polywolf/driver)
 
 ## What?
 
@@ -34,7 +40,7 @@ website, on my personal laptop.
 ## How?
 
 See my [website](https://github.com/p0lyw0lf/website) for an example of what
-using this engine looks like, and [website-template](https://github.com/p0lyw0lf/website-template)
+using this engine looks like, and [hypertext-more](https://git.sr.ht/~polywolf/hypertext-more)
 for a bit more of an opinionated example Sorry the docs are kinda sparse at the
 moment, but hey I wrote this project just for me really.
 
