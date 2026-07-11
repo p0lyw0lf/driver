@@ -63,7 +63,14 @@ impl Blobs {
         })
     }
 
-    pub fn load_mmap(&self, options: &Options, blob: &Blob) -> driver_util::Result<memmap2::Mmap> {
+    /// # Safety
+    ///
+    /// Same safety considerations as in [`memmap2::Mmap::map`] apply.
+    pub unsafe fn load_mmap(
+        &self,
+        options: &Options,
+        blob: &Blob,
+    ) -> driver_util::Result<memmap2::Mmap> {
         let filename = self.blob_filename(options, blob);
         let file = std::fs::File::open(&filename)?;
         // SAFETY: We don't do anything crazy with these files, if the user does then that's their

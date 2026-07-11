@@ -84,9 +84,13 @@ impl<Key: ProducerBase> Context<Key> {
         Ok(string)
     }
 
-    /// Loads the given blob as an [`Mmap`]
-    pub fn load_mmap(&self, blob: &Blob) -> driver_util::Result<Mmap> {
-        self.db().blobs.load_mmap(self.options(), blob)
+    /// Loads the given blob as an [`Mmap`].
+    ///
+    /// # Safety
+    ///
+    /// Same safety considerations as in [`driver_db::Blobs::load_mmap`] apply.
+    pub unsafe fn load_mmap(&self, blob: &Blob) -> driver_util::Result<Mmap> {
+        unsafe { self.db().blobs.load_mmap(self.options(), blob) }
     }
 }
 
