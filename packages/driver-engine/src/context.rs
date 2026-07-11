@@ -8,12 +8,14 @@ use tracing::{info, trace};
 
 use async_tpc_executor::Executor;
 use driver_db::{Blob, Database, Entry, Options};
+use driver_util::Interner;
 
 use crate::{Producer, ProducerBase};
 
 struct State<Key: Hash + Ord + Eq, Output> {
     options: Options,
     db: Database<Key, Output>,
+    interner: Interner<Key>,
     executor: Executor,
     hooks: OptHooks<Key>,
 }
@@ -44,6 +46,10 @@ impl<Key: ProducerBase> Context<Key> {
     /// Get the database associated with the context.
     pub fn db(&self) -> &Database<Key, Key::Output> {
         &self.state.db
+    }
+
+    pub fn interner(&self) -> &Interner<Key> {
+        &self.state.interner
     }
 
     /// Get the executor associated with the context.
@@ -89,6 +95,7 @@ impl<Key: Producer<Key>> Context<Key> {
     /// called outside of any async context.
     pub fn create_root(options: Options, hooks: OptHooks<Key>) -> Self {
         let db = Database::restore(&options);
+        let interner = Default::default();
 
         // Bust cache immediately
         // TODO: should only bust the input queries here; right now this busts "everything" which
@@ -102,6 +109,7 @@ impl<Key: Producer<Key>> Context<Key> {
             state: Arc::new(State {
                 options,
                 db,
+                interner,
                 executor,
                 hooks,
             }),
@@ -125,6 +133,7 @@ impl<Key: Producer<Key>> Context<Key> {
     pub fn create_empty_root_for_testing_only() -> Self {
         let options = Options::default();
         let db = Database::empty();
+        let interner = Default::default();
         let executor = Executor::start_n_threads(1);
 
         Self {
@@ -132,6 +141,7 @@ impl<Key: Producer<Key>> Context<Key> {
             state: Arc::new(State {
                 options,
                 db,
+                interner,
                 executor,
                 hooks: None,
             }),

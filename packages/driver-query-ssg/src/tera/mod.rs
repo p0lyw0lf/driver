@@ -10,10 +10,9 @@ use tera::{Tera, TeraResult};
 
 use driver_engine::{Blob, query};
 use driver_query_fs::{ListDirectory, ReadFile};
-use driver_util::WriteOutput;
 
-use crate::QueryContext;
 use crate::boa::{JsBlob, JsValue, RunJs};
+use crate::{QueryContext, WriteOutput, WriteOutputBuilder};
 
 driver_engine::key!(
     #[input=|_| false]
@@ -40,7 +39,7 @@ driver_engine::producer!(RunTera(self, ctx) as (crate::QueryKey) -> RunTeraOutpu
         Ok(input) => input,
         Err(e) => return RunTeraOutput {
             export: Err(e),
-            writes: Default::default(),
+            writes: WriteOutput::builder().finalize(),
         },
     };
     render_tera_async(ctx, &input, &self.file, &self.arg).await
@@ -107,7 +106,7 @@ fn render_tera_async(
 }
 
 fn render_tera(ctx: &QueryContext, input: &Blob, file: &Path, arg: &JsValue) -> RunTeraOutput {
-    let writes = Arc::new(Mutex::new(WriteOutput::default()));
+    let writes = Arc::new(Mutex::new(WriteOutput::builder()));
 
     let export = (|| -> driver_util::Result<_> {
         let input = ctx.load_string(input)?;
@@ -126,12 +125,13 @@ fn render_tera(ctx: &QueryContext, input: &Blob, file: &Path, arg: &JsValue) -> 
     let writes = Arc::into_inner(writes)
         .expect("should be finished rendering")
         .into_inner()
-        .expect("mutex is poisoned");
+        .expect("mutex is poisoned")
+        .finalize();
 
     RunTeraOutput { export, writes }
 }
 
-fn register_functions(tera: &mut Tera, ctx: &QueryContext, writes: Arc<Mutex<WriteOutput>>) {
+fn register_functions(tera: &mut Tera, ctx: &QueryContext, writes: Arc<Mutex<WriteOutputBuilder>>) {
     macro_rules! wrap_function {
         (move ($($i:ident),*) |$args:ident| $body:tt) => {{
             $(
@@ -217,7 +217,8 @@ fn register_functions(tera: &mut Tera, ctx: &QueryContext, writes: Arc<Mutex<Wri
                 query(&ctx, run_js.clone())
             );
             {
-                writes.lock().unwrap().merge(output.writes);
+                let hash = ctx.interner().insert(run_js.clone().into());
+                writes.lock().unwrap().merge(hash, output.writes);
             }
             let output = js_to_tera_value(
                 &output.export
@@ -241,7 +242,8 @@ fn register_functions(tera: &mut Tera, ctx: &QueryContext, writes: Arc<Mutex<Wri
             };
             let output = future::block_on(query(&ctx, run_tera.clone()));
             {
-                writes.lock().unwrap().merge(output.writes);
+                let hash = ctx.interner().insert(run_tera.clone().into());
+                writes.lock().unwrap().merge(hash, output.writes);
             };
             let output = js_to_tera_value(&JsValue::Store(JsBlob {
                 blob: output.export.map_err(|e| tera::Error::message(format!("{run_tera}:\n\t{e}")))?,

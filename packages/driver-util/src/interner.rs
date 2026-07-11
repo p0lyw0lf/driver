@@ -8,9 +8,17 @@ use crate::{Hash, ToHash};
 /// Datastructure used for interning keys into hashes, so that we can:
 /// 1. Not have to pass around & clone potentially very large keys if we don't need the underlying data
 /// 2. Have one canonical source for keys if we do need to read from them.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Interner<Key> {
     map: HashMap<HashInterned<Key>, Key>,
+}
+
+impl<Key> Default for Interner<Key> {
+    fn default() -> Self {
+        Self {
+            map: HashMap::new(),
+        }
+    }
 }
 
 /// A key associated with a specific [`Interner`]. Users SHOULD have just one [`Interner`] in their
@@ -59,6 +67,7 @@ impl<Key> std::hash::Hash for HashInterned<Key> {
 }
 
 impl<Key: std::hash::Hash> Interner<Key> {
+    /// TODO: I'd like to [`Clone`] from [`key`] only if truly necessary.
     pub fn insert(&self, key: Key) -> HashInterned<Key> {
         let hash = HashInterned(key.to_hash(), PhantomData);
         let _ = self.map.upsert_sync(hash, key);

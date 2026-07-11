@@ -4,8 +4,8 @@ use futures_concurrency::future::TryJoin as _;
 
 use driver_engine::{Blob, query};
 use driver_query_ssg::boa::{RunJs, parse_args};
-use driver_query_ssg::{QueryContext, QueryOutput};
-use driver_util::WriteOutput;
+use driver_query_ssg::{QueryContext, QueryOutput, WriteOutput};
+use driver_util::WriteOutputDiff;
 
 pub struct RunOutput {
     prev: Option<WriteOutput>,
@@ -64,13 +64,13 @@ impl RunOutput {
                 write(root, base, self.curr.iter()).await
             }
             Some(prev) => {
-                let diff = self.curr.diff(&prev);
+                let diff = WriteOutputDiff::diff(&self.curr, &prev);
                 let ((), ()) = (
                     write(root, base, diff.to_write.into_iter()),
                     remove(
                         base,
                         if options.no_delete_missing {
-                            vec![]
+                            Default::default()
                         } else {
                             diff.to_remove
                         }

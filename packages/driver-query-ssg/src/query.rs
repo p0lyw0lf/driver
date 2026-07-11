@@ -27,3 +27,6 @@ QueryKey {
 } with QueryOutput);
 
 pub type QueryContext = driver_engine::Context<QueryKey>;
+pub type HashKey = driver_util::HashInterned<QueryKey>;
+pub type WriteOutput = driver_util::WriteOutput<HashKey>;
+pub type WriteOutputBuilder = driver_util::WriteOutputBuilder<HashKey>;

@@ -28,4 +28,5 @@ pub use interner::Interner;
 
 mod write_output;
 pub use write_output::WriteOutput;
+pub use write_output::WriteOutputBuilder;
 pub use write_output::WriteOutputDiff;

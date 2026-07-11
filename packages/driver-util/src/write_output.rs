@@ -8,8 +8,9 @@ use sha2::Digest;
 use crate::blob::{Blob, BlobTrace};
 use crate::hash::{Hash, Sha256Hasher};
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PartialWriteOutput<Key: Ord> {
+/// To construct this, use [`WriteOutput::builder()`].
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WriteOutputBuilder<Key: Ord> {
     direct: BTreeMap<PathBuf, Blob>,
     // TODO: Right now, the main complaint I have is that all these indirect dependencies are full
     // objects, meaning they need to be cloned fresh out of the cached computation store every time.
@@ -24,9 +25,9 @@ pub struct PartialWriteOutput<Key: Ord> {
     indirect: BTreeMap<Key, WriteOutput<Key>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WriteOutput<Key: Ord> {
-    inner: PartialWriteOutput<Key>,
+    inner: WriteOutputBuilder<Key>,
     /// Memoized hash of [`inner`] to make comparisons faster.
     hash: Hash,
 }
@@ -36,7 +37,7 @@ pub struct WriteOutput<Key: Ord> {
 impl<Key: Ord + Clone> Clone for WriteOutput<Key> {
     fn clone(&self) -> Self {
         Self {
-            inner: PartialWriteOutput {
+            inner: WriteOutputBuilder {
                 direct: self.inner.direct.clone(),
                 indirect: self.inner.indirect.clone(),
             },
@@ -44,9 +45,6 @@ impl<Key: Ord + Clone> Clone for WriteOutput<Key> {
         }
     }
 }
-
-/// To construct this, use [`WriteOutput::builder()`].
-pub type WriteOutputBuilder<Key> = PartialWriteOutput<Key>;
 
 impl<Key: Ord + std::hash::Hash> WriteOutputBuilder<Key> {
     pub fn push(&mut self, path: PathBuf, blob: Blob) {

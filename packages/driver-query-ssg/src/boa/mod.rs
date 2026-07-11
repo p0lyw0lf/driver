@@ -24,9 +24,8 @@ use tracing::trace;
 
 use driver_engine::query;
 use driver_query_fs::ReadFile;
-use driver_util::WriteOutput;
 
-use crate::QueryContext;
+use crate::{QueryContext, WriteOutput, WriteOutputBuilder};
 
 mod blob;
 mod image;
@@ -48,7 +47,7 @@ pub fn parse_args<'a>(iter: impl IntoIterator<Item = &'a str>) -> JsValue {
 
 struct ContextFrame {
     ctx: QueryContext,
-    outputs: WriteOutput,
+    outputs: WriteOutputBuilder,
 }
 
 async_task_local::task_local! {
@@ -65,7 +64,7 @@ async fn with_query_context<T, F: Future<Output = driver_util::Result<T>>>(
     let fut = QUERY_CONTEXT.scope(
         ContextFrame {
             ctx,
-            outputs: Default::default(),
+            outputs: WriteOutput::builder(),
         },
         f(),
     );
@@ -74,7 +73,7 @@ async fn with_query_context<T, F: Future<Output = driver_util::Result<T>>>(
     let out = fut.as_mut().await;
     let popped_frame = fut.take_value().expect("scope should have value");
 
-    (out, popped_frame.outputs)
+    (out, popped_frame.outputs.finalize())
 }
 
 fn get_context() -> JsResult<QueryContext> {
@@ -88,7 +87,7 @@ fn get_context() -> JsResult<QueryContext> {
 }
 
 /// SAFETY: only safe to call when running inside `with_query_context()`
-unsafe fn with_outputs(f: impl FnOnce(&mut WriteOutput)) -> JsResult<()> {
+unsafe fn with_outputs(f: impl FnOnce(&mut WriteOutputBuilder)) -> JsResult<()> {
     QUERY_CONTEXT.with_mut(|ctx| -> JsResult<()> {
         let ctx = ctx
             .ok_or_else(|| JsNativeError::eval().with_message("pushed outputs without context"))?;
@@ -403,7 +402,8 @@ mod driver_module {
 
         let RunJsOutput { export, writes } = query(ctx, task.clone()).await;
 
-        unsafe { with_outputs(|outputs| outputs.merge(writes)) }?;
+        let hash = ctx.interner().insert(task.clone().into());
+        unsafe { with_outputs(|outputs| outputs.merge(hash, writes)) }?;
 
         export.map_err(|e| {
             JsNativeError::eval()
@@ -423,7 +423,8 @@ mod driver_module {
 
         let RunTeraOutput { export, writes } = query(ctx, task.clone()).await;
 
-        unsafe { with_outputs(|outputs| outputs.merge(writes)) }?;
+        let hash = ctx.interner().insert(task.clone().into());
+        unsafe { with_outputs(|outputs| outputs.merge(hash, writes)) }?;
 
         Ok(JsValue::Store(JsBlob {
             blob: export
