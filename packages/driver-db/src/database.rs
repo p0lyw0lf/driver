@@ -182,8 +182,9 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Core<Key, Output> {
         (hashed, out)
     }
 
-    /// This is the same as the [`upsert`] case, just with no "missing" case to represent the
-    /// fact we can just call `f(None)` early in that case.
+    /// Like [`Self::upsert`], but requires the key to already be inserted. Because a [`Hashed`] can
+    /// only be constructed by the output of [`Self::upsert`], this _should_ be safe barring any
+    /// bugs involving serde.
     pub async fn get_mut<T>(
         &self,
         hashed: Hashed<Key>,
@@ -197,11 +198,13 @@ impl<Key: driver_util::Key, Output: driver_util::Output> Core<Key, Output> {
             None => return f(None).await,
             Some(mut entry) => (
                 entry.get().key.clone(),
-                match std::mem::replace(&mut entry.get_mut().value, LogicalValue::Computing(recv)) {
-                    LogicalValue::Materialized(value) => value,
-                    LogicalValue::Computing(recv) => recv.await.expect("value receive error"),
-                },
+                std::mem::replace(&mut entry.get_mut().value, LogicalValue::Computing(recv)),
             ),
+        };
+
+        let value = match value {
+            LogicalValue::Materialized(value) => value,
+            LogicalValue::Computing(recv) => recv.await.expect("value receive error"),
         };
 
         let mut entry = Entry { value: Some(value) };
