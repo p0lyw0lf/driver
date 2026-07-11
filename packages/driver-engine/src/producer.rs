@@ -29,6 +29,7 @@ macro_rules! producer {
         impl<Key> $crate::Producer<Key> for $name
         where
             Key: $crate::Producer<Key>,
+            Key::Output: $crate::Downcastable,
         $($(
             $subkey: Into<Key>,
         )*)?

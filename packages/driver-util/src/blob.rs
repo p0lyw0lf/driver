@@ -97,3 +97,11 @@ where
 // TODO: expand this list as needed
 no_blobs!(String);
 no_blobs!(std::path::PathBuf);
+no_blobs!(u8);
+no_blobs!(u16);
+no_blobs!(u32);
+no_blobs!(u64);
+no_blobs!(i8);
+no_blobs!(i16);
+no_blobs!(i32);
+no_blobs!(i64);
